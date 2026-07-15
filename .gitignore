@@ -1,0 +1,7 @@
+node_modules/
+data/
+auth-cache/
+runtime/
+templates/*/node_modules/
+config.json
+*.log

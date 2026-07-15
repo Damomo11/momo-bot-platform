@@ -1,0 +1,7 @@
+{
+  "host": "127.0.0.1",
+  "port": 8788,
+  "sessionDays": 30,
+  "bootstrapAdminUsername": "admin",
+  "bootstrapAdminPassword": "change-this-password"
+}

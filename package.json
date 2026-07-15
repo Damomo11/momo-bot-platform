@@ -1,0 +1,22 @@
+{
+  "name": "momo-bot-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Independent Microsoft OAuth2 Minecraft bot hosting platform with momoc billing.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "check": "node --check src/server.js && node --check src/config.js && node --check src/db.js && node --check src/auth.js && node --check src/accountManager.js && node --check src/botManager.js && node --check src/platformPreload.js && node --check src/zenoxChatParser.js && node --check src/templateVariables.js && node --check public/app.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "better-sqlite3": "^12.10.0",
+    "mineflayer": "^4.37.1",
+    "node-cron": "^4.6.0",
+    "prismarine-auth": "^3.1.1"
+  }
+}

@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Momo Bot Platform</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <section id="auth" class="auth-shell">
+    <div class="auth-panel">
+      <div class="brand"><span>Momo</span> Bot</div>
+      <div class="segmented"><button data-auth="login" class="active">登录</button><button data-auth="register">注册</button></div>
+      <label>用户名<input id="authUser" autocomplete="username"></label>
+      <label>密码<input id="authPassword" type="password" autocomplete="current-password"></label>
+      <button id="authSubmit" class="solid">登录</button>
+      <p id="authError" class="error"></p>
+    </div>
+  </section>
+
+  <div id="app" class="app hidden">
+    <aside>
+      <div class="brand"><span>Momo</span> Bot</div>
+      <nav>
+        <button data-view="accounts" class="navbtn">♙　微软账号</button>
+        <button data-view="bots" class="navbtn active">▦　我的机器人</button>
+        <button data-view="ledger" class="navbtn">▤　momoc 明细</button>
+        <button data-view="overview" class="navbtn admin-only hidden">▥　运营总览</button>
+        <button data-view="users" class="navbtn admin-only hidden">☺　用户管理</button>
+        <button data-view="templates" class="navbtn admin-only hidden">▣　代码模板</button>
+      </nav>
+      <div class="userbox">
+        <div><span class="dot"></span><strong id="identity">-</strong></div>
+        <div id="balance" class="balance">0 momoc</div>
+        <button id="logout" class="ghost">退出登录</button>
+      </div>
+    </aside>
+
+    <main>
+      <div class="hero">欢迎回来，<strong id="heroName">-</strong>。当前余额 <strong id="heroBalance">0</strong> momoc。</div>
+
+      <section id="accountsView" class="view hidden">
+        <div class="toolbar"><div><h1>微软账号</h1><p id="accountSummary">0 个账号</p></div><button id="refreshAccounts">刷新</button></div>
+        <section class="panel create-panel">
+          <div class="section-head"><h2>添加账号</h2></div>
+          <div class="account-create"><label>Microsoft 邮箱<input id="accountEmail" type="email"></label><button id="createAccount" class="solid">添加并授权</button></div>
+        </section>
+        <div id="accountsTable" class="panel table-wrap"></div>
+      </section>
+
+      <section id="botsView" class="view">
+        <div class="toolbar"><div><h1>我的机器人</h1><p id="botSummary">0 个机器人</p></div><button id="refreshBots">刷新</button></div>
+        <section class="panel create-panel">
+          <div class="section-head"><h2>创建机器人</h2></div>
+          <div class="form-grid">
+            <label>机器人名称<input id="botLabel" placeholder="例如 生存服挂机"></label>
+            <label>Microsoft 账号<select id="botAccount"></select></label>
+            <label>服务器地址<input id="botHost" value="mc.zenoxs.cn"></label>
+            <label>端口<input id="botPort" type="number" value="25565"></label>
+            <label>游戏版本<input id="botVersion" value="1.21.11"></label>
+            <label>代码模板<select id="botTemplate"></select><span id="selectedTemplatePrice" class="price-hint"></span></label>
+            <div id="botVariableBlock" class="variable-block hidden">
+              <div class="variable-title">模板变量</div>
+              <div id="botVariables" class="variable-grid"></div>
+            </div>
+          </div>
+          <div class="panel-actions"><button id="createBot" class="solid">创建机器人</button></div>
+        </section>
+        <div id="botsTable" class="panel table-wrap"></div>
+      </section>
+
+      <section id="ledgerView" class="view hidden">
+        <div class="toolbar"><div><h1>momoc 明细</h1><p id="ledgerSummary">0 条记录</p></div><button id="refreshLedger">刷新</button></div>
+        <div id="ledgerTable" class="panel table-wrap"></div>
+      </section>
+
+      <section id="usersView" class="view hidden">
+        <div class="toolbar"><div><h1>用户管理</h1><p id="userSummary">0 个用户</p></div><button id="refreshUsers">刷新</button></div>
+        <div id="usersTable" class="panel table-wrap"></div>
+      </section>
+
+      <section id="overviewView" class="view hidden">
+        <div class="toolbar"><div><h1>运营总览</h1><p>授权、机器人与消费数据</p></div><button id="refreshOverview">刷新</button></div>
+        <div id="overviewStats" class="overview-stats"></div>
+        <section class="overview-section">
+          <div class="section-head"><h2>已有授权</h2></div>
+          <div id="overviewAccounts" class="panel table-wrap"></div>
+        </section>
+        <section class="overview-section">
+          <div class="section-head"><h2>已有 Bot 与模板</h2></div>
+          <div id="overviewBots" class="panel table-wrap"></div>
+        </section>
+        <section class="overview-section">
+          <div class="section-head"><h2>用户消费</h2></div>
+          <div id="overviewConsumption" class="panel table-wrap"></div>
+        </section>
+      </section>
+
+      <section id="templatesView" class="view hidden">
+        <div class="toolbar">
+          <div><h1>代码模板</h1><p id="templateSummary">0 个模板</p></div>
+          <div class="actions"><button id="refreshTemplates">刷新</button><button id="newTemplate" class="primary">新建模板</button></div>
+        </div>
+        <div class="template-workspace panel">
+          <div id="templateList" class="template-list"></div>
+          <div class="template-main">
+            <div class="template-meta">
+              <input id="templateId" type="hidden">
+              <label>名称<input id="templateName"></label>
+              <label class="wide">说明<input id="templateDescription"></label>
+              <label>计费方式<select id="templateBillingMode"><option value="hourly">按小时</option><option value="once">按次</option></select></label>
+              <label><span id="templatePriceLabel">每小时价格</span><input id="templatePriceMomoc" type="number" min="0" step="0.000001" value="60"></label>
+              <label class="check"><input id="templateEnabled" type="checkbox" checked> 启用模板</label>
+              <label id="templateSchedulingLabel" class="check hidden"><input id="templateAllowScheduling" type="checkbox"> 允许用户定时运行</label>
+              <label class="zip-field">项目 ZIP<input id="templateZip" type="file" accept=".zip"></label>
+              <div class="meta-actions"><button id="saveTemplate" class="primary">保存模板信息</button><button id="deleteTemplate" class="danger">删除模板</button></div>
+              <div id="templateProjectPath" class="project-path"></div>
+            </div>
+
+            <div id="fileManager" class="file-manager disabled">
+              <div class="file-toolbar">
+                <div><strong>项目文件</strong><span id="fileCount" class="muted">0 个</span></div>
+                <div class="actions">
+                  <button id="toggleTemplateRequirements" class="primary">开发规范</button>
+                  <button id="newFile" title="新建文件">＋ 文件</button>
+                  <button id="newFolder" title="新建目录">＋ 目录</button>
+                  <button id="renameFile" title="重命名选中项">重命名</button>
+                  <button id="deleteFile" class="danger" title="删除选中项">删除</button>
+                  <button id="installDeps" class="primary" title="执行 npm install --omit=dev">安装依赖</button>
+                </div>
+              </div>
+              <div class="file-grid">
+                <div id="templateFiles" class="file-tree"></div>
+                <div class="code-editor">
+                  <div class="editor-head"><code id="activeFilePath">选择文件</code><span id="dirtyMark" class="dirty hidden">未保存</span><button id="saveFile" class="solid" disabled>保存文件</button></div>
+                  <textarea id="fileContent" spellcheck="false" disabled></textarea>
+                </div>
+              </div>
+              <div id="templateRequirements" class="requirements-drawer">
+                <div class="requirements-head"><strong>模板开发硬性要求</strong><button id="closeTemplateRequirements" class="icon-button" title="关闭">×</button></div>
+                <pre id="templateRequirementsText">正在加载...</pre>
+                <div class="requirements-foot"><button id="copyTemplateRequirements" class="solid">复制给 AI</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="fileDialog" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="dialog">
+      <div class="dialog-head"><strong id="fileDialogTitle">新建文件</strong><button id="closeFileDialog" class="icon-button" title="关闭">×</button></div>
+      <label id="fileKindLabel">类型<select id="fileDialogKind"><option value="file">文件</option><option value="directory">目录</option></select></label>
+      <label>项目内路径<input id="fileDialogPath" autocomplete="off"></label>
+      <p id="fileDialogError" class="error"></p>
+      <div class="dialog-actions"><button id="cancelFileDialog">取消</button><button id="confirmFileDialog" class="solid">确认</button></div>
+    </div>
+  </div>
+  <div id="botVariableDialog" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="dialog variable-dialog">
+      <div class="dialog-head"><strong id="botVariableTitle">机器人变量</strong><button id="closeBotVariableDialog" class="icon-button" title="关闭">×</button></div>
+      <div id="editBotVariables" class="variable-grid"></div>
+      <p id="botVariableError" class="error"></p>
+      <div class="dialog-actions"><button id="cancelBotVariableDialog">取消</button><button id="saveBotVariables" class="solid">保存变量</button></div>
+    </div>
+  </div>
+  <div id="scheduleDialog" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="dialog">
+      <div class="dialog-head"><strong id="scheduleTitle">定时运行</strong><button id="closeScheduleDialog" class="icon-button" title="关闭">×</button></div>
+      <label class="variable-check"><input id="scheduleEnabled" type="checkbox"> 启用计划</label>
+      <label>运行频率<select id="schedulePreset"><option value="every5">每 5 分钟</option><option value="every15">每 15 分钟</option><option value="hourly">每小时</option><option value="every6hours">每 6 小时</option><option value="daily">每天固定时间</option></select></label>
+      <label id="scheduleTimeLabel" class="hidden">每天运行时间<input id="scheduleTime" type="time" value="08:00"></label>
+      <p id="scheduleError" class="error"></p>
+      <div class="dialog-actions"><button id="cancelScheduleDialog">取消</button><button id="saveSchedule" class="solid">保存计划</button></div>
+    </div>
+  </div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
