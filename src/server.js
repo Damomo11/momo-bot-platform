@@ -6,18 +6,38 @@ const { spawnSync } = require('node:child_process')
 const AdmZip = require('adm-zip')
 const { loadConfig } = require('./config')
 const PlatformDb = require('./db')
-const BotManager = require('./botManager')
+const BotSupervisorClient = require('./botSupervisorClient')
 const AccountManager = require('./accountManager')
 const { normalizeDefinitions, readDefinitions, validateValues } = require('./templateVariables')
+const { verifyCloudStoreToken } = require('./cloudStoreSso')
+const { LoginAttemptLimiter, clientIp } = require('./security')
 
 const config = loadConfig()
 const db = new PlatformDb(config)
-const bots = new BotManager(db, config)
+const bots = new BotSupervisorClient(db, config)
 const accounts = new AccountManager(db, config)
 const publicRoot = path.join(config.root, 'public')
 const templatesRoot = path.join(config.root, 'templates')
 const hiddenProjectEntries = new Set(['node_modules', '.git'])
 const maxEditableFileBytes = 1024 * 1024
+const usedCloudStoreNonces = new Map()
+const loginLimiter = new LoginAttemptLimiter({
+  maxFailures: config.maxLoginFailures,
+  windowMs: config.loginFailWindowMs,
+  blockMs: config.loginBlockMs
+})
+
+function sessionCookie (token, sameSite = 'Strict') {
+  return `bp_sid=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=${config.sessionDays * 86400}${config.secureCookies ? '; Secure' : ''}`
+}
+
+function expiredSessionCookie (sameSite = 'Strict') {
+  return `bp_sid=; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=0${config.secureCookies ? '; Secure' : ''}`
+}
+
+function cloudStoreSsoSecret () {
+  try { return fs.readFileSync(config.cloudStoreSsoSecretFile, 'utf8').trim() } catch { return '' }
+}
 
 function templateProject (id) {
   const template = db.listTemplates(true).find(row => row.id === String(id || ''))
@@ -82,6 +102,31 @@ function readProjectFile (root, input) {
   return { path: relative, content: content.toString('utf8'), size: stats.size }
 }
 
+const platformCodeRoots = ['smart-runtime', 'signin-runtime']
+const platformCodeFiles = new Set()
+
+function platformCodeRows () {
+  const rows = []
+  for (const rootName of platformCodeRoots) {
+    const root = path.join(config.root, rootName)
+    if (!fs.existsSync(root)) continue
+    rows.push({ path: rootName, name: rootName, type: 'directory', size: 0, depth: 0 })
+    rows.push(...listProjectFiles(root).map(row => ({ ...row, path: `${rootName}/${row.path}`, depth: row.depth + 1 })))
+  }
+  for (const name of platformCodeFiles) {
+    const file = path.join(config.root, name)
+    if (fs.existsSync(file)) rows.push({ path: name, name, type: 'file', size: fs.statSync(file).size, depth: 0 })
+  }
+  return rows
+}
+
+function platformCodeTarget (input) {
+  const relative = normalizeProjectPath(input)
+  const allowed = platformCodeFiles.has(relative) || platformCodeRoots.some(root => relative.startsWith(`${root}/`))
+  if (!allowed) throw new Error('这个平台文件不允许在网页中编辑。')
+  return projectTarget(config.root, relative)
+}
+
 function templateDefinitions (template, strict = false) {
   try {
     return { variables: readDefinitions(template.projectPath), variableError: '' }
@@ -100,6 +145,16 @@ function validatedTemplateValues (templateId, values) {
   const template = db.listTemplates(true).find(row => row.id === String(templateId || ''))
   if (!template || !template.enabled) throw new Error('机器人模板不可用。')
   return validateValues(templateDefinitions(template, true).variables, values)
+}
+
+function validatedModuleSelections (selections) {
+  const available = db.listFeatureModules()
+  return (Array.isArray(selections) ? selections : []).map(selection => {
+    const feature = available.find(row => row.id === String(selection.moduleId || ''))
+    if (!feature) throw new Error('功能模块不可用。')
+    const definitions = normalizeDefinitions(feature.variables || [])
+    return { moduleId: feature.id, variables: validateValues(definitions, selection.variables || {}) }
+  })
 }
 
 function cookies (header = '') {
@@ -191,30 +246,49 @@ function botForUser (id, user) {
 }
 
 async function api (req, res, url) {
+  if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { ok: true, service: 'bot-self-hosting-platform' })
+  if (req.method === 'GET' && url.pathname === '/api/public-settings') {
+    return json(res, 200, { ok: true, registrationEnabled: db.getRegistrationEnabled(), ...db.getRuntimeSettings(), platformName: 'Bot 自托管平台' })
+  }
   if (req.method === 'GET' && url.pathname === '/api/me') {
     const user = currentUser(req)
     return json(res, 200, { ok: true, loggedIn: Boolean(user), user })
   }
   if (req.method === 'POST' && url.pathname === '/api/register') {
+    if (!db.getRegistrationEnabled()) { const err = new Error('本地注册已关闭，请从云仓库进入。'); err.status = 403; throw err }
     const input = await body(req)
     const user = db.createUser(input.username, input.password)
     const session = db.createSession(user.id)
-    return json(res, 200, { ok: true, user }, { 'set-cookie': `bp_sid=${encodeURIComponent(session.token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${config.sessionDays * 86400}` })
+    return json(res, 200, { ok: true, user }, { 'set-cookie': sessionCookie(session.token) })
   }
   if (req.method === 'POST' && url.pathname === '/api/login') {
+    const ip = clientIp(req, config.trustProxy)
+    loginLimiter.assertAllowed(ip)
     const input = await body(req)
     const user = db.authenticate(input.username, input.password)
-    if (!user) { const err = new Error('用户名或密码错误。'); err.status = 401; throw err }
+    if (!user) {
+      const record = loginLimiter.recordFailure(ip)
+      if (record.blockedUntil) console.warn(`[security] blocked login attempts from ${ip}`)
+      const err = new Error('用户名或密码错误。'); err.status = 401; throw err
+    }
+    loginLimiter.clear(ip)
     const session = db.createSession(user.id)
-    return json(res, 200, { ok: true, user }, { 'set-cookie': `bp_sid=${encodeURIComponent(session.token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${config.sessionDays * 86400}` })
+    return json(res, 200, { ok: true, user }, { 'set-cookie': sessionCookie(session.token) })
   }
   if (req.method === 'POST' && url.pathname === '/api/logout') {
     db.deleteSession(cookies(req.headers.cookie).bp_sid)
-    return json(res, 200, { ok: true }, { 'set-cookie': 'bp_sid=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0' })
+    return json(res, 200, { ok: true }, { 'set-cookie': expiredSessionCookie() })
   }
-  if (req.method === 'GET' && url.pathname === '/api/templates') {
+  if (req.method === 'POST' && url.pathname === '/api/password') {
+    const user = requireUser(req)
+    const input = await body(req)
+    if (String(input.newPassword || '') !== String(input.confirmPassword || '')) throw new Error('两次输入的新密码不一致。')
+    db.changeUserPassword(user.id, input.currentPassword, input.newPassword)
+    return json(res, 200, { ok: true }, { 'set-cookie': expiredSessionCookie() })
+  }
+  if (req.method === 'GET' && url.pathname === '/api/modes') {
     requireUser(req)
-    return json(res, 200, { ok: true, rows: db.listTemplates(false).map(row => publicTemplate(row)) })
+    return json(res, 200, { ok: true, prices: db.getModePrices() })
   }
   if (req.method === 'GET' && url.pathname === '/api/accounts') {
     const user = requireUser(req)
@@ -235,36 +309,122 @@ async function api (req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/bots') {
     const user = requireUser(req)
-    const rows = bots.list(user.role === 'admin' && url.searchParams.get('all') === '1' ? null : user.id).map(bot => {
-      const template = db.listTemplates(true).find(row => row.id === bot.templateId)
-      return { ...bot, variableDefinitions: template ? templateDefinitions(template).variables : [] }
-    })
+    const rows = await bots.list(user.role === 'admin' && url.searchParams.get('all') === '1' ? null : user.id)
     return json(res, 200, { ok: true, rows })
+  }
+  if (req.method === 'GET' && url.pathname === '/api/smart/permissions') {
+    const user = requireUser(req)
+    const bot = botForUser(url.searchParams.get('botId'), user)
+    if (bot.mode !== 'smart') throw new Error('只有智能 Bot 使用游戏内权限。')
+    return json(res, 200, {
+      ok: true,
+      bot: { id: bot.id, label: bot.label, ownerUsername: bot.ownerUsername },
+      rows: db.listSmartPermissions(bot.userId),
+      lock: db.getSmartBotLock(bot.id),
+      settings: db.getSmartBotSettings(bot.id)
+    })
+  }
+  if (req.method === 'POST' && url.pathname === '/api/smart/permissions') {
+    const user = requireUser(req)
+    const input = await body(req)
+    const bot = botForUser(input.botId, user)
+    if (bot.mode !== 'smart') throw new Error('只有智能 Bot 使用游戏内权限。')
+    if (input.action === 'settings') {
+      const settings = db.setSmartBotSettings(bot.id, { commandPrefix: input.commandPrefix })
+      await bots.syncSmartSettings(bot.id)
+      return json(res, 200, { ok: true, settings })
+    }
+    const role = String(input.role || '')
+    let result
+    if (input.action === 'remove') {
+      result = db.removeSmartPermission(bot.userId, input.playerName, role)
+    } else {
+      const minutes = Number(input.minutes || 0)
+      if (minutes && (!Number.isInteger(minutes) || minutes < 1 || minutes > 525600 || role === 'admin')) throw new Error('临时时长必须为 1-525600 分钟，且超管只能永久添加。')
+      result = db.setSmartPermission(bot.userId, input.playerName, role, {
+        expiresAt: minutes ? Date.now() + minutes * 60000 : null,
+        createdBy: `web:${user.username}`
+      })
+    }
+    return json(res, 200, { ok: true, result, rows: db.listSmartPermissions(bot.userId) })
+  }
+  if (req.method === 'GET' && url.pathname === '/api/smart/messages') {
+    const user = requireUser(req)
+    return json(res, 200, { ok: true, overrides: db.getSmartUserMessages(user.id) })
+  }
+  if (req.method === 'POST' && url.pathname === '/api/smart/messages') {
+    const user = requireUser(req)
+    const input = await body(req)
+    const current = db.getSmartUserMessages(user.id)
+    const resetKeys = Array.isArray(input.resetKeys) ? input.resetKeys.map(String) : []
+    for (const key of resetKeys) delete current[key]
+    const overrides = db.setSmartUserMessages(user.id, input.reset ? {} : resetKeys.length ? current : input.overrides)
+    await Promise.all(db.listBots(user.id).filter(row => row.mode === 'smart').map(row => bots.syncSmartSettings(row.id)))
+    return json(res, 200, { ok: true, overrides })
+  }
+  if (req.method === 'GET' && url.pathname === '/api/smart/tasks') {
+    const user = requireUser(req)
+    const bot = botForUser(url.searchParams.get('botId'), user)
+    if (bot.userId !== user.id) { const err = new Error('自定义任务只能查看自己的机器人。'); err.status = 403; throw err }
+    return json(res, 200, { ok: true, rows: db.listSmartBotTasks(bot.id), bots: (await bots.list(user.id)).filter(row => row.mode === 'smart') })
+  }
+  if (req.method === 'POST' && url.pathname === '/api/smart/tasks') {
+    const user = requireUser(req)
+    const input = await body(req)
+    const bot = botForUser(input.botId, user)
+    if (bot.userId !== user.id) { const err = new Error('自定义任务只能修改自己的机器人。'); err.status = 403; throw err }
+    let result
+    if (input.action === 'delete') result = db.deleteSmartBotTask(bot.id, input.name)
+    else if (input.action === 'schedule') result = db.scheduleSmartBotTask(bot.id, input.name, input.intervalTicks === '' ? null : input.intervalTicks)
+    else result = db.setSmartBotTask(bot.id, input)
+    await bots.syncSmartSettings(bot.id)
+    return json(res, 200, { ok: true, result, rows: db.listSmartBotTasks(bot.id) })
+  }
+  if (req.method === 'POST' && url.pathname === '/api/smart/automation') {
+    const user = requireUser(req)
+    const input = await body(req)
+    const bot = botForUser(input.botId, user)
+    if (bot.mode !== 'smart') throw new Error('只有智能 Bot 使用游戏内定时任务。')
+    const action = String(input.action || '')
+    if (action === 'stop_ominous') db.setSmartBotOminousBottle(bot.id, false)
+    else if (action === 'stop_periodic_right_click') db.setSmartBotPeriodicRightClick(bot.id, { enabled: false })
+    else if (action === 'stop_task') db.scheduleSmartBotTask(bot.id, input.name, null)
+    else throw new Error('未知的定时任务操作。')
+    const schedules = await bots.syncSmartAutomation(bot.id)
+    return json(res, 200, { ok: true, schedules })
+  }
+  if (req.method === 'GET' && url.pathname === '/api/smart/prefixes') {
+    const user = requireUser(req)
+    return json(res, 200, { ok: true, rows: db.listSmartBotPrefixes(user.id) })
+  }
+  if (req.method === 'POST' && url.pathname === '/api/smart/prefixes') {
+    const user = requireUser(req)
+    const input = await body(req)
+    const bot = botForUser(input.botId, user)
+    if (bot.userId !== user.id || bot.mode !== 'smart') throw new Error('只能修改自己的智能 Bot 前缀。')
+    const settings = db.setSmartBotSettings(bot.id, { commandPrefix: input.commandPrefix })
+    await bots.syncSmartSettings(bot.id)
+    return json(res, 200, { ok: true, settings })
   }
   if (req.method === 'POST' && url.pathname === '/api/bots/create') {
     const user = requireUser(req)
     const input = await body(req)
+    if (typeof db.getRuntimeSettings === 'function' && !db.getRuntimeSettings().botCreationEnabled) {
+      const err = new Error('平台暂时停止创建新 Bot。')
+      err.status = 403
+      throw err
+    }
     const account = db.getMicrosoftAccount(input.accountId)
     if (!account || account.userId !== user.id) throw new Error('请选择自己的微软账号。')
     if (account.authState !== 'authorized') throw new Error('微软账号还没有完成 OAuth2 授权。')
-    input.templateVariables = validatedTemplateValues(input.templateId, input.templateVariables)
     const bot = db.createBot(user.id, input)
     return json(res, 200, { ok: true, bot: bots.publicBot(bot) })
-  }
-  if (req.method === 'POST' && url.pathname === '/api/bots/variables') {
-    const user = requireUser(req)
-    const input = await body(req)
-    const bot = botForUser(input.id, user)
-    const values = validatedTemplateValues(bot.templateId, input.templateVariables)
-    db.updateBotVariables(bot.id, values)
-    return json(res, 200, { ok: true, bot: bots.publicBot(db.getBot(bot.id)) })
   }
   if (req.method === 'POST' && url.pathname === '/api/bots/schedule') {
     const user = requireUser(req)
     const input = await body(req)
     botForUser(input.id, user)
-    const bot = bots.setSchedule(input.id, Boolean(input.enabled), String(input.cron || ''), user.role === 'admin' ? null : user.id)
-    return json(res, 200, { ok: true, bot })
+    return json(res, 200, { ok: true, bot: await bots.setSchedule(input.id, Boolean(input.enabled), String(input.cron || ''), user.role === 'admin' ? null : user.id) })
   }
   if (req.method === 'POST' && ['/api/bots/start', '/api/bots/stop', '/api/bots/delete'].includes(url.pathname)) {
     const user = requireUser(req)
@@ -283,6 +443,18 @@ async function api (req, res, url) {
     requireAdmin(req)
     return json(res, 200, { ok: true, rows: db.listUsers() })
   }
+  if (req.method === 'GET' && url.pathname === '/api/admin/roles') {
+    requireAdmin(req)
+    return json(res, 200, { ok: true, rows: db.listPlatformAdmins(), rootUsername: config.cloudStoreAdminUsername })
+  }
+  if (req.method === 'POST' && url.pathname === '/api/admin/roles') {
+    const admin = requireAdmin(req)
+    const input = await body(req)
+    const result = input.action === 'remove'
+      ? db.removePlatformAdmin(input.userId, { actorUserId: admin.id, rootUsername: config.cloudStoreAdminUsername })
+      : db.addPlatformAdmin(input.username)
+    return json(res, 200, { ok: true, user: result, rows: db.listPlatformAdmins() })
+  }
   if (req.method === 'GET' && url.pathname === '/api/admin/overview') {
     requireAdmin(req)
     return json(res, 200, { ok: true, ...db.adminOverview() })
@@ -293,107 +465,85 @@ async function api (req, res, url) {
     const balance = db.adjustMomoc(input.userId, Number(input.amount), 'admin_adjust', `admin=${admin.username}; ${String(input.note || '')}`)
     return json(res, 200, { ok: true, balance })
   }
-  if (req.method === 'GET' && url.pathname === '/api/admin/templates') {
-    requireAdmin(req)
-    return json(res, 200, { ok: true, rows: db.listTemplates(true).map(row => publicTemplate(row, true)) })
+  if (req.method === 'POST' && url.pathname === '/api/admin/password') {
+    const admin = requireAdmin(req)
+    const input = await body(req)
+    db.setUserPassword(input.userId, input.password)
+    const selfReset = input.userId === admin.id
+    return json(res, 200, { ok: true, selfReset })
   }
-  if (req.method === 'GET' && url.pathname === '/api/admin/template-contract') {
+  if (req.method === 'GET' && url.pathname === '/api/admin/modules') {
     requireAdmin(req)
-    const contract = fs.readFileSync(path.join(config.root, 'TEMPLATE_CONTRACT.md'), 'utf8')
-    return json(res, 200, { ok: true, contract })
+    return json(res, 200, { ok: true, rows: db.listFeatureModules(true) })
   }
-  if (req.method === 'GET' && url.pathname === '/api/admin/template-files') {
-    requireAdmin(req)
-    const { root } = templateProject(url.searchParams.get('id'))
-    const file = url.searchParams.get('path')
-    if (file !== null) return json(res, 200, { ok: true, file: readProjectFile(root, file) })
-    return json(res, 200, { ok: true, rows: listProjectFiles(root) })
-  }
-  if (req.method === 'POST' && url.pathname === '/api/admin/templates/save') {
-    requireAdmin(req)
-    const input = await body(req, 40 * 1024 * 1024)
-    const template = installTemplateProject(input)
-    for (const bot of db.listBots().filter(row => row.templateId === template.id)) bots.syncSchedule(bot.id)
-    return json(res, 200, { ok: true, template })
-  }
-  if (req.method === 'POST' && url.pathname === '/api/admin/templates/delete') {
+  if (req.method === 'POST' && url.pathname === '/api/admin/modules/save') {
     requireAdmin(req)
     const input = await body(req)
-    const template = db.listTemplates(true).find(row => row.id === input.id)
-    const changed = db.deleteTemplate(input.id)
-    if (changed && template?.projectPath && input.id !== 'idle-login') {
-      const resolved = path.resolve(template.projectPath)
-      const root = path.resolve(config.root, 'templates') + path.sep
-      if (resolved.startsWith(root)) fs.rmSync(resolved, { recursive: true, force: true })
-    }
-    return json(res, 200, { ok: true, changed })
+    const feature = db.saveFeatureModule(input)
+    await Promise.all(db.listBots().filter(bot => db.listBotModules(bot.id).some(row => row.id === feature.id)).map(bot => bots.syncModules(bot.id)))
+    return json(res, 200, { ok: true, module: feature })
   }
-  if (req.method === 'POST' && url.pathname === '/api/admin/template-files/save') {
+  if (req.method === 'GET' && url.pathname === '/api/admin/settings') {
+    requireAdmin(req)
+    return json(res, 200, { ok: true, ...db.getModePrices(), ...db.getRuntimeSettings(), registrationEnabled: db.getRegistrationEnabled() })
+  }
+  if (req.method === 'POST' && url.pathname === '/api/admin/settings') {
+    requireAdmin(req)
+    const input = await body(req)
+    const prices = db.setModePrices(input)
+    if (Object.prototype.hasOwnProperty.call(input, 'registrationEnabled')) db.setRegistrationEnabled(Boolean(input.registrationEnabled))
+    const runtime = db.setRuntimeSettings(input)
+    return json(res, 200, { ok: true, ...prices, ...runtime, registrationEnabled: db.getRegistrationEnabled() })
+  }
+  if (req.method === 'POST' && url.pathname === '/api/admin/modules/delete') {
+    requireAdmin(req)
+    const input = await body(req)
+    db.deleteFeatureModule(input.id)
+    return json(res, 200, { ok: true })
+  }
+  if (req.method === 'GET' && url.pathname === '/api/admin/platform-files') {
+    requireAdmin(req)
+    const file = url.searchParams.get('path')
+    if (file !== null) {
+      const entry = platformCodeTarget(file)
+      return json(res, 200, { ok: true, file: readProjectFile(config.root, entry.relative) })
+    }
+    return json(res, 200, { ok: true, rows: platformCodeRows() })
+  }
+  if (req.method === 'POST' && url.pathname === '/api/admin/platform-files/save') {
     requireAdmin(req)
     const input = await body(req, maxEditableFileBytes + 64 * 1024)
-    const { root } = templateProject(input.id)
-    const { relative, target } = projectTarget(root, input.path)
+    const entry = platformCodeTarget(input.path)
     const content = String(input.content ?? '')
-    if (Buffer.byteLength(content, 'utf8') > maxEditableFileBytes) throw new Error('文件超过 1 MB，不能保存。')
-    if (relative === 'package.json') {
-      const packageJson = JSON.parse(content)
-      normalizeDefinitions(packageJson.botPlatform?.variables)
+    if (Buffer.byteLength(content, 'utf8') > maxEditableFileBytes) throw new Error('文件超过 1 MB。')
+    const temp = `${entry.target}.tmp-${process.pid}-${Date.now()}`
+    try {
+      fs.writeFileSync(temp, content, 'utf8')
+      fs.renameSync(temp, entry.target)
+    } finally {
+      if (fs.existsSync(temp)) fs.rmSync(temp, { force: true })
     }
-    const parent = path.dirname(target)
-    projectTarget(root, path.relative(root, parent).replace(/\\/g, '/'), true)
-    if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) throw new Error('文件所在目录不存在。')
-    fs.writeFileSync(target, content, 'utf8')
-    return json(res, 200, { ok: true, file: { path: relative, size: Buffer.byteLength(content, 'utf8') } })
-  }
-  if (req.method === 'POST' && url.pathname === '/api/admin/template-files/create') {
-    requireAdmin(req)
-    const input = await body(req)
-    const { root } = templateProject(input.id)
-    const { relative, target } = projectTarget(root, input.path)
-    if (fs.existsSync(target)) throw new Error('同名文件或目录已经存在。')
-    const parent = path.dirname(target)
-    projectTarget(root, path.relative(root, parent).replace(/\\/g, '/'), true)
-    if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) throw new Error('上级目录不存在。')
-    if (input.kind === 'directory') fs.mkdirSync(target)
-    else fs.writeFileSync(target, '', { encoding: 'utf8', flag: 'wx' })
-    return json(res, 200, { ok: true, entry: { path: relative, type: input.kind === 'directory' ? 'directory' : 'file' } })
-  }
-  if (req.method === 'POST' && url.pathname === '/api/admin/template-files/rename') {
-    requireAdmin(req)
-    const input = await body(req)
-    const { root } = templateProject(input.id)
-    const source = projectTarget(root, input.path)
-    const destination = projectTarget(root, input.nextPath)
-    if (source.relative === 'package.json') throw new Error('package.json 不能改名。')
-    if (!fs.existsSync(source.target)) throw new Error('要重命名的文件不存在。')
-    if (fs.existsSync(destination.target)) throw new Error('目标名称已经存在。')
-    const parent = path.dirname(destination.target)
-    projectTarget(root, path.relative(root, parent).replace(/\\/g, '/'), true)
-    if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) throw new Error('目标目录不存在。')
-    fs.renameSync(source.target, destination.target)
-    return json(res, 200, { ok: true })
-  }
-  if (req.method === 'POST' && url.pathname === '/api/admin/template-files/delete') {
-    requireAdmin(req)
-    const input = await body(req)
-    const { root } = templateProject(input.id)
-    const entry = projectTarget(root, input.path)
-    if (entry.relative === 'package.json') throw new Error('package.json 不能删除。')
-    if (!fs.existsSync(entry.target)) throw new Error('要删除的文件不存在。')
-    fs.rmSync(entry.target, { recursive: true, force: false })
-    return json(res, 200, { ok: true })
-  }
-  if (req.method === 'POST' && url.pathname === '/api/admin/template-files/install') {
-    requireAdmin(req)
-    const input = await body(req)
-    const { root } = templateProject(input.id)
-    const install = spawnSync('npm', ['install', '--omit=dev'], { cwd: root, shell: true, encoding: 'utf8', timeout: 300000 })
-    if (install.status !== 0) throw new Error(`依赖安装失败：${install.stderr || install.stdout}`)
-    return json(res, 200, { ok: true, output: String(install.stdout || '').slice(-4000) })
+    return json(res, 200, { ok: true, effective: 'next_start', runningBotsUnaffected: true })
   }
   const err = new Error('Not found')
   err.status = 404
   throw err
+}
+
+function cloudStoreLogin (res, url) {
+  const identity = verifyCloudStoreToken(url.searchParams.get('token'), cloudStoreSsoSecret())
+  const now = Date.now()
+  for (const [nonce, expiresAt] of usedCloudStoreNonces) if (expiresAt <= now) usedCloudStoreNonces.delete(nonce)
+  if (usedCloudStoreNonces.has(identity.nonce)) { const err = new Error('云仓库登录凭证已经使用。'); err.status = 401; throw err }
+  usedCloudStoreNonces.set(identity.nonce, identity.expiresAt)
+  const user = db.upsertCloudStoreUser(identity.externalId, identity.username, config.cloudStoreAdminUsername)
+  const session = db.createSession(user.id)
+  res.writeHead(302, {
+    location: '/',
+    'cache-control': 'no-store',
+    'set-cookie': sessionCookie(session.token, 'Lax')
+  })
+  res.end()
 }
 
 function staticFile (res, pathname) {
@@ -408,22 +558,38 @@ function staticFile (res, pathname) {
 }
 
 const server = http.createServer(async (req, res) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('X-Frame-Options', 'DENY')
+  res.setHeader('Referrer-Policy', 'no-referrer')
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
   const url = new URL(req.url, 'http://localhost')
   try {
+    if (req.method === 'GET' && url.pathname === '/auth/cloud-store') return cloudStoreLogin(res, url)
     if (url.pathname.startsWith('/api/')) return await api(req, res, url)
     if (!staticFile(res, url.pathname)) { res.writeHead(404); res.end('Not found') }
   } catch (err) { error(res, err) }
 })
 
-server.listen(config.port, config.host, () => {
-  console.log(`Momo Bot Platform: http://${config.host}:${config.port}/`)
-  console.log('Billing: template-specific hourly or successful-run pricing')
-  if (config.generatedAdminPassword) console.log(`Bootstrap admin: ${config.bootstrapAdminUsername} / ${config.bootstrapAdminPassword}`)
-  bots.startDesiredBots()
+async function startServer () {
+  await bots.ensureStarted()
+  server.listen(config.port, config.host, () => {
+    console.log(`Bot 自托管平台: http://${config.host}:${config.port}/`)
+    console.log(`Bot 守护进程: 127.0.0.1:${config.supervisorPort}`)
+    const prices = db.getModePrices()
+    console.log(`Billing: smart ${prices.smartHourlyPrice} momoc/1h; signin ${prices.signinOncePrice} momoc/success`)
+  })
+}
+
+startServer().catch(error => {
+  console.error(error)
+  db.close()
+  process.exit(1)
 })
 
-process.on('SIGINT', () => {
-  bots.shutdown()
+function shutdownPlatform () {
   server.close(() => { db.close(); process.exit(0) })
   setTimeout(() => process.exit(0), 3000).unref()
-})
+}
+
+process.on('SIGINT', shutdownPlatform)
+process.on('SIGTERM', shutdownPlatform)

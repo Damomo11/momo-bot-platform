@@ -3,14 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Momo Bot Platform</title>
+  <title>Bot 自托管平台</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <section id="auth" class="auth-shell">
     <div class="auth-panel">
-      <div class="brand"><span>Momo</span> Bot</div>
-      <div class="segmented"><button data-auth="login" class="active">登录</button><button data-auth="register">注册</button></div>
+      <div class="brand"><span>Bot</span> 自托管平台</div>
+      <div id="authModeTabs" class="segmented"><button data-auth="login" class="active">登录</button><button id="authRegisterTab" data-auth="register">注册</button></div>
+      <p id="authSsoHint" class="muted hidden">本地注册已关闭，请从云仓库的“Bot 自托管平台”入口进入。</p>
       <label>用户名<input id="authUser" autocomplete="username"></label>
       <label>密码<input id="authPassword" type="password" autocomplete="current-password"></label>
       <button id="authSubmit" class="solid">登录</button>
@@ -20,24 +21,33 @@
 
   <div id="app" class="app hidden">
     <aside>
-      <div class="brand"><span>Momo</span> Bot</div>
+      <div class="brand"><span>Bot</span> 自托管平台</div>
       <nav>
         <button data-view="accounts" class="navbtn">♙　微软账号</button>
         <button data-view="bots" class="navbtn active">▦　我的机器人</button>
+        <button data-view="tasks" class="navbtn">☷　自定义任务</button>
+        <button data-view="messages" class="navbtn">✉　消息文本</button>
+        <button data-view="help" class="navbtn">?　命令帮助</button>
         <button data-view="ledger" class="navbtn">▤　momoc 明细</button>
-        <button data-view="overview" class="navbtn admin-only hidden">▥　运营总览</button>
-        <button data-view="users" class="navbtn admin-only hidden">☺　用户管理</button>
-        <button data-view="templates" class="navbtn admin-only hidden">▣　代码模板</button>
+        <button data-view="management" class="navbtn admin-only hidden">▣　管理</button>
       </nav>
       <div class="userbox">
         <div><span class="dot"></span><strong id="identity">-</strong></div>
         <div id="balance" class="balance">0 momoc</div>
+        <button id="changePassword" class="user-link">修改密码</button>
         <button id="logout" class="ghost">退出登录</button>
       </div>
     </aside>
 
     <main>
       <div class="hero">欢迎回来，<strong id="heroName">-</strong>。当前余额 <strong id="heroBalance">0</strong> momoc。</div>
+      <div id="managementNav" class="management-nav hidden admin-only">
+        <button data-management-tab="overview" class="active">运营总览</button>
+        <button data-management-tab="managedBots">机器人管理</button>
+        <button data-management-tab="users">用户管理</button>
+        <button data-management-tab="admins">平台管理员</button>
+        <button data-management-tab="code">平台设置与代码</button>
+      </div>
 
       <section id="accountsView" class="view hidden">
         <div class="toolbar"><div><h1>微软账号</h1><p id="accountSummary">0 个账号</p></div><button id="refreshAccounts">刷新</button></div>
@@ -58,7 +68,9 @@
             <label>服务器地址<input id="botHost" value="mc.zenoxs.cn"></label>
             <label>端口<input id="botPort" type="number" value="25565"></label>
             <label>游戏版本<input id="botVersion" value="1.21.11"></label>
-            <label>代码模板<select id="botTemplate"></select><span id="selectedTemplatePrice" class="price-hint"></span></label>
+            <label>Bot 模式<select id="botMode"><option value="smart">智能 Bot</option><option value="signin">签到 Bot</option></select><span id="modePriceHint" class="price-hint"></span></label>
+            <label id="botPrefixField">命令前缀<input id="botCommandPrefix" autocomplete="off" placeholder="例如 @、==、bot@"><span class="muted">全平台唯一，必须以特殊符号结尾；留空时使用 Bot 游戏名</span></label>
+            <select id="botTemplate" class="hidden"></select><span id="basePriceHint" class="hidden"></span><div id="botModules" class="hidden"></div>
             <div id="botVariableBlock" class="variable-block hidden">
               <div class="variable-title">模板变量</div>
               <div id="botVariables" class="variable-grid"></div>
@@ -67,6 +79,81 @@
           <div class="panel-actions"><button id="createBot" class="solid">创建机器人</button></div>
         </section>
         <div id="botsTable" class="panel table-wrap"></div>
+      </section>
+
+      <section id="helpView" class="view hidden">
+        <div class="toolbar"><div><h1>智能 Bot 命令</h1><p>每条命令前都要加自定义前缀或 Bot 游戏名</p></div></div>
+        <div class="help-note"><div class="help-rule"><strong>重启提示</strong><span>除“定时灾厄之瓶”外，定时放置和自定义任务的定时状态都会在 Bot 程序重启后丢失，需要重新开启。</span></div></div>
+        <div class="help-note"><div class="help-rule"><strong>使用规则</strong><span>命令前加自己设置的前缀，或直接使用 Bot 游戏名。</span></div><div class="help-examples"><code>@near Steve</code><code>==上车</code><code>NanKinz2查白 Alex</code></div></div>
+
+        <section class="command-group command-public">
+          <div class="command-group-head"><div><span>普通用户</span><h2>查询命令</h2></div><p>除黑名单玩家外均可使用</p></div>
+          <div class="command-list">
+            <div class="command-row"><code>查白 玩家名</code><span>查询玩家是否在白名单</span></div>
+            <div class="command-row"><code>查黑 玩家名</code><span>查询玩家是否在黑名单</span></div>
+            <div class="command-row"><code>查超管 玩家名</code><span>查询玩家是否为超管</span></div>
+            <div class="command-row"><code>开盒 玩家名</code><span>查询玩家的 X/Z 坐标和所在维度</span></div>
+            <div class="command-row"><code>near [玩家名]</code><span>查询发送者或指定玩家同维度内最近的 3 名玩家</span></div>
+            <div class="command-row"><code>版本</code><span>显示当前运行中的智能 Bot 版本</span></div>
+          </div>
+        </section>
+
+        <section class="command-group command-whitelist">
+          <div class="command-group-head"><div><span>白名单用户</span><h2>Bot 操作</h2></div><p>同时拥有全部查询命令</p></div>
+          <div class="command-list">
+            <div class="command-row"><code>上车</code><span>乘坐附近 6 格内最近的矿车</span></div>
+            <div class="command-row"><code>下车</code><span>离开当前乘坐的载具</span></div>
+            <div class="command-row"><code>清空</code><span>丢出背包和快捷栏中的全部物品</span></div>
+            <div class="command-row"><code>切换 1-9</code><span>切换 Bot 当前快捷栏位置</span></div>
+            <div class="command-row"><code>定时灾厄之瓶 开|关</code><span>开启时立即饮用一瓶，成功后每 31 分钟执行；不带参数可查状态</span></div>
+            <div class="command-row"><code>右键 玩家名</code><span>右键交互指定实体玩家</span></div>
+            <div class="command-row"><code>右键 x y z</code><span>与指定坐标的方块交互</span></div>
+            <div class="command-row"><code>放置 x y z</code><span>把主手方块放到指定坐标</span></div>
+            <div class="command-row"><code>定时放置 x y z ngt</code><span>每隔 ngt 游戏刻放置；使用“定时放置 关”停止</span></div>
+            <div class="command-row"><code>定时任务 任务名 5</code><span>每隔 5 游戏刻执行自定义任务；数字可替换，使用“定时任务 任务名 关”停止</span></div>
+            <div class="command-row"><code>锁定 备注</code><span>普通锁定 Bot 并记录原因</span></div>
+            <div class="command-row"><code>解锁</code><span>解除普通锁定</span></div>
+            <div class="command-row"><code>状态</code><span>查看当前锁定状态</span></div>
+            <div class="command-row"><code>指令 &lt;服务器指令&gt;</code><span>让 Bot 执行允许转发的服务器指令</span></div>
+          </div>
+        </section>
+
+        <section class="command-group command-admin">
+          <div class="command-group-head"><div><span>超管用户</span><h2>权限与维护</h2></div><p>同时拥有普通用户和白名单用户的全部命令</p></div>
+          <div class="command-list">
+            <div class="command-row"><code>加白|去白 玩家名</code><span>添加或移除永久白名单</span></div>
+            <div class="command-row"><code>加黑|去黑 玩家名</code><span>添加或移除永久黑名单</span></div>
+            <div class="command-row"><code>临时加白 玩家名 分钟</code><span>添加限时白名单</span></div>
+            <div class="command-row"><code>临时加黑 玩家名 分钟</code><span>添加限时黑名单</span></div>
+            <div class="command-row"><code>加超管|去超管 玩家名</code><span>添加或移除超管</span></div>
+            <div class="command-row"><code>超级锁定 备注</code><span>禁止所有非超管操作</span></div>
+            <div class="command-row"><code>超级解锁</code><span>同时解除超级锁定和普通锁定</span></div>
+            <div class="command-row"><code>重启</code><span>重启当前智能 Bot</span></div>
+          </div>
+        </section>
+      </section>
+
+      <section id="tasksView" class="view hidden">
+        <div class="toolbar"><div><h1>自定义任务</h1><p>按顺序组合平台命令；白名单玩家可直接输入任务名执行一次，也可开启定时执行</p></div><button id="refreshTasks">刷新</button></div>
+        <div class="help-note"><div class="help-rule"><strong>重启提示</strong><span>任务内容会保留，但任务的定时状态会在 Bot 程序重启后丢失，需要重新开启。</span></div></div>
+        <section class="panel create-panel compact-editor">
+          <div class="compact-fields"><label>智能 Bot<select id="taskBot"></select></label><label>任务名<input id="taskName" maxlength="32" placeholder="例如 种大云杉"></label></div>
+          <div class="section-head"><div><h2>任务步骤</h2><p class="muted">只能选择平台支持的命令，等待会自动出现在两个命令之间。</p></div><button id="addTaskStep" type="button">添加命令</button></div>
+          <div id="taskSteps" class="task-step-editor"></div><p id="taskError" class="error" role="alert"></p>
+          <div class="panel-actions"><button id="saveTask" class="solid">保存任务</button></div>
+        </section>
+        <div id="taskRows" class="panel table-wrap"></div>
+      </section>
+
+      <section id="messagesView" class="view hidden">
+        <div class="toolbar"><div><h1>消息文本</h1><p>设置作用于你账号下的全部智能 Bot；输入框留空时不发送该消息</p></div><button id="refreshMessages">刷新</button></div>
+        <section class="panel create-panel compact-editor"><div id="messageFields" class="message-field-list"></div><p id="messageError" class="error" role="alert"></p><div class="panel-actions"><button id="resetMessages" type="button">恢复默认值</button><button id="saveMessages" class="solid">保存并热更新</button></div></section>
+      </section>
+
+      <section id="modulesView" class="view hidden">
+        <div class="toolbar"><div><h1>功能模块</h1><p id="moduleSummary">0 个模块</p></div><div class="actions"><button id="refreshModules">刷新</button><button id="newModule" class="primary">新建模块</button></div></div>
+        <section class="panel create-panel"><div class="form-grid"><label>基础挂机价格（momoc / 1h）<input id="baseHourlyPrice" type="number" min="0" step="0.000001"></label><div class="panel-actions"><button id="saveBasePrice" class="primary">保存基础价格</button></div></div></section>
+        <div class="module-workspace panel"><div id="moduleList" class="template-list"></div><div class="module-editor"><input id="moduleId" type="hidden"><div id="moduleMetadata" class="module-metadata"></div><div class="form-grid"><input id="moduleName" class="hidden"><input id="moduleDescription" class="hidden"><select id="moduleBillingMode" class="hidden"><option value="hourly"></option><option value="once"></option></select><input id="modulePrice" class="hidden"><textarea id="moduleVariables" class="hidden"></textarea><label class="wide">模块代码<textarea id="moduleSource" class="module-source" spellcheck="false"></textarea></label></div><div class="panel-actions"><button id="saveModule" class="primary">解析并保存模块</button><button id="deleteModule" class="danger">删除模块</button></div></div></div>
       </section>
 
       <section id="ledgerView" class="view hidden">
@@ -79,6 +166,15 @@
         <div id="usersTable" class="panel table-wrap"></div>
       </section>
 
+      <section id="adminsView" class="view hidden">
+        <div class="toolbar"><div><h1>平台管理员</h1><p>管理员必须先从云仓库进入过平台</p></div><button id="refreshPlatformAdmins">刷新</button></div>
+        <section class="panel create-panel">
+          <div class="section-head"><h2>新增管理员</h2></div>
+          <div class="account-create"><label>玩家 ID<input id="platformAdminUsername" autocomplete="off" placeholder="例如 PlayerOne"></label><button id="addPlatformAdmin" class="solid">添加管理员</button></div>
+        </section>
+        <div id="platformAdminsTable" class="panel table-wrap"></div>
+      </section>
+
       <section id="overviewView" class="view hidden">
         <div class="toolbar"><div><h1>运营总览</h1><p>授权、机器人与消费数据</p></div><button id="refreshOverview">刷新</button></div>
         <div id="overviewStats" class="overview-stats"></div>
@@ -87,7 +183,7 @@
           <div id="overviewAccounts" class="panel table-wrap"></div>
         </section>
         <section class="overview-section">
-          <div class="section-head"><h2>已有 Bot 与模板</h2></div>
+          <div class="section-head"><h2>已有 Bot 与功能模块</h2></div>
           <div id="overviewBots" class="panel table-wrap"></div>
         </section>
         <section class="overview-section">
@@ -96,7 +192,19 @@
         </section>
       </section>
 
-      <section id="templatesView" class="view hidden">
+      <section id="managedBotsView" class="view hidden">
+        <div class="toolbar"><div><h1>机器人管理</h1><p id="managedBotSummary">0 个机器人</p></div><button id="refreshManagedBots">刷新</button></div>
+        <section class="managed-bot-section">
+          <div class="managed-bot-heading"><div><span class="managed-bot-dot running"></span><h2>运行中</h2></div><strong id="managedRunningCount">0</strong></div>
+          <div id="managedRunningBots" class="managed-bot-grid"></div>
+        </section>
+        <section class="managed-bot-section">
+          <div class="managed-bot-heading"><div><span class="managed-bot-dot stopped"></span><h2>已停止</h2></div><strong id="managedStoppedCount">0</strong></div>
+          <div id="managedStoppedBots" class="managed-bot-grid"></div>
+        </section>
+      </section>
+
+      <section id="templatesView" class="view hidden" aria-hidden="true">
         <div class="toolbar">
           <div><h1>代码模板</h1><p id="templateSummary">0 个模板</p></div>
           <div class="actions"><button id="refreshTemplates">刷新</button><button id="newTemplate" class="primary">新建模板</button></div>
@@ -145,6 +253,8 @@
           </div>
         </div>
       </section>
+
+      <section id="codeView" class="view hidden"><div class="toolbar"><div><h1>Bot 代码</h1><p>智能 Bot 与签到 Bot 两套固定代码</p></div><button id="refreshPlatformFiles">刷新</button></div><section class="panel create-panel"><div class="section-head"><h2>平台设置</h2></div><div class="form-grid"><label>智能 Bot（momoc / 1h）<input id="smartHourlyPrice" type="number" min="0" step="0.000001"></label><label>签到 Bot（momoc / 次）<input id="signinOncePrice" type="number" min="0" step="0.000001"></label><label>智能 Bot 最大同时运行数（0 = 不限制）<input id="maxRunningBots" type="number" min="0" max="100000" step="1"></label><label class="variable-check"><input id="botCreationEnabled" type="checkbox"> 允许创建新 Bot</label><label class="variable-check"><input id="registrationEnabled" type="checkbox"> 允许本地用户名密码注册</label></div><p class="muted">保存平台代码不会重启或断开当前挂机 Bot；新代码从下一次启动的 Bot 起生效。</p><div class="panel-actions"><button id="saveModePrices" class="primary">保存设置</button></div></section><div class="template-workspace panel"><div id="platformFileList" class="file-tree"></div><div class="code-editor"><div class="editor-head"><code id="platformFilePath">选择文件</code><button id="savePlatformFile" class="solid" disabled>保存文件</button></div><textarea id="platformFileContent" spellcheck="false" disabled></textarea></div></div></section>
     </main>
   </div>
 
@@ -157,6 +267,16 @@
       <div class="dialog-actions"><button id="cancelFileDialog">取消</button><button id="confirmFileDialog" class="solid">确认</button></div>
     </div>
   </div>
+  <div id="passwordDialog" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="dialog">
+      <div class="dialog-head"><strong>修改密码</strong><button id="closePasswordDialog" class="icon-button" title="关闭">×</button></div>
+      <label>当前密码<input id="currentPassword" type="password" autocomplete="current-password"></label>
+      <label>新密码<input id="newPassword" type="password" autocomplete="new-password" placeholder="8-128 个字符"></label>
+      <label>确认新密码<input id="confirmPassword" type="password" autocomplete="new-password"></label>
+      <p id="passwordError" class="error"></p>
+      <div class="dialog-actions"><button id="cancelPasswordDialog">取消</button><button id="savePassword" class="solid">修改密码</button></div>
+    </div>
+  </div>
   <div id="botVariableDialog" class="modal hidden" role="dialog" aria-modal="true">
     <div class="dialog variable-dialog">
       <div class="dialog-head"><strong id="botVariableTitle">机器人变量</strong><button id="closeBotVariableDialog" class="icon-button" title="关闭">×</button></div>
@@ -165,7 +285,7 @@
       <div class="dialog-actions"><button id="cancelBotVariableDialog">取消</button><button id="saveBotVariables" class="solid">保存变量</button></div>
     </div>
   </div>
-  <div id="scheduleDialog" class="modal hidden" role="dialog" aria-modal="true">
+  <div id="scheduleDialog" class="modal hidden" role="dialog" aria-modal="true" aria-hidden="true">
     <div class="dialog">
       <div class="dialog-head"><strong id="scheduleTitle">定时运行</strong><button id="closeScheduleDialog" class="icon-button" title="关闭">×</button></div>
       <label class="variable-check"><input id="scheduleEnabled" type="checkbox"> 启用计划</label>
@@ -175,7 +295,27 @@
       <div class="dialog-actions"><button id="cancelScheduleDialog">取消</button><button id="saveSchedule" class="solid">保存计划</button></div>
     </div>
   </div>
+  <div id="smartPermissionDialog" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="dialog permission-dialog">
+      <div class="dialog-head"><strong id="smartPermissionTitle">智能 Bot 权限</strong><button id="closeSmartPermissionDialog" class="icon-button" title="关闭">×</button></div>
+      <div id="smartLockState" class="muted"></div>
+      <div class="prefix-form">
+        <label>自定义命令前缀<input id="smartCommandPrefix" autocomplete="off" placeholder="例如 @、==、bot@；留空使用 Bot 名"></label>
+        <button id="saveSmartCommandPrefix" class="primary">保存前缀</button>
+      </div>
+      <div class="permission-form">
+        <label>玩家名<input id="smartPermissionPlayer" autocomplete="off" maxlength="32"></label>
+        <label>权限<select id="smartPermissionRole"><option value="whitelist">白名单</option><option value="admin">超管</option><option value="blacklist">黑名单</option></select></label>
+        <label>临时分钟数<input id="smartPermissionMinutes" type="number" min="1" max="525600" placeholder="留空为永久"></label>
+        <button id="addSmartPermission" class="solid">添加</button>
+      </div>
+      <div id="smartPermissionRows" class="table-wrap permission-rows"></div>
+      <p id="smartPermissionError" class="error"></p>
+      <div class="dialog-actions"><button id="closeSmartPermissionDialogBottom">关闭</button></div>
+    </div>
+  </div>
   <div id="toast" class="toast hidden"></div>
+  <div id="botModuleDialog" class="modal hidden" role="dialog" aria-modal="true"><div class="dialog variable-dialog"><div class="dialog-head"><strong>机器人功能模块</strong><button id="closeBotModuleDialog" class="icon-button" title="关闭">×</button></div><div id="editBotModules" class="module-select-grid"></div><p class="muted">运行中的机器人会立即热加载或卸载模块，不需要重新登录服务器。</p><div class="dialog-actions"><button id="cancelBotModuleDialog">取消</button><button id="saveBotModules" class="solid">热更新模块</button></div></div></div>
   <script src="/app.js"></script>
 </body>
 </html>

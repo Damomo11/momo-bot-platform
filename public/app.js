@@ -3,14 +3,24 @@ const state = {
   user: null,
   authMode: 'login',
   view: 'bots',
+  managementTab: 'overview',
   templates: [],
+  modules: [],
+  baseHourlyPrice: 0,
+  botSettings: { commandPrefix: '!', whitelist: [] },
   accounts: [],
   bots: [],
+  managedBots: [],
   editingBotId: '',
   editingScheduleBotId: '',
+  editingPermissionBotId: '',
+  editingTaskBotId: '',
   contractLoaded: false,
   templateRows: [],
   templateId: '',
+  moduleId: '',
+  moduleAdminRows: [],
+  platformFilePath: '',
   fileRows: [],
   selectedEntry: null,
   activeFile: '',
@@ -25,7 +35,50 @@ const fmt = value => value ? new Date(String(value).replace(' ', 'T') + 'Z').toL
 const formatMomoc = value => Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 6 })
 const balanceText = user => `${formatMomoc(user?.momoc)} momoc${Number(user?.reservedMomoc || 0) > 0 ? ` · 已预留 ${formatMomoc(user.reservedMomoc)}` : ''}`
 const templatePrice = template => `${formatMomoc(template?.priceMomoc)} momoc / ${template?.billingMode === 'once' ? '次' : '1h'}`
-const kindLabel = value => ({ bot_usage: '机器人运行', bot_minute: '机器人运行', bot_hourly: '机器人运行', bot_once: '按次执行', admin_adjust: '管理员调整' })[value] || value
+const commandUsage = command => `${state.botSettings?.commandPrefix || '!'}${String(command || '').replace(/^\s*[!@=]+/, '')}`
+const kindLabel = value => ({ bot_usage: '机器人基础运行', bot_minute: '机器人基础运行', bot_hourly: '机器人基础运行', bot_once: '模板按次执行', module_hourly: '功能模块运行', module_once: '功能模块执行', admin_adjust: '管理员调整' })[value] || value
+const TASK_COMMANDS = ['上车', '下车', '清空', '切换', '放置', '右键', '指令']
+const MESSAGE_DEFAULTS = {
+  permissionUsage: '正确格式: {command} 玩家名', permissionResult: '玩家 {player} {status}{label}中{remaining}',
+  openBoxUsage: '正确格式: 开盒 玩家名', openBoxSuccess: '开盒成功！玩家 {player} 的坐标为 ({x},{z}) {dimension}', openBoxFailure: '开盒失败！未找到该玩家或地图服务暂时不可用。',
+  nearUsage: '正确格式: near [玩家名]', nearSuccess: '{players}', nearEmpty: '附近没有可显示的玩家。', nearFailure: 'near 查询失败！未找到玩家 {player} 或地图服务暂时不可用。',
+  mountAlready: '机器人已经在载具上。', mountMissing: '附近 6 格内没有可乘坐的矿车。', mountSuccess: '机器人已上车。', mountFailure: '上车失败，请确认矿车可乘坐且距离足够近。',
+  dismountMissing: '机器人当前没有乘坐矿车。', dismountSuccess: '机器人已下车。', dismountFailure: '下车失败，请稍后重试。',
+  clearEmpty: '机器人背包已经是空的。', clearSuccess: '背包已清空，共丢出 {stacks} 组、{items} 个物品。', clearFailure: '清空背包中断，已丢出 {stacks} 组。原因: {reason}',
+  switchUsage: '正确格式: 切换 1-9', switchSuccess: '快捷栏已切换到第 {slot} 格。',
+  ominousUsage: '正确格式: 定时灾厄之瓶 开|关', ominousEnabled: '定时灾厄之瓶已开启，将立即饮用一瓶；成功后每 31 分钟执行一次。', ominousDisabled: '定时灾厄之瓶已关闭。', ominousStatusOn: '定时灾厄之瓶: 开，下次执行: {nextTime}', ominousStatusOff: '定时灾厄之瓶: 关。',
+  periodicRightClickUsage: '正确格式: 定时放置 x y z ngt，例如 定时放置 100 64 200 20。', periodicRightClickEnabled: '定时放置已开启: ({x},{y},{z})，每 {ticks} 游戏刻执行。', periodicRightClickDisabled: '定时放置已关闭。', periodicRightClickStatusOff: '定时放置: 关。', periodicRightClickStatusOn: '定时放置: 开，坐标 ({x},{y},{z})，间隔 {ticks} 游戏刻。',
+  rightClickUsage: '正确格式: 右键 玩家名，或 右键 x y z。', rightClickSuccess: '右键交互成功。', rightClickFailure: '右键交互失败，请确认目标存在且在交互距离内。', placeUsage: '正确格式: 放置 x y z。', placeSuccess: '放置成功。', placeFailure: '{reason}',
+  taskUsage: '正确格式: 定时任务 任务名 5；关闭时使用 定时任务 任务名 关。', taskScheduled: '定时任务 {task} 已开启，每 {ticks} 游戏刻执行一次。', taskStopped: '定时任务 {task} 已关闭。', scheduleStatus: '定时：{schedules}',
+  locked: '机器人已被 {player} {label}，备注: {reason}', lockUsage: '正确格式: 锁定 备注', alreadyLocked: '机器人已被锁定，请勿重复锁定。', lockSuccess: '锁定成功，由于发消息会取消 afk，请寻找安全地方挂机。', notLocked: '机器人没有被锁定。', adminUnlockRequired: '机器人处于超级锁定，请由超管使用“超级解锁”。', unlockSuccess: '机器人已解锁。',
+  forwardUsage: '正确格式: 指令 <服务器指令>', forwardInvalid: '指令内容无效或过长。', forwardNested: '不能嵌套机器人命令前缀。', forwardDangerous: '这条高风险指令已禁用。', forwardHome: 'home 命令已禁用。',
+  restartLocked: '机器人锁定中，请先确认挂机状态并解锁。', restarting: '机器人正在重启。',
+  permissionAdded: '玩家 {player} 已成功加入{label}', permissionExists: '玩家 {player} 已经在{label}中', permissionRemoved: '玩家 {player} 已从{label}移除', permissionMissing: '玩家 {player} 不在{label}中', temporaryUsage: '正确格式: {command} 玩家名 分钟数', temporaryAdded: '玩家 {player} 已临时加入{label}，持续 {minutes} 分钟',
+  adminLockUsage: '正确格式: 超级锁定 备注', alreadyAdminLocked: '机器人已被超级锁定，请勿重复锁定。', adminLockSuccess: '超级锁定成功，禁用一切白名单命令，仅超管可使用“超级解锁”。', notAdminLocked: '机器人没有被超级锁定。', adminUnlockSuccess: '机器人已超级解锁，普通锁定也已同时解除。'
+}
+const MESSAGE_LABELS = Object.fromEntries(Object.keys(MESSAGE_DEFAULTS).map(key => [key, ({ permissionUsage: '权限查询格式', permissionResult: '权限查询结果', openBoxUsage: '开盒格式', openBoxSuccess: '开盒成功', openBoxFailure: '开盒失败', nearUsage: '附近查询格式', nearSuccess: '附近查询结果', nearEmpty: '附近无人', nearFailure: '附近查询失败', mountAlready: '已经在载具中', mountMissing: '未找到矿车', mountSuccess: '上车成功', mountFailure: '上车失败', dismountMissing: '当前未乘车', dismountSuccess: '下车成功', dismountFailure: '下车失败', clearEmpty: '背包已空', clearSuccess: '清空成功', clearFailure: '清空失败', switchUsage: '切换格式', switchSuccess: '切换成功', ominousUsage: '灾厄之瓶格式', ominousEnabled: '灾厄定时开启', ominousDisabled: '灾厄定时关闭', ominousStatusOn: '灾厄定时状态开启', ominousStatusOff: '灾厄定时状态关闭', periodicRightClickUsage: '定时放置格式', periodicRightClickEnabled: '定时放置开启', periodicRightClickDisabled: '定时放置关闭', periodicRightClickStatusOn: '定时放置状态开启', periodicRightClickStatusOff: '定时放置状态关闭', rightClickUsage: '右键格式', rightClickSuccess: '右键成功', rightClickFailure: '右键失败', placeUsage: '放置格式', placeSuccess: '放置成功', placeFailure: '放置失败', taskUsage: '定时任务格式', taskScheduled: '定时任务开启', taskStopped: '定时任务关闭', locked: '锁定状态', lockUsage: '锁定格式', alreadyLocked: '重复锁定', lockSuccess: '锁定成功', notLocked: '未锁定', adminUnlockRequired: '需要超级解锁', unlockSuccess: '解锁成功', forwardUsage: '指令格式', forwardInvalid: '指令无效', forwardNested: '嵌套指令', forwardDangerous: '高风险指令', forwardHome: 'Home 禁用', restartLocked: '锁定时重启', restarting: '正在重启', permissionAdded: '添加权限成功', permissionExists: '权限已存在', permissionRemoved: '移除权限成功', permissionMissing: '权限不存在', temporaryUsage: '临时权限格式', temporaryAdded: '临时权限成功', adminLockUsage: '超级锁定格式', alreadyAdminLocked: '重复超级锁定', adminLockSuccess: '超级锁定成功', notAdminLocked: '未超级锁定', adminUnlockSuccess: '超级解锁成功' })[key] || key]))
+
+MESSAGE_LABELS.scheduleStatus = '定时状态'
+
+const MESSAGE_GROUPS = [
+  { command: '查白 / 查黑 / 查超管', note: '权限查询反馈', keys: ['permissionUsage', 'permissionResult'] },
+  { command: '开盒', note: '玩家坐标查询反馈', keys: ['openBoxUsage', 'openBoxSuccess', 'openBoxFailure'] },
+  { command: 'near', note: '附近玩家查询反馈', keys: ['nearUsage', 'nearSuccess', 'nearEmpty', 'nearFailure'] },
+  { command: '上车', note: '矿车乘坐反馈', keys: ['mountAlready', 'mountMissing', 'mountSuccess', 'mountFailure'] },
+  { command: '下车', note: '离开载具反馈', keys: ['dismountMissing', 'dismountSuccess', 'dismountFailure'] },
+  { command: '清空', note: '背包清空反馈', keys: ['clearEmpty', 'clearSuccess', 'clearFailure'] },
+  { command: '切换', note: '快捷栏切换反馈', keys: ['switchUsage', 'switchSuccess'] },
+  { command: '定时灾厄之瓶', note: '定时饮用与状态反馈', keys: ['ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff'] },
+  { command: '定时放置', note: '定时放置与状态反馈', keys: ['periodicRightClickUsage', 'periodicRightClickEnabled', 'periodicRightClickDisabled', 'periodicRightClickStatusOn', 'periodicRightClickStatusOff'] },
+  { command: '右键', note: '实体或方块交互反馈', keys: ['rightClickUsage', 'rightClickSuccess', 'rightClickFailure'] },
+  { command: '放置', note: '单次放置反馈', keys: ['placeUsage', 'placeSuccess', 'placeFailure'] },
+  { command: '定时任务', note: '自定义任务定时开关反馈', keys: ['taskUsage', 'taskScheduled', 'taskStopped'] },
+  { command: '锁定 / 解锁 / 状态', note: '挂机锁定与定时状态反馈', keys: ['locked', 'lockUsage', 'alreadyLocked', 'lockSuccess', 'notLocked', 'adminUnlockRequired', 'unlockSuccess', 'scheduleStatus'] },
+  { command: '指令', note: '服务器指令转发反馈', keys: ['forwardUsage', 'forwardInvalid', 'forwardNested', 'forwardDangerous', 'forwardHome'] },
+  { command: '重启', note: 'Bot 重启反馈', keys: ['restartLocked', 'restarting'] },
+  { command: '加白 / 加黑 / 去白 / 去黑 / 临时加白 / 临时加黑', note: '管理员权限管理反馈', keys: ['permissionAdded', 'permissionExists', 'permissionRemoved', 'permissionMissing', 'temporaryUsage', 'temporaryAdded'] },
+  { command: '超级锁定 / 超级解锁', note: '管理员锁定反馈', keys: ['adminLockUsage', 'alreadyAdminLocked', 'adminLockSuccess', 'notAdminLocked', 'adminUnlockSuccess'] }
+]
 
 async function request (path, options = {}) {
   const res = await fetch(path, { headers: { 'content-type': 'application/json' }, ...options })
@@ -73,10 +126,25 @@ async function loadMe () {
   $('heroName').textContent = data.user.username
   $('heroBalance').textContent = formatMomoc(data.user.momoc)
   $('balance').textContent = balanceText(data.user)
+  $('changePassword').classList.toggle('hidden', data.user.authSource === 'cloud_store')
   document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('hidden', data.user.role !== 'admin'))
-  await loadTemplates()
+  await loadPlatformSettings()
   await loadAccountsData()
   await loadView()
+}
+
+async function loadPublicSettings () {
+  const data = await request('/api/public-settings')
+  state.registrationEnabled = Boolean(data.registrationEnabled)
+  state.botCreationEnabled = data.botCreationEnabled !== false
+  $('authRegisterTab').classList.toggle('hidden', !state.registrationEnabled)
+  $('authModeTabs').classList.toggle('single', !state.registrationEnabled)
+  $('authSsoHint').classList.toggle('hidden', state.registrationEnabled)
+  if (!state.registrationEnabled && state.authMode === 'register') {
+    state.authMode = 'login'
+    document.querySelectorAll('[data-auth]').forEach(item => item.classList.toggle('active', item.dataset.auth === 'login'))
+    $('authSubmit').textContent = '登录'
+  }
 }
 
 async function submitAuth () {
@@ -90,11 +158,103 @@ async function submitAuth () {
   }
 }
 
+function openPasswordDialog () {
+  $('currentPassword').value = ''
+  $('newPassword').value = ''
+  $('confirmPassword').value = ''
+  $('passwordError').textContent = ''
+  $('passwordDialog').classList.remove('hidden')
+}
+
+function closePasswordDialog () {
+  $('passwordDialog').classList.add('hidden')
+}
+
+async function changeOwnPassword () {
+  $('passwordError').textContent = ''
+  await post('/api/password', {
+    currentPassword: $('currentPassword').value,
+    newPassword: $('newPassword').value,
+    confirmPassword: $('confirmPassword').value
+  })
+  closePasswordDialog()
+  toast('密码已修改，请重新登录')
+  setTimeout(() => location.reload(), 800)
+}
+
 async function loadTemplates () {
   const data = await request('/api/templates')
   state.templates = data.rows
   $('botTemplate').innerHTML = data.rows.map(row => `<option value="${esc(row.id)}">${esc(row.name)} · ${esc(templatePrice(row))}</option>`).join('')
   renderCreateVariables()
+}
+
+async function loadModules () {
+  const data = await request('/api/modules')
+  state.modules = data.rows
+  $('botModules').innerHTML = state.modules.length ? state.modules.map(row => `<div class="module-option"><label><input type="checkbox" data-module-id="${esc(row.id)}"><span><strong>${esc(row.name)}</strong><small>${esc(templatePrice(row))}</small><em>${esc(row.description || '')}</em></span></label>${row.instructions ? `<p class="module-instructions">${esc(row.instructions)}</p>` : ''}${(row.help || []).length ? `<div class="module-help">${row.help.map(item => `<div><code>${esc(commandUsage(item.command))}</code><span>${esc(item.description)}</span></div>`).join('')}</div>` : ''}<div class="module-variable-grid">${moduleVariableInputs(row, {})}</div></div>`).join('') : '<div class="muted">管理员尚未发布功能模块。</div>'
+}
+
+async function loadBotSettings () {
+  const data = await request('/api/user/bot-settings')
+  state.botSettings = data.settings
+  $('commandPrefix').value = data.settings.commandPrefix
+  $('commandWhitelist').value = (data.settings.whitelist || []).join('\n')
+}
+
+async function saveBotAccess () {
+  const whitelist = $('commandWhitelist').value.split(/\r?\n|[,，]/).map(value => value.trim()).filter(Boolean)
+  const data = await post('/api/user/bot-settings', { commandPrefix: $('commandPrefix').value, whitelist })
+  state.botSettings = data.settings
+  $('commandWhitelist').value = data.settings.whitelist.join('\n')
+  await loadModules()
+  toast('白名单和命令前缀已热更新')
+}
+
+async function loadPlatformSettings () {
+  if (state.user?.role === 'admin') {
+    const data = await request('/api/admin/settings')
+    state.modePrices = data
+    $('smartHourlyPrice').value = data.smartHourlyPrice
+    $('signinOncePrice').value = data.signinOncePrice
+    $('maxRunningBots').value = data.maxRunningBots
+    $('botCreationEnabled').checked = Boolean(data.botCreationEnabled)
+    $('registrationEnabled').checked = Boolean(data.registrationEnabled)
+  } else {
+    const data = await request('/api/modes')
+    state.modePrices = data.prices
+  }
+  updateModeFields()
+}
+
+async function saveBasePrice () {
+  const data = await post('/api/admin/settings', { smartHourlyPrice: $('smartHourlyPrice').value, signinOncePrice: $('signinOncePrice').value, maxRunningBots: $('maxRunningBots').value, botCreationEnabled: $('botCreationEnabled').checked, registrationEnabled: $('registrationEnabled').checked })
+  state.modePrices = data
+  state.registrationEnabled = Boolean(data.registrationEnabled)
+  state.botCreationEnabled = Boolean(data.botCreationEnabled)
+  updateModeFields()
+  toast('平台设置已保存')
+}
+
+function updateModeFields () {
+  const signin = $('botMode').value === 'signin'
+  $('modePriceHint').textContent = signin ? `${formatMomoc(state.modePrices?.signinOncePrice)} momoc / 次，成功后下线` : `${formatMomoc(state.modePrices?.smartHourlyPrice)} momoc / 1h，持续在线`
+  $('botPrefixField').classList.toggle('hidden', signin)
+}
+
+function moduleVariableInputs (feature, values) {
+  return (feature.variables || []).map(definition => variableInputsHtml([{ ...definition, key: `${feature.id}:${definition.key}` }], { [`${feature.id}:${definition.key}`]: values?.[definition.key] })).join('')
+}
+
+function collectModuleSelections (attribute) {
+  return Array.from(document.querySelectorAll(`input[${attribute}]:checked`)).map(input => {
+    const moduleId = input.getAttribute(attribute)
+    const variables = {}
+    input.closest('.module-option').querySelectorAll('[data-variable-key]').forEach(field => {
+      variables[field.dataset.variableKey.split(':').slice(1).join(':')] = field.type === 'checkbox' ? field.checked : field.value
+    })
+    return { moduleId, variables }
+  })
 }
 
 async function loadAccountsData () {
@@ -190,12 +350,26 @@ async function createAccount () {
   }
 }
 
+function smartScheduleHtml (bot) {
+  if (bot.mode !== 'smart') return '<span class="muted">-</span>'
+  const schedules = bot.smartSchedules || {}
+  const automation = schedules.automation || {}
+  const rows = []
+  if (automation.ominousBottleEnabled) rows.push({ label: '定时灾厄之瓶', action: 'stop_ominous' })
+  if (automation.periodicRightClickEnabled) rows.push({ label: `定时放置 (${automation.periodicRightClickX}, ${automation.periodicRightClickY}, ${automation.periodicRightClickZ}) · ${automation.periodicRightClickIntervalTicks}gt`, action: 'stop_periodic_right_click' })
+  for (const task of schedules.tasks || []) rows.push({ label: `定时任务 ${task.name} · ${task.intervalTicks}gt`, action: 'stop_task', name: task.name })
+  if (!rows.length) return '<div class="smart-schedules"><span class="muted">当前无定时任务</span></div>'
+  return `<div class="smart-schedules">${rows.map(row => `<div class="smart-schedule-row"><span>${esc(row.label)}</span><button type="button" class="danger" data-stop-smart-schedule="${esc(row.action)}" data-smart-schedule-bot="${esc(bot.id)}"${row.name ? ` data-smart-schedule-name="${esc(row.name)}"` : ''}>停止</button></div>`).join('')}</div>`
+}
+
 async function loadBots () {
-  const data = await request('/api/bots' + (state.user?.role === 'admin' ? '?all=1' : ''))
+  const data = await request('/api/bots')
   state.bots = data.rows
-  $('botSummary').textContent = `${data.rows.length} 个机器人 · ${data.rows.filter(row => row.runtimeState === 'online').length} 个在线`
+  $('createBot').disabled = state.botCreationEnabled === false
+  $('createBot').title = $('createBot').disabled ? '平台已暂停创建新 Bot' : ''
+  $('botSummary').textContent = `${data.rows.length} 个机器人 · ${data.rows.filter(row => row.runtimeState === 'online').length} 个在线${state.botCreationEnabled === false ? ' · 平台已暂停创建' : ''}`
   $('botsTable').innerHTML = data.rows.length
-    ? '<table><thead><tr><th>机器人</th><th>服务器</th><th>模板</th><th>状态</th><th>OAuth2</th><th>计费</th><th>操作</th></tr></thead><tbody>' + data.rows.map(bot => {
+    ? '<table><thead><tr><th>机器人</th><th>服务器</th><th>模板</th><th>定时任务</th><th>状态</th><th>OAuth2</th><th>计费</th><th>操作</th></tr></thead><tbody>' + data.rows.map(bot => {
         const oauth = bot.oauth
           ? `<div class="oauth"><a href="${esc(bot.oauth.verificationUri)}" target="_blank" rel="noreferrer">打开 Microsoft 登录</a><br><code>${esc(bot.oauth.userCode)}</code></div>`
           : '<span class="muted">-</span>'
@@ -204,11 +378,49 @@ async function loadBots () {
           : `<button class="primary" data-start="${esc(bot.id)}">启动</button>`
         const variables = bot.variableDefinitions?.length ? `<button data-bot-variables="${esc(bot.id)}">变量</button>` : ''
         const schedule = bot.billingMode === 'once' && bot.allowScheduling ? `<button data-bot-schedule="${esc(bot.id)}">计划</button>` : ''
-        return `<tr><td><strong>${esc(bot.label)}</strong><div class="muted">${esc(bot.microsoftEmail)}</div><div class="muted">${esc(bot.accountMinecraftName || bot.minecraftName || '')}</div></td><td>${esc(bot.serverHost)}:${esc(bot.serverPort)}<div class="muted">${esc(bot.minecraftVersion || '自动识别')}</div></td><td>${esc(bot.templateName)}<div class="price-hint">${esc(templatePrice(bot))}</div>${bot.variableDefinitions?.length ? `<div class="muted">${bot.variableDefinitions.length} 个变量</div>` : ''}${bot.scheduleEnabled ? '<div class="positive">计划已启用</div>' : ''}</td><td><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span><div class="muted">${esc(bot.lastError || '')}</div></td><td>${oauth}</td><td>${bot.billingMode === 'once' ? '按次' : `${esc(bot.billedMinutes)} 分钟`}</td><td><div class="actions">${action}${variables}${schedule}<button class="danger" data-delete="${esc(bot.id)}">删除</button></div></td></tr>`
+        const permissions = bot.mode === 'smart' ? `<button data-smart-permissions="${esc(bot.id)}">权限</button>` : ''
+        const logs = `<button data-bot-logs="${esc(bot.id)}">日志</button>`
+        const modeName = bot.mode === 'signin' ? '签到 Bot' : '智能 Bot'
+        const modeDetail = bot.mode === 'signin' ? `命令：${bot.modeVariables?.command || '-'}` : '持续在线 · 消息解析'
+        return `<tr><td><strong>${esc(bot.label)}</strong><div class="muted">${esc(bot.microsoftEmail)}</div><div class="muted">${esc(bot.accountMinecraftName || bot.minecraftName || '')}</div></td><td>${esc(bot.serverHost)}:${esc(bot.serverPort)}<div class="muted">${esc(bot.minecraftVersion || '自动识别')}</div></td><td><strong>${esc(modeName)}</strong><div class="price-hint">${esc(templatePrice(bot))}</div><div class="muted">${esc(modeDetail)}</div>${bot.scheduleEnabled ? '<div class="positive">计划已启用</div>' : ''}</td><td>${smartScheduleHtml(bot)}</td><td><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span><div class="muted">${esc(bot.lastError || '')}</div></td><td>${oauth}</td><td>${bot.billingMode === 'once' ? '按次成功' : `${esc(bot.billedMinutes)} 分钟`}</td><td><div class="actions">${action}${permissions}${schedule}${logs}<button class="danger" data-delete="${esc(bot.id)}">删除</button></div></td></tr>`
       }).join('') + '</tbody></table>'
     : '<div class="empty">还没有机器人。</div>'
   bindBotActions()
 }
+
+function managedBotCards (rows) {
+  if (!rows.length) return '<div class="empty managed-empty">当前没有机器人。</div>'
+  return rows.map(bot => {
+    const action = bot.desiredState === 'running'
+      ? `<button data-stop="${esc(bot.id)}">停止</button>`
+      : `<button class="primary" data-start="${esc(bot.id)}">启动</button>`
+    const permissions = bot.mode === 'smart' ? `<button data-smart-permissions="${esc(bot.id)}">权限</button>` : ''
+    return `<article class="managed-bot-card">
+      <div class="managed-bot-card-head"><div><strong>${esc(bot.label)}</strong><span>${esc(bot.ownerUsername || '-')}</span></div><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span></div>
+      <dl><div><dt>账号</dt><dd>${esc(bot.accountMinecraftName || bot.microsoftEmail || '-')}</dd></div><div><dt>服务器</dt><dd>${esc(bot.serverHost)}:${esc(bot.serverPort)}</dd></div><div><dt>类型</dt><dd>${bot.mode === 'signin' ? '签到 Bot' : '智能 Bot'}</dd></div></dl>
+      <div class="managed-bot-schedules"><strong>定时任务</strong>${smartScheduleHtml(bot)}</div>
+      ${bot.lastError ? `<p class="managed-bot-error">${esc(bot.lastError)}</p>` : ''}
+      <div class="actions">${action}${permissions}<button data-bot-logs="${esc(bot.id)}">日志</button><button class="danger" data-delete="${esc(bot.id)}">删除</button></div>
+    </article>`
+  }).join('')
+}
+
+async function loadManagedBots () {
+  const data = await request('/api/bots?all=1')
+  state.managedBots = data.rows
+  const running = data.rows.filter(row => row.desiredState === 'running')
+  const stopped = data.rows.filter(row => row.desiredState !== 'running')
+  $('managedBotSummary').textContent = `${data.rows.length} 个机器人 · ${running.length} 个运行中 · ${stopped.length} 个已停止`
+  $('managedRunningCount').textContent = running.length
+  $('managedStoppedCount').textContent = stopped.length
+  $('managedRunningBots').innerHTML = managedBotCards(running)
+  $('managedStoppedBots').innerHTML = managedBotCards(stopped)
+  bindBotActions()
+}
+
+const findBot = id => state.view === 'management'
+  ? state.managedBots.find(row => row.id === id) || state.bots.find(row => row.id === id)
+  : state.bots.find(row => row.id === id) || state.managedBots.find(row => row.id === id)
 
 function bindBotActions () {
   document.querySelectorAll('[data-start]').forEach(btn => { btn.onclick = () => botAction('/api/bots/start', btn.dataset.start) })
@@ -224,12 +436,296 @@ function bindBotActions () {
   document.querySelectorAll('[data-bot-schedule]').forEach(btn => {
     btn.onclick = () => openScheduleDialog(btn.dataset.botSchedule)
   })
+  document.querySelectorAll('[data-smart-permissions]').forEach(btn => {
+    btn.onclick = () => openSmartPermissionDialog(btn.dataset.smartPermissions).catch(error => toast(error.message))
+  })
+  document.querySelectorAll('[data-stop-smart-schedule]').forEach(btn => {
+    btn.onclick = async () => {
+      try {
+        await post('/api/smart/automation', { botId: btn.dataset.smartScheduleBot, action: btn.dataset.stopSmartSchedule, name: btn.dataset.smartScheduleName || '' })
+        toast('定时任务已停止')
+        if (state.view === 'management') {
+          if (state.managementTab === 'managedBots') await loadManagedBots()
+          else await loadOverview()
+        } else await loadBots()
+      } catch (error) { toast(error.message) }
+    }
+  })
+  document.querySelectorAll('[data-bot-logs]').forEach(btn => {
+    btn.onclick = () => openBotLogDialog(btn.dataset.botLogs)
+  })
+  document.querySelectorAll('[data-bot-modules]').forEach(btn => {
+    btn.onclick = () => openBotModuleDialog(btn.dataset.botModules)
+  })
+}
+
+function openBotLogDialog (id) {
+  let modal = $('botLogDialog')
+  if (!modal) {
+    modal = document.createElement('div')
+    modal.id = 'botLogDialog'
+    modal.className = 'modal hidden'
+    modal.innerHTML = '<div class="dialog log-dialog" role="dialog" aria-modal="true"><div class="dialog-head"><strong id="botLogTitle"></strong><div class="actions"><button id="refreshBotLogs">刷新</button><button id="closeBotLogs" class="icon-button" title="关闭">×</button></div></div><div id="botLogRows" class="bot-log-rows"></div></div>'
+    document.body.append(modal)
+    modal.addEventListener('click', event => {
+      if (event.target === modal || event.target.id === 'closeBotLogs') modal.classList.add('hidden')
+    })
+  }
+
+  const render = () => {
+    const bot = findBot(id)
+    if (!bot) return modal.classList.add('hidden')
+    $('botLogTitle').textContent = `${bot.label} - 最近日志`
+    const rows = $('botLogRows')
+    rows.replaceChildren()
+    const logs = Array.isArray(bot.logs) ? bot.logs : []
+    if (!logs.length) {
+      const empty = document.createElement('div')
+      empty.className = 'empty'
+      empty.textContent = '当前进程还没有日志。'
+      rows.append(empty)
+      return
+    }
+    for (const entry of logs) {
+      const row = document.createElement('div')
+      row.className = `bot-log ${String(entry.level || 'info')}`
+      const at = document.createElement('time')
+      at.textContent = new Date(Number(entry.at) || 0).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
+      const level = document.createElement('span')
+      level.textContent = String(entry.level || 'info')
+      const message = document.createElement('pre')
+      message.textContent = String(entry.message || '')
+      row.append(at, level, message)
+      rows.append(row)
+    }
+    rows.scrollTop = rows.scrollHeight
+  }
+
+  $('refreshBotLogs').onclick = async () => {
+    try {
+      if (state.managedBots.some(row => row.id === id)) await loadManagedBots()
+      else await loadBots()
+      render()
+    } catch (error) {
+      toast(error.message)
+    }
+  }
+  render()
+  modal.classList.remove('hidden')
+}
+
+function smartRoleLabel (role) {
+  return { whitelist: '白名单', blacklist: '黑名单', admin: '超管' }[role] || role
+}
+
+function smartLockText (lock) {
+  if (lock?.adminLocked) return `超级锁定：${lock.lockedBy || '-'} · ${lock.reason || '无备注'}`
+  if (lock?.locked) return `已锁定：${lock.lockedBy || '-'} · ${lock.reason || '无备注'}`
+  return '当前未锁定'
+}
+
+async function openSmartPermissionDialog (id) {
+  state.editingPermissionBotId = id
+  $('smartPermissionError').textContent = ''
+  $('smartPermissionPlayer').value = ''
+  $('smartPermissionMinutes').value = ''
+  $('smartPermissionDialog').classList.remove('hidden')
+  await loadSmartPermissions()
+}
+
+function closeSmartPermissionDialog () {
+  $('smartPermissionDialog').classList.add('hidden')
+  state.editingPermissionBotId = ''
+}
+
+async function loadSmartPermissions () {
+  const data = await request(`/api/smart/permissions?botId=${encodeURIComponent(state.editingPermissionBotId)}`)
+  $('smartPermissionTitle').textContent = `${data.bot.label} · 智能 Bot 权限`
+  $('smartLockState').textContent = smartLockText(data.lock)
+  $('smartCommandPrefix').value = data.settings?.commandPrefix || ''
+  $('smartPermissionRows').innerHTML = data.rows.length
+    ? '<table><thead><tr><th>玩家</th><th>权限</th><th>有效期</th><th></th></tr></thead><tbody>' + data.rows.map(row => `<tr><td><strong>${esc(row.playerName)}</strong></td><td>${esc(smartRoleLabel(row.role))}</td><td>${row.expiresAt ? esc(new Date(Number(row.expiresAt)).toLocaleString('zh-CN')) : '永久'}</td><td><button class="danger" data-remove-smart-player="${esc(row.playerName)}" data-remove-smart-role="${esc(row.role)}">移除</button></td></tr>`).join('') + '</tbody></table>'
+    : '<div class="empty">尚未设置游戏内权限。</div>'
+  document.querySelectorAll('[data-remove-smart-player]').forEach(btn => {
+    btn.onclick = () => removeSmartPermission(btn.dataset.removeSmartPlayer, btn.dataset.removeSmartRole).catch(error => { $('smartPermissionError').textContent = error.message })
+  })
+}
+
+async function addSmartPermission () {
+  $('smartPermissionError').textContent = ''
+  await post('/api/smart/permissions', {
+    botId: state.editingPermissionBotId,
+    action: 'add',
+    playerName: $('smartPermissionPlayer').value,
+    role: $('smartPermissionRole').value,
+    minutes: $('smartPermissionMinutes').value
+  })
+  $('smartPermissionPlayer').value = ''
+  $('smartPermissionMinutes').value = ''
+  await loadSmartPermissions()
+}
+
+async function removeSmartPermission (playerName, role) {
+  await post('/api/smart/permissions', { botId: state.editingPermissionBotId, action: 'remove', playerName, role })
+  await loadSmartPermissions()
+}
+
+async function saveSmartCommandPrefix () {
+  const data = await post('/api/smart/permissions', {
+    botId: state.editingPermissionBotId,
+    action: 'settings',
+    commandPrefix: $('smartCommandPrefix').value
+  })
+  $('smartCommandPrefix').value = data.settings.commandPrefix
+  toast('命令前缀已热更新')
+}
+
+function taskArgumentHint (command) {
+  return { 上车: '无需参数', 下车: '无需参数', 清空: '无需参数', 切换: '1-9', 放置: 'x y z', 右键: '玩家名 或 x y z', 指令: '服务器指令' }[command] || ''
+}
+
+function renderTaskEditor (actions = [{ command: '放置', args: '' }], waits = []) {
+  $('taskSteps').innerHTML = actions.map((action, index) => {
+    const commandOptions = TASK_COMMANDS.map(command => `<option value="${command}"${command === action.command ? ' selected' : ''}>${command}</option>`).join('')
+    const actionRow = `<div class="task-action-row" data-task-action><span class="step-number">${index + 1}</span><label>平台命令<select data-task-command>${commandOptions}</select></label><label class="task-args">参数<input data-task-args value="${esc(action.args || '')}" placeholder="${esc(taskArgumentHint(action.command))}"${['上车', '下车', '清空'].includes(action.command) ? ' disabled' : ''}></label><button type="button" class="danger task-remove" data-remove-task-step aria-label="删除第 ${index + 1} 个命令">删除</button></div>`
+    if (index === actions.length - 1) return actionRow
+    const wait = Number(waits[index] || 5)
+    const waitOptions = [1, 2, 5, 10, 20, 40, 100, 200].map(value => `<option value="${value}"${value === wait ? ' selected' : ''}>${value}gt</option>`).join('')
+    return `${actionRow}<div class="task-wait-row"><span>然后等待</span><select data-task-wait aria-label="第 ${index + 1} 和 ${index + 2} 个命令之间的等待时间">${waitOptions}</select><span>再执行下一条</span></div>`
+  }).join('')
+  bindTaskEditor()
+}
+
+function bindTaskEditor () {
+  document.querySelectorAll('[data-task-command]').forEach(select => {
+    select.onchange = () => {
+      const input = select.closest('[data-task-action]').querySelector('[data-task-args]')
+      input.placeholder = taskArgumentHint(select.value)
+      input.disabled = ['上车', '下车', '清空'].includes(select.value)
+      if (input.disabled) input.value = ''
+    }
+  })
+  document.querySelectorAll('[data-remove-task-step]').forEach((button, index) => {
+    button.onclick = () => {
+      const draft = collectTaskDraft()
+      draft.actions.splice(index, 1)
+      if (index < draft.waits.length) draft.waits.splice(index, 1); else draft.waits.pop()
+      renderTaskEditor(draft.actions.length ? draft.actions : [{ command: '放置', args: '' }], draft.waits)
+    }
+  })
+}
+
+function collectTaskDraft () {
+  return {
+    actions: [...document.querySelectorAll('[data-task-action]')].map(row => ({ command: row.querySelector('[data-task-command]').value, args: row.querySelector('[data-task-args]').value.trim() })),
+    waits: [...document.querySelectorAll('[data-task-wait]')].map(select => Number(select.value))
+  }
+}
+
+function collectTaskSteps () {
+  const draft = collectTaskDraft()
+  const steps = []
+  draft.actions.forEach((action, index) => {
+    steps.push({ type: 'command', command: action.command, args: action.args ? action.args.split(/\s+/) : [] })
+    if (index < draft.actions.length - 1) steps.push({ type: 'wait', ticks: draft.waits[index] || 1 })
+  })
+  return steps
+}
+
+async function loadTasks () {
+  if (!state.bots.length) await loadBots()
+  const smartBots = state.bots.filter(row => row.mode === 'smart')
+  $('taskBot').innerHTML = smartBots.map(row => `<option value="${esc(row.id)}">${esc(row.label)}</option>`).join('')
+  if (!smartBots.length) { $('taskRows').innerHTML = '<div class="empty">请先创建智能 Bot。</div>'; return }
+  if (!smartBots.some(row => row.id === state.editingTaskBotId)) state.editingTaskBotId = smartBots[0].id
+  $('taskBot').value = state.editingTaskBotId
+  if (!$('taskSteps').children.length) renderTaskEditor()
+  const data = await request(`/api/smart/tasks?botId=${encodeURIComponent(state.editingTaskBotId)}`)
+  $('taskRows').innerHTML = data.rows.length ? `<table><thead><tr><th>任务</th><th>命令数</th><th>游戏内调用</th><th></th></tr></thead><tbody>${data.rows.map(row => `<tr><td><strong>${esc(row.name)}</strong></td><td>${Math.ceil(row.steps.length / 2)}</td><td><code>${esc(row.name)}</code><div class="muted">定时任务 ${esc(row.name)} 5</div></td><td><button class="danger" data-delete-task="${esc(row.name)}">删除</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">尚未创建任务。</div>'
+  document.querySelectorAll('[data-delete-task]').forEach(btn => { btn.onclick = async () => { await post('/api/smart/tasks', { botId: state.editingTaskBotId, action: 'delete', name: btn.dataset.deleteTask }); await loadTasks() } })
+}
+
+async function saveTask () {
+  $('taskError').textContent = ''
+  try {
+    await post('/api/smart/tasks', { botId: $('taskBot').value, name: $('taskName').value, steps: collectTaskSteps() })
+    $('taskName').value = ''; renderTaskEditor()
+    await loadTasks(); toast('任务已保存')
+  } catch (error) { $('taskError').textContent = error.message; throw error }
+}
+
+async function loadMessages () {
+  const data = await request('/api/smart/messages')
+  const values = { ...MESSAGE_DEFAULTS, ...(data.overrides || {}) }
+  const field = key => {
+    const placeholders = [...MESSAGE_DEFAULTS[key].matchAll(/\{[a-zA-Z][a-zA-Z0-9]*\}/g)].map(match => match[0]).join(' ')
+    const changed = Object.prototype.hasOwnProperty.call(data.overrides || {}, key)
+    return `<label class="message-field"><span><strong>${esc(MESSAGE_LABELS[key] || key)}</strong><small>${esc(key)}${placeholders ? ` · 可用 ${esc(placeholders)}` : ''}</small></span><div class="message-input-actions"><input data-message-key="${esc(key)}" value="${esc(values[key])}" maxlength="256"><button type="button" data-reset-message="${esc(key)}"${changed ? '' : ' disabled'}>重置</button></div></label>`
+  }
+  const grouped = new Set(MESSAGE_GROUPS.flatMap(group => group.keys))
+  const groups = [...MESSAGE_GROUPS, { command: '其他', note: '未归类的消息', keys: Object.keys(MESSAGE_DEFAULTS).filter(key => !grouped.has(key)) }]
+    .filter(group => group.keys.length)
+  $('messageFields').innerHTML = groups.map(group => `<section class="message-command-group"><div class="message-command-head"><div><code>${esc(group.command)}</code><span>${esc(group.note)}</span></div><small>${group.keys.length} 条消息</small></div><div class="message-command-fields">${group.keys.map(field).join('')}</div></section>`).join('')
+  document.querySelectorAll('[data-message-key]').forEach(input => {
+    input.oninput = () => {
+      const button = document.querySelector(`[data-reset-message="${CSS.escape(input.dataset.messageKey)}"]`)
+      if (button) button.disabled = input.value === MESSAGE_DEFAULTS[input.dataset.messageKey]
+    }
+  })
+  document.querySelectorAll('[data-reset-message]').forEach(button => {
+    button.onclick = () => resetMessage(button.dataset.resetMessage).catch(error => { $('messageError').textContent = error.message })
+  })
+}
+
+async function saveMessages () {
+  $('messageError').textContent = ''
+  const overrides = Object.fromEntries([...document.querySelectorAll('[data-message-key]')]
+    .filter(input => input.value !== MESSAGE_DEFAULTS[input.dataset.messageKey])
+    .map(input => [input.dataset.messageKey, input.value]))
+  await post('/api/smart/messages', { overrides })
+  await loadMessages()
+  toast('消息文本已热更新')
+}
+
+async function resetMessage (key) {
+  await post('/api/smart/messages', { resetKeys: [key] })
+  await loadMessages()
+  toast('已恢复该条默认消息')
+}
+
+async function resetMessages () {
+  await post('/api/smart/messages', { reset: true })
+  await loadMessages()
+  toast('已恢复默认消息')
+}
+
+function openBotModuleDialog (id) {
+  const bot = state.bots.find(row => row.id === id)
+  if (!bot) return
+  state.editingModuleBotId = id
+  const selected = new Set((bot.modules || []).map(row => row.id))
+  $('editBotModules').innerHTML = state.modules.map(row => { const current = (bot.modules || []).find(item => item.id === row.id); return `<div class="module-option"><label><input type="checkbox" data-edit-module-id="${esc(row.id)}"${selected.has(row.id) ? ' checked' : ''}><span><strong>${esc(row.name)}</strong><small>${esc(templatePrice(row))}</small><em>${esc(row.description || '')}</em></span></label>${row.instructions ? `<p class="module-instructions">${esc(row.instructions)}</p>` : ''}${(row.help || []).length ? `<div class="module-help">${row.help.map(item => `<div><code>${esc(commandUsage(item.command))}</code><span>${esc(item.description)}</span></div>`).join('')}</div>` : ''}<div class="module-variable-grid">${moduleVariableInputs(row, current?.variables || {})}</div></div>` }).join('')
+  $('botModuleDialog').classList.remove('hidden')
+}
+
+function closeBotModuleDialog () {
+  $('botModuleDialog').classList.add('hidden')
+  state.editingModuleBotId = ''
+}
+
+async function saveBotModules () {
+  const modules = collectModuleSelections('data-edit-module-id')
+  await post('/api/bots/modules', { id: state.editingModuleBotId, modules })
+  closeBotModuleDialog()
+  await loadBots()
+  toast('功能模块已更新')
 }
 
 async function botAction (path, id) {
   try {
     await post(path, { id })
-    await loadBots()
+    if (state.view === 'management' && state.managementTab === 'managedBots') await loadManagedBots()
+    else await loadBots()
     await refreshBalance()
   } catch (error) {
     toast(error.message)
@@ -244,11 +740,12 @@ async function createBot () {
       serverHost: $('botHost').value,
       serverPort: $('botPort').value,
       minecraftVersion: $('botVersion').value,
-      templateId: $('botTemplate').value,
-      templateVariables: collectVariableValues($('botVariables'))
+      mode: $('botMode').value,
+      commandPrefix: $('botCommandPrefix').value
     })
     toast('机器人已创建')
     $('botLabel').value = ''
+    $('botCommandPrefix').value = ''
     await loadBots()
   } catch (error) {
     toast(error.message)
@@ -283,7 +780,7 @@ async function loadLedger () {
 async function loadUsers () {
   const data = await request('/api/admin/users')
   $('userSummary').textContent = `${data.rows.length} 个用户`
-  $('usersTable').innerHTML = '<table><thead><tr><th>用户</th><th>角色</th><th>momoc</th><th>调整</th></tr></thead><tbody>' + data.rows.map(row => `<tr><td><strong>${esc(row.username)}</strong></td><td>${esc(row.role)}</td><td>${formatMomoc(row.momoc)}${Number(row.reservedMomoc || 0) > 0 ? `<div class="muted">已预留 ${formatMomoc(row.reservedMomoc)}</div>` : ''}</td><td><div class="actions"><input style="width:120px" type="number" step="any" data-amount="${esc(row.id)}" placeholder="正负数量"><button class="primary" data-adjust="${esc(row.id)}">确认</button></div></td></tr>`).join('') + '</tbody></table>'
+  $('usersTable').innerHTML = '<table><thead><tr><th>用户</th><th>角色</th><th>momoc</th><th>余额调整</th><th>登录方式</th></tr></thead><tbody>' + data.rows.map(row => `<tr><td><strong>${esc(row.username)}</strong></td><td>${esc(row.role)}</td><td>${formatMomoc(row.momoc)}${Number(row.reservedMomoc || 0) > 0 ? `<div class="muted">已预留 ${formatMomoc(row.reservedMomoc)}</div>` : ''}</td><td><div class="actions"><input style="width:120px" type="number" step="any" data-amount="${esc(row.id)}" placeholder="正负数量"><button class="primary" data-adjust="${esc(row.id)}">确认</button></div></td><td>${row.authSource === 'cloud_store' ? '<span class="muted">云仓库登录</span>' : `<div class="actions"><input style="width:180px" type="password" data-password="${esc(row.id)}" placeholder="至少 8 位新密码"><button data-reset-password="${esc(row.id)}">重置</button></div>`}</td></tr>`).join('') + '</tbody></table>'
   document.querySelectorAll('[data-adjust]').forEach(btn => {
     btn.onclick = async () => {
       try {
@@ -297,6 +794,49 @@ async function loadUsers () {
       }
     }
   })
+  document.querySelectorAll('[data-reset-password]').forEach(btn => {
+    btn.onclick = async () => {
+      try {
+        const input = document.querySelector(`[data-password="${CSS.escape(btn.dataset.resetPassword)}"]`)
+        const data = await post('/api/admin/password', { userId: btn.dataset.resetPassword, password: input.value })
+        toast(data.selfReset ? '密码已重置，请使用新密码重新登录' : '用户密码已重置')
+        if (data.selfReset) setTimeout(() => location.reload(), 900)
+      } catch (error) { toast(error.message) }
+    }
+  })
+}
+
+async function loadPlatformAdmins () {
+  const data = await request('/api/admin/roles')
+  $('platformAdminsTable').innerHTML = data.rows.length
+    ? '<table><thead><tr><th>玩家 ID</th><th>身份来源</th><th>操作</th></tr></thead><tbody>' + data.rows.map(row => {
+        const protectedAdmin = row.username.toLowerCase() === String(data.rootUsername || '').toLowerCase()
+        const self = row.id === state.user?.id
+        const action = protectedAdmin
+          ? '<span class="muted">根管理员</span>'
+          : self
+              ? '<span class="muted">当前账号</span>'
+              : `<button class="danger" data-remove-platform-admin="${esc(row.id)}">移除管理员</button>`
+        return `<tr><td><strong>${esc(row.username)}</strong></td><td>${row.authSource === 'cloud_store' ? '云仓库' : '本地账号'}</td><td>${action}</td></tr>`
+      }).join('') + '</tbody></table>'
+    : '<div class="empty">暂无平台管理员。</div>'
+  document.querySelectorAll('[data-remove-platform-admin]').forEach(button => {
+    button.onclick = async () => {
+      if (!confirm('确认移除该玩家的平台管理员权限？')) return
+      try {
+        await post('/api/admin/roles', { action: 'remove', userId: button.dataset.removePlatformAdmin })
+        toast('平台管理员已移除')
+        await loadPlatformAdmins()
+      } catch (error) { toast(error.message) }
+    }
+  })
+}
+
+async function addPlatformAdmin () {
+  await post('/api/admin/roles', { action: 'add', username: $('platformAdminUsername').value })
+  $('platformAdminUsername').value = ''
+  toast('平台管理员已添加')
+  await loadPlatformAdmins()
 }
 
 async function loadOverview () {
@@ -306,16 +846,24 @@ async function loadOverview () {
     ['用户', stats.users],
     ['微软账号', `${stats.authorizedAccounts} / ${stats.accounts} 已授权`],
     ['Bot', `${stats.runningBots} / ${stats.bots} 运行中`],
+    ['智能 Bot 上限', `${stats.runningSmartBots} / ${stats.maxRunningBots || '不限'}`],
+    ['创建新 Bot', stats.botCreationEnabled ? '允许' : '已暂停'],
     ['累计消费', `${formatMomoc(stats.totalSpent)} momoc`]
   ].map(([label, value]) => `<div class="overview-stat"><span>${label}</span><strong>${value}</strong></div>`).join('')
 
   $('overviewAccounts').innerHTML = data.accounts.length
-    ? '<table><thead><tr><th>用户</th><th>Microsoft 账号</th><th>Minecraft 名称</th><th>授权状态</th><th>Bot</th><th>使用模板</th></tr></thead><tbody>' + data.accounts.map(row => `<tr><td><strong>${esc(row.username)}</strong></td><td>${esc(row.email)}</td><td>${esc(row.minecraftName || '-')}</td><td><span class="status ${esc(row.authState)}">${esc(row.authState)}</span>${row.lastError ? `<div class="error">${esc(row.lastError)}</div>` : ''}</td><td>${row.botCount}</td><td>${row.templateNames.length ? row.templateNames.map(esc).join('、') : '-'}</td></tr>`).join('') + '</tbody></table>'
+    ? '<table><thead><tr><th>用户</th><th>Microsoft 账号</th><th>Minecraft 名称</th><th>授权状态</th><th>Bot 数量</th></tr></thead><tbody>' + data.accounts.map(row => `<tr><td><strong>${esc(row.username)}</strong></td><td>${esc(row.email)}</td><td>${esc(row.minecraftName || '-')}</td><td><span class="status ${esc(row.authState)}">${esc(row.authState)}</span>${row.lastError ? `<div class="error">${esc(row.lastError)}</div>` : ''}</td><td>${row.botCount}</td></tr>`).join('') + '</tbody></table>'
     : '<div class="empty">暂无微软账号授权。</div>'
 
   $('overviewBots').innerHTML = data.bots.length
-    ? '<table><thead><tr><th>用户</th><th>Bot</th><th>微软账号</th><th>模板</th><th>计费</th><th>状态</th><th>定时</th><th>累计分钟</th></tr></thead><tbody>' + data.bots.map(row => `<tr><td><strong>${esc(row.ownerUsername)}</strong></td><td>${esc(row.label)}</td><td>${esc(row.accountMinecraftName || row.microsoftEmail)}</td><td>${esc(row.templateName)}</td><td>${esc(templatePrice(row))}</td><td><span class="status ${esc(row.runtimeState)}">${esc(row.runtimeState)}</span></td><td>${row.scheduleEnabled ? esc(row.scheduleCron || '已启用') : '-'}</td><td>${Number(row.billedMinutes || 0)}</td></tr>`).join('') + '</tbody></table>'
+    ? '<table><thead><tr><th>用户</th><th>Bot</th><th>微软账号</th><th>模式</th><th>定时任务</th><th>状态</th><th>挂机锁定</th><th>已设置前缀</th><th>累计分钟</th></tr></thead><tbody>' + data.bots.map(row => {
+        const lockText = row.mode !== 'smart' ? '-' : row.lock?.adminLocked ? `超级锁定 · ${row.lock.lockedBy || '-'}` : row.lock?.locked ? `挂机中 · ${row.lock.lockedBy || '-'}` : '未锁定'
+        const prefix = row.mode === 'smart' ? (row.commandPrefix || '未设置') : '-'
+        return `<tr><td><strong>${esc(row.ownerUsername)}</strong></td><td>${esc(row.label)}</td><td>${esc(row.accountMinecraftName || row.microsoftEmail)}</td><td>${row.mode === 'signin' ? '签到 Bot' : '智能 Bot'}</td><td>${smartScheduleHtml(row)}</td><td><span class="status ${esc(row.runtimeState)}">${esc(statusLabel(row.runtimeState))}</span></td><td>${esc(lockText)}${row.lock?.reason ? `<div class="muted">${esc(row.lock.reason)}</div>` : ''}</td><td><code>${esc(prefix)}</code></td><td>${Number(row.billedMinutes || 0)}</td></tr>`
+      }).join('') + '</tbody></table>'
     : '<div class="empty">暂无 Bot。</div>'
+
+  bindBotActions()
 
   $('overviewConsumption').innerHTML = data.consumption.length
     ? '<table><thead><tr><th>用户</th><th>当前余额</th><th>预留</th><th>按小时消费</th><th>按次消费</th><th>总消费</th><th>Bot 分钟</th></tr></thead><tbody>' + data.consumption.map(row => `<tr><td><strong>${esc(row.username)}</strong><div class="muted">${esc(row.role)}</div></td><td>${formatMomoc(row.balance)}</td><td>${formatMomoc(row.reserved)}</td><td>${formatMomoc(row.hourlySpent)}</td><td>${formatMomoc(row.onceSpent)}</td><td><strong>${formatMomoc(row.totalSpent)}</strong></td><td>${row.billedMinutes}</td></tr>`).join('') + '</tbody></table>'
@@ -440,7 +988,8 @@ async function saveTemplate () {
     })
     toast('模板已保存')
     await loadTemplateAdmin(data.template.id)
-    await loadTemplates()
+  await loadTemplates()
+  await loadModules()
   } catch (error) {
     toast(error.message)
   }
@@ -734,16 +1283,115 @@ async function saveSchedule () {
   }
 }
 
+async function loadModuleAdmin (preferredId = state.moduleId) {
+  const data = await request('/api/admin/modules')
+  state.moduleAdminRows = data.rows
+  $('moduleSummary').textContent = `${data.rows.length} 个模块`
+  $('moduleList').innerHTML = data.rows.length ? data.rows.map(row => `<button data-feature-module="${esc(row.id)}"><strong>${esc(row.name)}</strong><span class="price-hint">${esc(templatePrice(row))}</span><span class="muted">${row.enabled ? '已启用' : '已停用'}</span></button>`).join('') : '<div class="empty">暂无功能模块。</div>'
+  document.querySelectorAll('[data-feature-module]').forEach(btn => { btn.onclick = () => editModule(btn.dataset.featureModule) })
+  const selected = data.rows.find(row => row.id === preferredId) || data.rows[0]
+  if (selected) editModule(selected.id); else clearModule()
+}
+
+async function loadPlatformFiles () {
+  const data = await request('/api/admin/platform-files')
+  $('platformFileList').innerHTML = data.rows.map(row => row.type === 'directory' ? `<div class="file-entry directory" style="padding-left:${10 + row.depth * 16}px"><span class="file-icon">▸</span><span class="file-name">${esc(row.name)}</span></div>` : `<button class="file-entry" data-platform-file="${esc(row.path)}" style="padding-left:${10 + row.depth * 16}px"><span class="file-icon">·</span><span class="file-name">${esc(row.name)}</span></button>`).join('')
+  document.querySelectorAll('[data-platform-file]').forEach(btn => { btn.onclick = () => openPlatformFile(btn.dataset.platformFile) })
+}
+
+async function openPlatformFile (file) {
+  const data = await request(`/api/admin/platform-files?path=${encodeURIComponent(file)}`)
+  state.platformFilePath = file
+  $('platformFilePath').textContent = file
+  $('platformFileContent').value = data.file.content
+  $('platformFileContent').disabled = false
+  $('savePlatformFile').disabled = false
+}
+
+async function savePlatformFile () {
+  if (!state.platformFilePath) return
+  await post('/api/admin/platform-files/save', { path: state.platformFilePath, content: $('platformFileContent').value })
+  toast('代码已原子更新；当前挂机 Bot 不受影响，新代码下次启动生效')
+}
+
+function editModule (id) {
+  const row = state.moduleAdminRows.find(item => item.id === id)
+  if (!row) return
+  state.moduleId = id
+  $('moduleId').value = row.id
+  $('moduleName').value = row.name
+  $('moduleDescription').value = row.description
+  $('moduleBillingMode').value = row.billingMode
+  $('modulePrice').value = row.priceMomoc
+  $('moduleVariables').value = JSON.stringify(row.variables || [], null, 2)
+  $('moduleSource').value = row.source || ''
+  $('moduleMetadata').innerHTML = `<h2>${esc(row.name)}</h2><p>${esc(row.description || '')}</p><div class="price-hint">${esc(templatePrice(row))}</div><p>${esc(row.instructions || '')}</p>${(row.help || []).length ? `<table><thead><tr><th>指令 / 触发</th><th>使用说明</th></tr></thead><tbody>${row.help.map(item => `<tr><td><code>${esc(item.command)}</code></td><td>${esc(item.description)}</td></tr>`).join('')}</tbody></table>` : ''}`
+}
+
+function clearModule () {
+  state.moduleId = ''
+  $('moduleId').value = ''
+  $('moduleName').value = ''
+  $('moduleDescription').value = ''
+  $('moduleBillingMode').value = 'hourly'
+  $('modulePrice').value = '0'
+  $('moduleVariables').value = '[]'
+  $('moduleMetadata').innerHTML = '<div class="empty">保存后自动解析模块名称、说明、指令、变量和计费信息。</div>'
+  $('moduleSource').value = `module.exports = defineModule({
+  name: '新功能模块',
+  description: '向用户说明这个模块能做什么',
+  instructions: '详细说明使用步骤、前置条件和注意事项',
+  help: [
+    { command: '!示例', description: '触发示例动作' }
+  ],
+  billing: { mode: 'hourly', priceMomoc: 0.03 },
+  variables: []
+}, ({ bot, variables, platform, command, message, every, on }) => {
+  command({ pattern: /^!示例$/, channels: ['public', 'private'] }, async event => {
+    bot.chat('已执行示例动作')
+    // 按次模块在动作真正成功后调用 platform.success('执行结果')
+  })
+
+  // every(31 * 60 * 1000, async () => { ... })
+})
+`
+}
+
+async function saveModule () {
+  const data = await post('/api/admin/modules/save', { id: $('moduleId').value || undefined, source: $('moduleSource').value, enabled: true })
+  await loadModuleAdmin(data.module.id)
+  await loadModules()
+  toast('功能模块已保存')
+}
+
+async function deleteModule () {
+  if (!state.moduleId || !confirm('确定删除这个功能模块吗？')) return
+  await post('/api/admin/modules/delete', { id: state.moduleId })
+  state.moduleId = ''
+  await loadModuleAdmin()
+  await loadModules()
+  toast('功能模块已删除')
+}
+
 async function loadView () {
+  const managed = state.view === 'management'
+  const targetView = managed ? state.managementTab : state.view
   document.querySelectorAll('.view').forEach(el => el.classList.add('hidden'))
-  $(state.view + 'View').classList.remove('hidden')
+  $(targetView + 'View').classList.remove('hidden')
+  $('managementNav').classList.toggle('hidden', !managed)
   document.querySelectorAll('nav [data-view]').forEach(btn => btn.classList.toggle('active', btn.dataset.view === state.view))
-  if (state.view === 'bots') await loadBots()
-  if (state.view === 'accounts') await loadAccounts()
-  if (state.view === 'ledger') await loadLedger()
-  if (state.view === 'overview') await loadOverview()
-  if (state.view === 'users') await loadUsers()
-  if (state.view === 'templates') await loadTemplateAdmin()
+  document.querySelectorAll('[data-management-tab]').forEach(btn => btn.classList.toggle('active', btn.dataset.managementTab === state.managementTab))
+  if (targetView === 'bots') await loadBots()
+  if (targetView === 'accounts') await loadAccounts()
+  if (targetView === 'tasks') await loadTasks()
+  if (targetView === 'messages') await loadMessages()
+  if (targetView === 'ledger') await loadLedger()
+  if (targetView === 'overview') await loadOverview()
+  if (targetView === 'managedBots') await loadManagedBots()
+  if (targetView === 'users') await loadUsers()
+  if (targetView === 'admins') await loadPlatformAdmins()
+  if (targetView === 'modules') await loadModuleAdmin()
+  if (targetView === 'code') await loadPlatformFiles()
 }
 
 document.querySelectorAll('[data-auth]').forEach(btn => {
@@ -756,6 +1404,12 @@ document.querySelectorAll('[data-auth]').forEach(btn => {
 $('authSubmit').onclick = submitAuth
 $('authPassword').onkeydown = event => { if (event.key === 'Enter') submitAuth() }
 $('logout').onclick = async () => { await post('/api/logout', {}); location.reload() }
+$('changePassword').onclick = openPasswordDialog
+$('closePasswordDialog').onclick = closePasswordDialog
+$('cancelPasswordDialog').onclick = closePasswordDialog
+$('savePassword').onclick = () => changeOwnPassword().catch(error => { $('passwordError').textContent = error.message })
+$('confirmPassword').onkeydown = event => { if (event.key === 'Enter') changeOwnPassword().catch(error => { $('passwordError').textContent = error.message }) }
+$('passwordDialog').onclick = event => { if (event.target === $('passwordDialog')) closePasswordDialog() }
 document.querySelectorAll('nav [data-view]').forEach(btn => {
   btn.onclick = () => {
     if (state.view === 'templates' && !confirmDiscard()) return
@@ -763,15 +1417,45 @@ document.querySelectorAll('nav [data-view]').forEach(btn => {
     loadView().catch(error => toast(error.message))
   }
 })
+document.querySelectorAll('[data-management-tab]').forEach(btn => {
+  btn.onclick = () => {
+    state.managementTab = btn.dataset.managementTab
+    loadView().catch(error => toast(error.message))
+  }
+})
 $('createBot').onclick = createBot
+$('botMode').onchange = updateModeFields
 $('createAccount').onclick = createAccount
 $('refreshAccounts').onclick = loadAccounts
 $('botTemplate').onchange = renderCreateVariables
 $('refreshBots').onclick = loadBots
+$('refreshManagedBots').onclick = () => loadManagedBots().catch(error => toast(error.message))
+$('refreshTasks').onclick = () => loadTasks().catch(error => toast(error.message))
+$('taskBot').onchange = () => { state.editingTaskBotId = $('taskBot').value; loadTasks().catch(error => toast(error.message)) }
+$('saveTask').onclick = () => saveTask().catch(error => toast(error.message))
+$('addTaskStep').onclick = () => {
+  const draft = collectTaskDraft()
+  draft.actions.push({ command: '放置', args: '' })
+  draft.waits.push(5)
+  renderTaskEditor(draft.actions, draft.waits)
+}
+$('refreshMessages').onclick = () => loadMessages().catch(error => toast(error.message))
+$('saveMessages').onclick = () => saveMessages().catch(error => { $('messageError').textContent = error.message })
+$('resetMessages').onclick = () => resetMessages().catch(error => { $('messageError').textContent = error.message })
 $('refreshLedger').onclick = loadLedger
 $('refreshOverview').onclick = loadOverview
 $('refreshUsers').onclick = loadUsers
+$('refreshPlatformAdmins').onclick = loadPlatformAdmins
+$('addPlatformAdmin').onclick = () => addPlatformAdmin().catch(error => toast(error.message))
+$('platformAdminUsername').onkeydown = event => { if (event.key === 'Enter') addPlatformAdmin().catch(error => toast(error.message)) }
 $('refreshTemplates').onclick = () => { if (confirmDiscard()) loadTemplateAdmin().catch(error => toast(error.message)) }
+$('refreshModules').onclick = () => loadModuleAdmin().catch(error => toast(error.message))
+$('newModule').onclick = clearModule
+$('saveModule').onclick = () => saveModule().catch(error => toast(error.message))
+$('deleteModule').onclick = () => deleteModule().catch(error => toast(error.message))
+$('saveModePrices').onclick = () => saveBasePrice().catch(error => toast(error.message))
+$('refreshPlatformFiles').onclick = () => loadPlatformFiles().catch(error => toast(error.message))
+$('savePlatformFile').onclick = () => savePlatformFile().catch(error => toast(error.message))
 $('newTemplate').onclick = clearTemplate
 $('saveTemplate').onclick = saveTemplate
 $('deleteTemplate').onclick = deleteTemplate
@@ -799,6 +1483,20 @@ $('cancelScheduleDialog').onclick = closeScheduleDialog
 $('saveSchedule').onclick = saveSchedule
 $('schedulePreset').onchange = updateScheduleTimeVisibility
 $('scheduleDialog').onclick = event => { if (event.target === $('scheduleDialog')) closeScheduleDialog() }
+$('closeSmartPermissionDialog').onclick = closeSmartPermissionDialog
+$('closeSmartPermissionDialogBottom').onclick = closeSmartPermissionDialog
+$('addSmartPermission').onclick = () => addSmartPermission().catch(error => { $('smartPermissionError').textContent = error.message })
+$('saveSmartCommandPrefix').onclick = () => saveSmartCommandPrefix().catch(error => { $('smartPermissionError').textContent = error.message })
+$('smartPermissionRole').onchange = () => {
+  const admin = $('smartPermissionRole').value === 'admin'
+  $('smartPermissionMinutes').disabled = admin
+  if (admin) $('smartPermissionMinutes').value = ''
+}
+$('smartPermissionDialog').onclick = event => { if (event.target === $('smartPermissionDialog')) closeSmartPermissionDialog() }
+$('closeBotModuleDialog').onclick = closeBotModuleDialog
+$('cancelBotModuleDialog').onclick = closeBotModuleDialog
+$('saveBotModules').onclick = () => saveBotModules().catch(error => toast(error.message))
+$('botModuleDialog').onclick = event => { if (event.target === $('botModuleDialog')) closeBotModuleDialog() }
 $('fileContent').addEventListener('input', () => {
   state.dirty = $('fileContent').value !== state.originalContent
   $('saveFile').disabled = !state.dirty
@@ -823,11 +1521,12 @@ window.addEventListener('beforeunload', event => {
   event.returnValue = ''
 })
 
-loadMe().catch(error => toast(error.message))
+loadPublicSettings().then(loadMe).catch(error => toast(error.message))
 setInterval(() => {
   if (!state.user) return
   if (state.view === 'bots') Promise.all([loadBots(), refreshBalance()]).catch(() => {})
   if (state.view === 'accounts') loadAccounts().catch(() => {})
   if (state.view === 'ledger') loadLedger().catch(() => {})
-  if (state.view === 'overview') loadOverview().catch(() => {})
+  if (state.view === 'management' && state.managementTab === 'overview') loadOverview().catch(() => {})
+  if (state.view === 'management' && state.managementTab === 'users') loadUsers().catch(() => {})
 }, 3000)

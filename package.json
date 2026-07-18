@@ -2,11 +2,11 @@
   "name": "momo-bot-platform",
   "version": "0.1.0",
   "private": true,
-  "description": "Independent Microsoft OAuth2 Minecraft bot hosting platform with momoc billing.",
+  "description": "Independent Minecraft Bot self-hosting platform with Cloud Store SSO and momoc billing.",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "check": "node --check src/server.js && node --check src/config.js && node --check src/db.js && node --check src/auth.js && node --check src/accountManager.js && node --check src/botManager.js && node --check src/platformPreload.js && node --check src/zenoxChatParser.js && node --check src/templateVariables.js && node --check public/app.js",
+    "check": "node --check src/server.js && node --check src/config.js && node --check src/db.js && node --check src/auth.js && node --check src/authCache.js && node --check src/cloudStoreSso.js && node --check src/accountManager.js && node --check src/botManager.js && node --check src/botSupervisorClient.js && node --check src/platformPreload.js && node --check src/zenoxChatParser.js && node --check core-runtime/index.js && node --check smart-runtime/index.js && node --check smart-runtime/commands.js && node --check signin-runtime/index.js && node --check public/app.js",
     "test": "node --test test/*.test.js"
   },
   "engines": {

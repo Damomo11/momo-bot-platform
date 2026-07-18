@@ -13,6 +13,11 @@ class AccountManager {
     return path.join(this.config.authCacheRoot, 'accounts', id)
   }
 
+  secureCacheFolder (folder) {
+    fs.mkdirSync(folder, { recursive: true, mode: 0o700 })
+    try { fs.chmodSync(folder, 0o700) } catch {}
+  }
+
   list (userId = null) {
     return this.db.listMicrosoftAccounts(userId)
   }
@@ -35,7 +40,7 @@ class AccountManager {
 
   async runAuthorization (account, force) {
     const cacheFolder = this.cacheFolder(account.id)
-    fs.mkdirSync(cacheFolder, { recursive: true })
+    this.secureCacheFolder(cacheFolder)
     this.db.updateMicrosoftAccountAuth(account.id, { authState: 'authorizing', lastError: '', oauthJson: '' })
     try {
       const flow = new Authflow(account.email, cacheFolder, {
