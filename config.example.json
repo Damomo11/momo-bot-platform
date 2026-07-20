@@ -2,6 +2,12 @@
   "host": "127.0.0.1",
   "port": 8788,
   "sessionDays": 30,
-  "bootstrapAdminUsername": "admin",
-  "bootstrapAdminPassword": "change-this-password"
+  "trustProxy": false,
+  "secureCookies": false,
+  "maxLoginFailures": 5,
+  "loginFailWindowMs": 600000,
+  "loginBlockMs": 600000,
+  "cloudStoreSsoSecretFile": "data/cloud-store-sso.key",
+  "cloudStoreAdminUsername": "Damomo1",
+  "authCacheRoot": "auth-cache"
 }
