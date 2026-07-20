@@ -25,6 +25,9 @@ const COMMAND_TEXT = Object.freeze({
   dismountMissing: '机器人当前没有乘坐矿车。',
   dismountSuccess: '机器人已下车。',
   dismountFailure: '下车失败，请稍后重试。',
+  vaultSuccess: '已右键附近的宝库。',
+  vaultMissing: '附近 6 格内没有找到宝库。',
+  vaultFailure: '开启宝库失败，请确认宝库在交互距离内。',
   clearEmpty: '机器人背包已经是空的。',
   clearSuccess: (stacks, items) => `背包已清空，共丢出 ${stacks} 组、${items} 个物品。`,
   clearFailure: (stacks, error) => `清空背包中断，已丢出 ${stacks} 组。原因: ${error}`,
@@ -168,17 +171,33 @@ function isMinecartEntity (entity) {
   return /minecart/i.test(`${entity?.name || ''} ${entity?.displayName || ''}`)
 }
 
+function hasValidVehicleAttachment (bot, vehicle = bot.vehicle) {
+  if (!vehicle) return false
+  if (vehicle.id != null && bot.entities && bot.entities[vehicle.id] !== vehicle) return false
+  if (Array.isArray(vehicle.passengers) && bot.entity && !vehicle.passengers.includes(bot.entity)) return false
+  if (bot.entity?.vehicle && bot.entity.vehicle !== vehicle) return false
+  return true
+}
+
+function clearStaleVehicleReference (bot) {
+  const vehicle = bot.vehicle
+  if (!vehicle || hasValidVehicleAttachment(bot, vehicle)) return false
+  if (bot.entity?.vehicle === vehicle) bot.entity.vehicle = null
+  bot.vehicle = null
+  return true
+}
+
 async function mountNearestMinecart (bot, maxDistance = 6) {
-  if (bot.vehicle) return { status: 'already' }
   const minecart = bot.nearestEntity(isMinecartEntity)
   const distance = minecart && bot.entity?.position?.distanceTo?.(minecart.position)
   if (!minecart || !Number.isFinite(distance) || distance > maxDistance) return { status: 'missing' }
-  if (typeof bot.dismount === 'function' && bot.vehicle) bot.dismount()
+  clearStaleVehicleReference(bot)
   bot.mount(minecart)
-  return { status: await waitUntil(() => Boolean(bot.vehicle), 3000) ? 'mounted' : 'failed' }
+  return { status: await waitUntil(() => bot.vehicle === minecart && hasValidVehicleAttachment(bot, minecart), 3000) ? 'mounted' : 'failed' }
 }
 
 async function dismountVehicle (bot) {
+  clearStaleVehicleReference(bot)
   if (!bot.vehicle) return { status: 'missing' }
   if (typeof bot.dismount === 'function') {
     bot.dismount()
@@ -197,6 +216,18 @@ async function dismountVehicle (bot) {
     return { status: await waitUntil(() => !bot.vehicle, 3000) ? 'dismounted' : 'failed' }
   }
   return { status: 'failed' }
+}
+
+function isVaultBlock (block) {
+  return /vault|宝库/i.test(`${block?.name || ''} ${block?.displayName || ''}`)
+}
+
+async function activateNearestVault (bot, maxDistance = 6) {
+  if (typeof bot.findBlock !== 'function' || typeof bot.activateBlock !== 'function') return { status: 'failed' }
+  const vault = bot.findBlock({ matching: isVaultBlock, maxDistance })
+  if (!vault) return { status: 'missing' }
+  await bot.activateBlock(vault)
+  return { status: 'activated', block: vault }
 }
 
 async function rightClickTarget (bot, args) {
@@ -669,7 +700,7 @@ function createSmartCommandHandler (bot, options = {}) {
         const result = await runBotAction(() => mountNearestMinecart(bot))
         if (result.status === 'missing') reply(COMMAND_TEXT.mountMissing, 'mountMissing')
         else if (result.status === 'failed') reply(COMMAND_TEXT.mountFailure, 'mountFailure')
-        else reply(result.status === 'already' ? COMMAND_TEXT.mountAlready : COMMAND_TEXT.mountSuccess, result.status === 'already' ? 'mountAlready' : 'mountSuccess')
+        else reply(COMMAND_TEXT.mountSuccess, 'mountSuccess')
       } catch {
         reply(COMMAND_TEXT.mountFailure, 'mountFailure')
       }
@@ -685,6 +716,19 @@ function createSmartCommandHandler (bot, options = {}) {
         else reply(COMMAND_TEXT.dismountSuccess, 'dismountSuccess')
       } catch {
         reply(COMMAND_TEXT.dismountFailure, 'dismountFailure')
+      }
+      return
+    }
+
+    if (parsed.command === '开宝库') {
+      if (parsed.args.length) return reply(COMMAND_TEXT.vaultFailure, 'vaultFailure')
+      try {
+        const result = await runBotAction(() => activateNearestVault(bot))
+        if (result.status === 'missing') reply(COMMAND_TEXT.vaultMissing, 'vaultMissing')
+        else if (result.status === 'failed') reply(COMMAND_TEXT.vaultFailure, 'vaultFailure')
+        else reply(COMMAND_TEXT.vaultSuccess, 'vaultSuccess')
+      } catch {
+        reply(COMMAND_TEXT.vaultFailure, 'vaultFailure')
       }
       return
     }
@@ -1000,7 +1044,9 @@ function installSmartCommands (bot, options = {}) {
 
 module.exports = {
   COMMAND_TEXT,
+  activateNearestVault,
   clearInventory,
+  clearStaleVehicleReference,
   createBotActionQueue,
   createOminousBottleScheduler,
   createPeriodicRightClickScheduler,
@@ -1012,6 +1058,7 @@ module.exports = {
   executeCustomTask,
   findPlayerPosition,
   installSmartCommands,
+  hasValidVehicleAttachment,
   isVersionNewer,
   isOminousBottleItem,
   mapDimensionLabel,

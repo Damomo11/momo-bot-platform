@@ -44,6 +44,7 @@ const MESSAGE_DEFAULTS = {
   nearUsage: '正确格式: near [玩家名]', nearSuccess: '{players}', nearEmpty: '附近没有可显示的玩家。', nearFailure: 'near 查询失败！未找到玩家 {player} 或地图服务暂时不可用。',
   mountAlready: '机器人已经在载具上。', mountMissing: '附近 6 格内没有可乘坐的矿车。', mountSuccess: '机器人已上车。', mountFailure: '上车失败，请确认矿车可乘坐且距离足够近。',
   dismountMissing: '机器人当前没有乘坐矿车。', dismountSuccess: '机器人已下车。', dismountFailure: '下车失败，请稍后重试。',
+  vaultSuccess: '已右键附近的宝库。', vaultMissing: '附近 6 格内没有找到宝库。', vaultFailure: '开启宝库失败，请确认宝库在交互距离内。',
   clearEmpty: '机器人背包已经是空的。', clearSuccess: '背包已清空，共丢出 {stacks} 组、{items} 个物品。', clearFailure: '清空背包中断，已丢出 {stacks} 组。原因: {reason}',
   switchUsage: '正确格式: 切换 1-9', switchSuccess: '快捷栏已切换到第 {slot} 格。',
   ominousUsage: '正确格式: 定时灾厄之瓶 开|关', ominousEnabled: '定时灾厄之瓶已开启，将立即饮用一瓶；成功后每 31 分钟执行一次。', ominousDisabled: '定时灾厄之瓶已关闭。', ominousStatusOn: '定时灾厄之瓶: 开，下次执行: {nextTime}', ominousStatusOff: '定时灾厄之瓶: 关。',
@@ -56,7 +57,7 @@ const MESSAGE_DEFAULTS = {
   permissionAdded: '玩家 {player} 已成功加入{label}', permissionExists: '玩家 {player} 已经在{label}中', permissionRemoved: '玩家 {player} 已从{label}移除', permissionMissing: '玩家 {player} 不在{label}中', temporaryUsage: '正确格式: {command} 玩家名 分钟数', temporaryAdded: '玩家 {player} 已临时加入{label}，持续 {minutes} 分钟',
   adminLockUsage: '正确格式: 超级锁定 备注', alreadyAdminLocked: '机器人已被超级锁定，请勿重复锁定。', adminLockSuccess: '超级锁定成功，禁用一切白名单命令，仅超管可使用“超级解锁”。', notAdminLocked: '机器人没有被超级锁定。', adminUnlockSuccess: '机器人已超级解锁，普通锁定也已同时解除。'
 }
-const MESSAGE_LABELS = Object.fromEntries(Object.keys(MESSAGE_DEFAULTS).map(key => [key, ({ permissionUsage: '权限查询格式', permissionResult: '权限查询结果', openBoxUsage: '开盒格式', openBoxSuccess: '开盒成功', openBoxFailure: '开盒失败', nearUsage: '附近查询格式', nearSuccess: '附近查询结果', nearEmpty: '附近无人', nearFailure: '附近查询失败', mountAlready: '已经在载具中', mountMissing: '未找到矿车', mountSuccess: '上车成功', mountFailure: '上车失败', dismountMissing: '当前未乘车', dismountSuccess: '下车成功', dismountFailure: '下车失败', clearEmpty: '背包已空', clearSuccess: '清空成功', clearFailure: '清空失败', switchUsage: '切换格式', switchSuccess: '切换成功', ominousUsage: '灾厄之瓶格式', ominousEnabled: '灾厄定时开启', ominousDisabled: '灾厄定时关闭', ominousStatusOn: '灾厄定时状态开启', ominousStatusOff: '灾厄定时状态关闭', periodicRightClickUsage: '定时放置格式', periodicRightClickEnabled: '定时放置开启', periodicRightClickDisabled: '定时放置关闭', periodicRightClickStatusOn: '定时放置状态开启', periodicRightClickStatusOff: '定时放置状态关闭', rightClickUsage: '右键格式', rightClickSuccess: '右键成功', rightClickFailure: '右键失败', placeUsage: '放置格式', placeSuccess: '放置成功', placeFailure: '放置失败', taskUsage: '定时任务格式', taskScheduled: '定时任务开启', taskStopped: '定时任务关闭', locked: '锁定状态', lockUsage: '锁定格式', alreadyLocked: '重复锁定', lockSuccess: '锁定成功', notLocked: '未锁定', adminUnlockRequired: '需要超级解锁', unlockSuccess: '解锁成功', forwardUsage: '指令格式', forwardInvalid: '指令无效', forwardNested: '嵌套指令', forwardDangerous: '高风险指令', forwardHome: 'Home 禁用', restartLocked: '锁定时重启', restarting: '正在重启', permissionAdded: '添加权限成功', permissionExists: '权限已存在', permissionRemoved: '移除权限成功', permissionMissing: '权限不存在', temporaryUsage: '临时权限格式', temporaryAdded: '临时权限成功', adminLockUsage: '超级锁定格式', alreadyAdminLocked: '重复超级锁定', adminLockSuccess: '超级锁定成功', notAdminLocked: '未超级锁定', adminUnlockSuccess: '超级解锁成功' })[key] || key]))
+const MESSAGE_LABELS = Object.fromEntries(Object.keys(MESSAGE_DEFAULTS).map(key => [key, ({ permissionUsage: '权限查询格式', permissionResult: '权限查询结果', openBoxUsage: '开盒格式', openBoxSuccess: '开盒成功', openBoxFailure: '开盒失败', nearUsage: '附近查询格式', nearSuccess: '附近查询结果', nearEmpty: '附近无人', nearFailure: '附近查询失败', mountAlready: '已经在载具中', mountMissing: '未找到矿车', mountSuccess: '上车成功', mountFailure: '上车失败', dismountMissing: '当前未乘车', dismountSuccess: '下车成功', dismountFailure: '下车失败', vaultSuccess: '开启宝库成功', vaultMissing: '未找到宝库', vaultFailure: '开启宝库失败', clearEmpty: '背包已空', clearSuccess: '清空成功', clearFailure: '清空失败', switchUsage: '切换格式', switchSuccess: '切换成功', ominousUsage: '灾厄之瓶格式', ominousEnabled: '灾厄定时开启', ominousDisabled: '灾厄定时关闭', ominousStatusOn: '灾厄定时状态开启', ominousStatusOff: '灾厄定时状态关闭', periodicRightClickUsage: '定时放置格式', periodicRightClickEnabled: '定时放置开启', periodicRightClickDisabled: '定时放置关闭', periodicRightClickStatusOn: '定时放置状态开启', periodicRightClickStatusOff: '定时放置状态关闭', rightClickUsage: '右键格式', rightClickSuccess: '右键成功', rightClickFailure: '右键失败', placeUsage: '放置格式', placeSuccess: '放置成功', placeFailure: '放置失败', taskUsage: '定时任务格式', taskScheduled: '定时任务开启', taskStopped: '定时任务关闭', locked: '锁定状态', lockUsage: '锁定格式', alreadyLocked: '重复锁定', lockSuccess: '锁定成功', notLocked: '未锁定', adminUnlockRequired: '需要超级解锁', unlockSuccess: '解锁成功', forwardUsage: '指令格式', forwardInvalid: '指令无效', forwardNested: '嵌套指令', forwardDangerous: '高风险指令', forwardHome: 'Home 禁用', restartLocked: '锁定时重启', restarting: '正在重启', permissionAdded: '添加权限成功', permissionExists: '权限已存在', permissionRemoved: '移除权限成功', permissionMissing: '权限不存在', temporaryUsage: '临时权限格式', temporaryAdded: '临时权限成功', adminLockUsage: '超级锁定格式', alreadyAdminLocked: '重复超级锁定', adminLockSuccess: '超级锁定成功', notAdminLocked: '未超级锁定', adminUnlockSuccess: '超级解锁成功' })[key] || key]))
 
 MESSAGE_LABELS.scheduleStatus = '定时状态'
 
@@ -66,6 +67,7 @@ const MESSAGE_GROUPS = [
   { command: 'near', note: '附近玩家查询反馈', keys: ['nearUsage', 'nearSuccess', 'nearEmpty', 'nearFailure'] },
   { command: '上车', note: '矿车乘坐反馈', keys: ['mountAlready', 'mountMissing', 'mountSuccess', 'mountFailure'] },
   { command: '下车', note: '离开载具反馈', keys: ['dismountMissing', 'dismountSuccess', 'dismountFailure'] },
+  { command: '开宝库', note: '附近宝库交互反馈', keys: ['vaultSuccess', 'vaultMissing', 'vaultFailure'] },
   { command: '清空', note: '背包清空反馈', keys: ['clearEmpty', 'clearSuccess', 'clearFailure'] },
   { command: '切换', note: '快捷栏切换反馈', keys: ['switchUsage', 'switchSuccess'] },
   { command: '定时灾厄之瓶', note: '定时饮用与状态反馈', keys: ['ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff'] },
@@ -108,6 +110,8 @@ function statusLabel (value) {
     protocol_fallback: '切换协议版本',
     completed: '执行成功',
     online: '在线',
+    reconnecting: '等待自动重连',
+    restarting: '更新重启中',
     stopping: '停止中'
   }[value] || value
 }
@@ -362,6 +366,13 @@ function smartScheduleHtml (bot) {
   return `<div class="smart-schedules">${rows.map(row => `<div class="smart-schedule-row"><span>${esc(row.label)}</span><button type="button" class="danger" data-stop-smart-schedule="${esc(row.action)}" data-smart-schedule-bot="${esc(bot.id)}"${row.name ? ` data-smart-schedule-name="${esc(row.name)}"` : ''}>停止</button></div>`).join('')}</div>`
 }
 
+function botRuntimeVersionHtml (bot) {
+  const current = String(bot.runtimeVersion || '')
+  const latest = String(bot.latestRuntimeVersion || '')
+  if (!current) return `<div class="runtime-version"><span class="muted">未运行</span>${latest ? `<small>最新 v${esc(latest)}</small>` : ''}</div>`
+  return `<div class="runtime-version"><code>v${esc(current)}</code>${bot.updateAvailable ? `<span class="version-update">可更新至 v${esc(latest)}</span>` : '<span class="positive">已是最新</span>'}</div>`
+}
+
 async function loadBots () {
   const data = await request('/api/bots')
   state.bots = data.rows
@@ -369,7 +380,7 @@ async function loadBots () {
   $('createBot').title = $('createBot').disabled ? '平台已暂停创建新 Bot' : ''
   $('botSummary').textContent = `${data.rows.length} 个机器人 · ${data.rows.filter(row => row.runtimeState === 'online').length} 个在线${state.botCreationEnabled === false ? ' · 平台已暂停创建' : ''}`
   $('botsTable').innerHTML = data.rows.length
-    ? '<table><thead><tr><th>机器人</th><th>服务器</th><th>模板</th><th>定时任务</th><th>状态</th><th>OAuth2</th><th>计费</th><th>操作</th></tr></thead><tbody>' + data.rows.map(bot => {
+    ? '<table><thead><tr><th>机器人</th><th>服务器</th><th>模板</th><th>版本</th><th>定时任务</th><th>状态</th><th>OAuth2</th><th>计费</th><th>操作</th></tr></thead><tbody>' + data.rows.map(bot => {
         const oauth = bot.oauth
           ? `<div class="oauth"><a href="${esc(bot.oauth.verificationUri)}" target="_blank" rel="noreferrer">打开 Microsoft 登录</a><br><code>${esc(bot.oauth.userCode)}</code></div>`
           : '<span class="muted">-</span>'
@@ -380,9 +391,10 @@ async function loadBots () {
         const schedule = bot.billingMode === 'once' && bot.allowScheduling ? `<button data-bot-schedule="${esc(bot.id)}">计划</button>` : ''
         const permissions = bot.mode === 'smart' ? `<button data-smart-permissions="${esc(bot.id)}">权限</button>` : ''
         const logs = `<button data-bot-logs="${esc(bot.id)}">日志</button>`
+        const update = bot.updateAvailable && bot.runtimeState === 'online' ? `<button class="primary" data-update-bot="${esc(bot.id)}">更新</button>` : ''
         const modeName = bot.mode === 'signin' ? '签到 Bot' : '智能 Bot'
         const modeDetail = bot.mode === 'signin' ? `命令：${bot.modeVariables?.command || '-'}` : '持续在线 · 消息解析'
-        return `<tr><td><strong>${esc(bot.label)}</strong><div class="muted">${esc(bot.microsoftEmail)}</div><div class="muted">${esc(bot.accountMinecraftName || bot.minecraftName || '')}</div></td><td>${esc(bot.serverHost)}:${esc(bot.serverPort)}<div class="muted">${esc(bot.minecraftVersion || '自动识别')}</div></td><td><strong>${esc(modeName)}</strong><div class="price-hint">${esc(templatePrice(bot))}</div><div class="muted">${esc(modeDetail)}</div>${bot.scheduleEnabled ? '<div class="positive">计划已启用</div>' : ''}</td><td>${smartScheduleHtml(bot)}</td><td><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span><div class="muted">${esc(bot.lastError || '')}</div></td><td>${oauth}</td><td>${bot.billingMode === 'once' ? '按次成功' : `${esc(bot.billedMinutes)} 分钟`}</td><td><div class="actions">${action}${permissions}${schedule}${logs}<button class="danger" data-delete="${esc(bot.id)}">删除</button></div></td></tr>`
+        return `<tr><td><strong>${esc(bot.label)}</strong><div class="muted">${esc(bot.microsoftEmail)}</div><div class="muted">${esc(bot.accountMinecraftName || bot.minecraftName || '')}</div></td><td>${esc(bot.serverHost)}:${esc(bot.serverPort)}<div class="muted">${esc(bot.minecraftVersion || '自动识别')}</div></td><td><strong>${esc(modeName)}</strong><div class="price-hint">${esc(templatePrice(bot))}</div><div class="muted">${esc(modeDetail)}</div>${bot.scheduleEnabled ? '<div class="positive">计划已启用</div>' : ''}</td><td>${botRuntimeVersionHtml(bot)}</td><td>${smartScheduleHtml(bot)}</td><td><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span><div class="muted">${esc(bot.lastError || '')}</div></td><td>${oauth}</td><td>${bot.billingMode === 'once' ? '按次成功' : `${esc(bot.billedMinutes)} 分钟`}</td><td><div class="actions">${update}${action}${permissions}${schedule}${logs}<button class="danger" data-delete="${esc(bot.id)}">删除</button></div></td></tr>`
       }).join('') + '</tbody></table>'
     : '<div class="empty">还没有机器人。</div>'
   bindBotActions()
@@ -395,12 +407,13 @@ function managedBotCards (rows) {
       ? `<button data-stop="${esc(bot.id)}">停止</button>`
       : `<button class="primary" data-start="${esc(bot.id)}">启动</button>`
     const permissions = bot.mode === 'smart' ? `<button data-smart-permissions="${esc(bot.id)}">权限</button>` : ''
+    const update = bot.updateAvailable && bot.runtimeState === 'online' ? `<button class="primary" data-update-bot="${esc(bot.id)}">更新</button>` : ''
     return `<article class="managed-bot-card">
       <div class="managed-bot-card-head"><div><strong>${esc(bot.label)}</strong><span>${esc(bot.ownerUsername || '-')}</span></div><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span></div>
-      <dl><div><dt>账号</dt><dd>${esc(bot.accountMinecraftName || bot.microsoftEmail || '-')}</dd></div><div><dt>服务器</dt><dd>${esc(bot.serverHost)}:${esc(bot.serverPort)}</dd></div><div><dt>类型</dt><dd>${bot.mode === 'signin' ? '签到 Bot' : '智能 Bot'}</dd></div></dl>
+      <dl><div><dt>账号</dt><dd>${esc(bot.accountMinecraftName || bot.microsoftEmail || '-')}</dd></div><div><dt>服务器</dt><dd>${esc(bot.serverHost)}:${esc(bot.serverPort)}</dd></div><div><dt>类型</dt><dd>${bot.mode === 'signin' ? '签到 Bot' : '智能 Bot'}</dd></div><div><dt>版本</dt><dd>${botRuntimeVersionHtml(bot)}</dd></div></dl>
       <div class="managed-bot-schedules"><strong>定时任务</strong>${smartScheduleHtml(bot)}</div>
       ${bot.lastError ? `<p class="managed-bot-error">${esc(bot.lastError)}</p>` : ''}
-      <div class="actions">${action}${permissions}<button data-bot-logs="${esc(bot.id)}">日志</button><button class="danger" data-delete="${esc(bot.id)}">删除</button></div>
+      <div class="actions">${update}${action}${permissions}<button data-bot-logs="${esc(bot.id)}">日志</button><button class="danger" data-delete="${esc(bot.id)}">删除</button></div>
     </article>`
   }).join('')
 }
@@ -425,6 +438,13 @@ const findBot = id => state.view === 'management'
 function bindBotActions () {
   document.querySelectorAll('[data-start]').forEach(btn => { btn.onclick = () => botAction('/api/bots/start', btn.dataset.start) })
   document.querySelectorAll('[data-stop]').forEach(btn => { btn.onclick = () => botAction('/api/bots/stop', btn.dataset.stop) })
+  document.querySelectorAll('[data-update-bot]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('更新会重启机器人。机器人将短暂掉线，并重新连接服务器；重启期间正在执行的动作会中断。确认现在更新？')) return
+      await botAction('/api/bots/restart', btn.dataset.updateBot)
+      toast('机器人正在重启并更新到最新版本')
+    }
+  })
   document.querySelectorAll('[data-delete]').forEach(btn => {
     btn.onclick = async () => {
       if (confirm('确认删除这个机器人？')) await botAction('/api/bots/delete', btn.dataset.delete)
@@ -725,6 +745,7 @@ async function botAction (path, id) {
   try {
     await post(path, { id })
     if (state.view === 'management' && state.managementTab === 'managedBots') await loadManagedBots()
+    else if (state.view === 'management' && state.managementTab === 'overview') await loadOverview()
     else await loadBots()
     await refreshBalance()
   } catch (error) {
@@ -856,10 +877,11 @@ async function loadOverview () {
     : '<div class="empty">暂无微软账号授权。</div>'
 
   $('overviewBots').innerHTML = data.bots.length
-    ? '<table><thead><tr><th>用户</th><th>Bot</th><th>微软账号</th><th>模式</th><th>定时任务</th><th>状态</th><th>挂机锁定</th><th>已设置前缀</th><th>累计分钟</th></tr></thead><tbody>' + data.bots.map(row => {
+    ? '<table><thead><tr><th>用户</th><th>Bot</th><th>微软账号</th><th>模式</th><th>版本</th><th>定时任务</th><th>状态</th><th>挂机锁定</th><th>已设置前缀</th><th>累计分钟</th><th>操作</th></tr></thead><tbody>' + data.bots.map(row => {
         const lockText = row.mode !== 'smart' ? '-' : row.lock?.adminLocked ? `超级锁定 · ${row.lock.lockedBy || '-'}` : row.lock?.locked ? `挂机中 · ${row.lock.lockedBy || '-'}` : '未锁定'
         const prefix = row.mode === 'smart' ? (row.commandPrefix || '未设置') : '-'
-        return `<tr><td><strong>${esc(row.ownerUsername)}</strong></td><td>${esc(row.label)}</td><td>${esc(row.accountMinecraftName || row.microsoftEmail)}</td><td>${row.mode === 'signin' ? '签到 Bot' : '智能 Bot'}</td><td>${smartScheduleHtml(row)}</td><td><span class="status ${esc(row.runtimeState)}">${esc(statusLabel(row.runtimeState))}</span></td><td>${esc(lockText)}${row.lock?.reason ? `<div class="muted">${esc(row.lock.reason)}</div>` : ''}</td><td><code>${esc(prefix)}</code></td><td>${Number(row.billedMinutes || 0)}</td></tr>`
+        const update = row.updateAvailable && row.runtimeState === 'online' ? `<button class="primary" data-update-bot="${esc(row.id)}">更新</button>` : '<span class="muted">-</span>'
+        return `<tr><td><strong>${esc(row.ownerUsername)}</strong></td><td>${esc(row.label)}</td><td>${esc(row.accountMinecraftName || row.microsoftEmail)}</td><td>${row.mode === 'signin' ? '签到 Bot' : '智能 Bot'}</td><td>${botRuntimeVersionHtml(row)}</td><td>${smartScheduleHtml(row)}</td><td><span class="status ${esc(row.runtimeState)}">${esc(statusLabel(row.runtimeState))}</span></td><td>${esc(lockText)}${row.lock?.reason ? `<div class="muted">${esc(row.lock.reason)}</div>` : ''}</td><td><code>${esc(prefix)}</code></td><td>${Number(row.billedMinutes || 0)}</td><td>${update}</td></tr>`
       }).join('') + '</tbody></table>'
     : '<div class="empty">暂无 Bot。</div>'
 

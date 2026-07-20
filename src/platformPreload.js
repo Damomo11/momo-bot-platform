@@ -259,7 +259,10 @@ Module._load = function (request, parent, isMain) {
       }
       send('error', { error: detail })
     })
-    bot.on('end', reason => send('state', { state: 'stopped', reason: describe(reason) }))
+    bot.on('end', reason => {
+      send('state', { state: 'stopped', reason: describe(reason) })
+      setImmediate(() => process.exit(0))
+    })
     return bot
   }
   return loaded

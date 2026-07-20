@@ -87,7 +87,7 @@ class BotSupervisorClient {
     }
     const active = (Array.isArray(rows) ? rows : []).filter(bot => bot.desiredState === 'running' || !['stopped', 'completed'].includes(String(bot.runtimeState || '')))
     if (active.length) {
-      console.warn(`[bot-supervisor] 检测到 API v${health.apiVersion || '未知'}，但仍有 ${active.length} 个 Bot 在运行；为避免中断，将在用户自行停止 Bot 后再升级守护进程。`)
+      console.warn(`[bot-supervisor] 当前是 API v${health.apiVersion || '未知'} 的旧守护进程，不支持原地热更新；仍有 ${active.length} 个 Bot 在运行，因此本次不会替换。这是启用热更新机制前最后一次需要维护窗口。`)
       return false
     }
     try {
@@ -147,6 +147,7 @@ class BotSupervisorClient {
   list (userId = null) { return this.command('list', { userId }) }
   start (id, actorUserId = null) { return this.command('start', { id, actorUserId }) }
   stop (id, actorUserId = null) { return this.command('stop', { id, actorUserId }) }
+  restart (id, actorUserId = null) { return this.command('restart', { id, actorUserId }) }
   remove (id, actorUserId = null) { return this.command('remove', { id, actorUserId }) }
   setSchedule (id, enabled, expression, actorUserId = null) { return this.command('set_schedule', { id, enabled, expression, actorUserId }) }
   syncSmartSettings (id) { return this.command('sync_smart_settings', { id }) }

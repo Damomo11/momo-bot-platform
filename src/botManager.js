@@ -5,6 +5,20 @@ const cron = require('node-cron')
 const { environmentForValues } = require('./templateVariables')
 const { invalidateMinecraftAccessTokenCache } = require('./authCache')
 
+function isReleaseNewer (candidate, current) {
+  const parse = value => {
+    const match = String(value || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/i)
+    return match ? match.slice(1).map(Number) : null
+  }
+  const next = parse(candidate)
+  const installed = parse(current)
+  if (!next || !installed) return false
+  for (let index = 0; index < 3; index++) {
+    if (next[index] !== installed[index]) return next[index] > installed[index]
+  }
+  return false
+}
+
 class BotManager {
   constructor (db, config) {
     this.db = db
@@ -57,7 +71,21 @@ class BotManager {
     const { templateProjectPath, templateVarsJson, oauthJson, billingRemainderMicros, ...safe } = bot
     const prices = this.db.getModePrices()
     const smartSchedules = bot.mode === 'smart' && typeof this.db.getSmartBotScheduleStatus === 'function' ? this.db.getSmartBotScheduleStatus(bot.id) : null
-    return { ...safe, billingMode: bot.mode === 'signin' ? 'once' : 'hourly', priceMomoc: bot.mode === 'signin' ? prices.signinOncePrice : prices.smartHourlyPrice, allowScheduling: bot.mode === 'signin', scheduleEnabled: Boolean(bot.scheduleEnabled), oauth, smartSchedules, logs: this.listLogs(bot.id) }
+    const state = this.processes.get(bot.id)
+    const runtimeVersion = state?.runtimeVersion || this.readPackageVersion(state?.instancePath)
+    const latestRuntimeVersion = this.readPackageVersion(path.join(this.config.root || '', bot.mode === 'signin' ? 'signin-runtime' : 'smart-runtime'))
+    const updateAvailable = bot.mode === 'smart' && Boolean(state) && isReleaseNewer(latestRuntimeVersion, runtimeVersion)
+    return { ...safe, billingMode: bot.mode === 'signin' ? 'once' : 'hourly', priceMomoc: bot.mode === 'signin' ? prices.signinOncePrice : prices.smartHourlyPrice, allowScheduling: bot.mode === 'signin', scheduleEnabled: Boolean(bot.scheduleEnabled), oauth, smartSchedules, runtimeVersion, latestRuntimeVersion, updateAvailable, logs: this.listLogs(bot.id) }
+  }
+
+  readPackageVersion (directory) {
+    if (!directory) return ''
+    try {
+      const value = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8'))
+      return String(value.version || '')
+    } catch {
+      return ''
+    }
   }
 
   list (userId = null) {
@@ -159,6 +187,7 @@ class BotManager {
     const state = {
       child,
       instancePath: project.instancePath,
+      runtimeVersion: project.runtimeVersion,
       accountId: bot.accountId,
       versions,
       protocolIndex: safeIndex,
@@ -173,6 +202,7 @@ class BotManager {
       stopping: false,
       fallbackPending: false,
       profileAuthRecoveryPending: false,
+      disconnectPending: false,
       reachedOnline: false
     }
     this.processes.set(bot.id, state)
@@ -218,7 +248,7 @@ class BotManager {
     const instanceModules = path.join(instancePath, 'node_modules')
     if (!fs.existsSync(instanceModules)) fs.symlinkSync(nodeModulesTarget, instanceModules, 'junction')
     const args = Array.isArray(packageJson.botPlatform?.args) ? packageJson.botPlatform.args.map(String) : []
-    return { instancePath, entry, args }
+    return { instancePath, entry, args, runtimeVersion: String(packageJson.version || '') }
   }
 
   syncModules (id) {
@@ -341,6 +371,7 @@ class BotManager {
         if (state.billingMode === 'hourly') this.startBilling(id)
       }
       this.db.updateBotRuntime(id, fields)
+      if (message.state === 'stopped') this.terminateDisconnectedRuntime(id, state)
       return
     }
     if (message?.type === 'error' && !state.fallbackPending) {
@@ -565,6 +596,29 @@ class BotManager {
     }, 60000)
   }
 
+  terminateDisconnectedRuntime (id, state) {
+    if (this.processes.get(id) !== state || state.stopping || state.restartPending || state.fallbackPending || state.profileAuthRecoveryPending || state.disconnectPending) return
+    state.disconnectPending = true
+    this.clearStateTimers(state)
+    this.appendLog(id, 'info', 'Minecraft connection ended; terminating the runtime before reconnecting.')
+    state.child.kill('SIGTERM')
+    state.killTimer = setTimeout(() => {
+      if (this.processes.get(id) === state) state.child.kill('SIGKILL')
+    }, 5000)
+    state.killTimer.unref()
+  }
+
+  recoverDisconnectedRuntimes () {
+    let recovered = 0
+    for (const [id, state] of this.processes) {
+      const bot = this.db.getBot(id)
+      if (bot?.desiredState !== 'running' || bot.runtimeState !== 'stopped') continue
+      this.terminateDisconnectedRuntime(id, state)
+      if (state.disconnectPending) recovered += 1
+    }
+    return recovered
+  }
+
   async stop (id, actorUserId = null) {
     const bot = this.db.getBot(id)
     if (!bot) throw new Error('机器人不存在。')
@@ -586,6 +640,26 @@ class BotManager {
     return this.publicBot(this.db.getBot(id))
   }
 
+  async restart (id, actorUserId = null) {
+    const bot = this.db.getBot(id)
+    if (!bot) throw new Error('机器人不存在。')
+    if (actorUserId && bot.userId !== actorUserId) throw new Error('无权操作这个机器人。')
+    if (bot.mode !== 'smart') throw new Error('只有智能 Bot 支持版本更新重启。')
+    const state = this.processes.get(id)
+    if (!state) throw new Error('机器人当前没有运行，请直接启动。')
+    if (state.restartPending) return this.publicBot(bot)
+    state.restartPending = true
+    this.clearStateTimers(state)
+    this.db.updateBotRuntime(id, { desiredState: 'running', runtimeState: 'restarting', lastError: '', oauthJson: '' })
+    this.appendLog(id, 'info', 'User requested a runtime update restart.')
+    state.child.kill('SIGTERM')
+    state.killTimer = setTimeout(() => {
+      if (this.processes.get(id) === state) state.child.kill('SIGKILL')
+    }, 5000)
+    state.killTimer.unref()
+    return this.publicBot(this.db.getBot(id))
+  }
+
   clearStateTimers (state) {
     this.clearConnectionTimers(state)
     if (state.billingTimer) clearInterval(state.billingTimer)
@@ -596,12 +670,27 @@ class BotManager {
 
   handleExit (id, exitedState, code, signal) {
     if (this.processes.get(id) !== exitedState) return
-    this.appendLog(id, exitedState.stopping ? 'info' : 'error', `Process exited: code=${code} signal=${signal || '-'}.`)
+    this.appendLog(id, exitedState.stopping || exitedState.restartPending ? 'info' : 'error', `Process exited: code=${code} signal=${signal || '-'}.`)
     this.clearStateTimers(exitedState)
     this.processes.delete(id)
     const bot = this.db.getBot(id)
     if (!bot) {
       if (this.accountLocks.get(exitedState.accountId) === id) this.accountLocks.delete(exitedState.accountId)
+      return
+    }
+
+    if (exitedState.restartPending && bot.desiredState === 'running') {
+      this.db.updateBotRuntime(id, { runtimeState: 'restarting', startedAt: null, oauthJson: '', lastError: '' })
+      setTimeout(() => {
+        const current = this.db.getBot(id)
+        if (!current || current.desiredState !== 'running' || this.processes.has(id)) return
+        try {
+          this.launchAttempt(current, exitedState.protocolIndex)
+        } catch (error) {
+          if (this.accountLocks.get(exitedState.accountId) === id) this.accountLocks.delete(exitedState.accountId)
+          this.setError(id, error)
+        }
+      }, 500).unref()
       return
     }
 
@@ -633,12 +722,15 @@ class BotManager {
 
     this.db.updateBotRuntime(id, { runtimeState: 'stopped', startedAt: null, oauthJson: '' })
     if (bot.desiredState === 'running' && !exitedState.stopping) {
-      this.db.updateBotRuntime(id, { lastError: `进程退出 code=${code} signal=${signal || ''}，10 秒后重启。` })
+      const reconnectDelayMs = Math.max(0, Number(this.config.reconnectDelayMs ?? 10000))
+      const reconnectSeconds = Math.ceil(reconnectDelayMs / 1000)
+      const reason = String(bot.lastError || `进程退出 code=${code} signal=${signal || ''}`).replace(/；?\d+ 秒后自动重连。?$/, '')
+      this.db.updateBotRuntime(id, { runtimeState: 'reconnecting', lastError: `${reason}；${reconnectSeconds} 秒后自动重连。` })
       setTimeout(() => {
         const current = this.db.getBot(id)
         if (!current || current.desiredState !== 'running' || this.processes.has(id)) return
         try { this.launchAttempt(current, exitedState.protocolIndex, { billingMode: exitedState.billingMode, priceMomoc: exitedState.priceMomoc }) } catch (error) { if (this.accountLocks.get(exitedState.accountId) === id) this.accountLocks.delete(exitedState.accountId); this.setError(id, error) }
-      }, 10000).unref()
+      }, reconnectDelayMs).unref()
       return
     }
     if (this.accountLocks.get(exitedState.accountId) === id) this.accountLocks.delete(exitedState.accountId)

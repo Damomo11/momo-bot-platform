@@ -3,6 +3,7 @@ const http = require('node:http')
 const { loadConfig } = require('../src/config')
 const PlatformDb = require('../src/db')
 const BotManager = require('../src/botManager')
+const { SupervisorHotReloader } = require('../src/supervisorHotReload')
 
 const SUPERVISOR_API_VERSION = 3
 
@@ -15,6 +16,8 @@ if (token.length < 32) throw new Error('Bot 守护进程密钥不存在或无效
 
 const db = new PlatformDb(config)
 const bots = new BotManager(db, config)
+const hotReloader = new SupervisorHotReloader({ root: config.root, config, db, bots })
+hotReloader.start()
 
 function json (res, status, value) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
@@ -37,6 +40,7 @@ async function command (input) {
   if (input.action === 'list') return bots.list(input.userId == null ? null : String(input.userId))
   if (input.action === 'start') return bots.start(String(input.id), actor)
   if (input.action === 'stop') return bots.stop(String(input.id), actor)
+  if (input.action === 'restart') return bots.restart(String(input.id), actor)
   if (input.action === 'remove') return bots.remove(String(input.id), actor)
   if (input.action === 'set_schedule') return bots.setSchedule(String(input.id), Boolean(input.enabled), String(input.expression || ''), actor)
   if (input.action === 'sync_smart_settings') return bots.syncSmartSettings(String(input.id))
@@ -48,7 +52,7 @@ async function command (input) {
 const server = http.createServer(async (req, res) => {
   try {
     if (req.headers.authorization !== `Bearer ${token}`) return json(res, 401, { ok: false, error: '未授权。' })
-    if (req.method === 'GET' && req.url === '/health') return json(res, 200, { ok: true, service: 'bot-supervisor', apiVersion: SUPERVISOR_API_VERSION, pid: process.pid })
+    if (req.method === 'GET' && req.url === '/health') return json(res, 200, { ok: true, service: 'bot-supervisor', apiVersion: SUPERVISOR_API_VERSION, runtimeRevision: hotReloader.revision, pid: process.pid })
     if (req.method === 'POST' && req.url === '/shutdown') {
       json(res, 200, { ok: true })
       setImmediate(shutdown)
@@ -74,6 +78,7 @@ server.listen(config.supervisorPort, '127.0.0.1', () => {
 })
 
 function shutdown () {
+  hotReloader.stop()
   bots.shutdown()
   server.close(() => {
     db.close()

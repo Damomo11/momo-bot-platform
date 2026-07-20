@@ -351,3 +351,6 @@ td strong { color: #fff; }
   table { min-width: 680px; }
   .permission-rows table { min-width: 620px; }
 }
+.runtime-version { display: grid; gap: 4px; min-width: 112px; }
+.runtime-version small { color: var(--muted); }
+.version-update { color: var(--orange); font-size: 12px; font-weight: 700; }

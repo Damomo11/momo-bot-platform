@@ -15,7 +15,8 @@ const { installZenoxChatParser, normalizeServerChatText } = require('../src/zeno
 const { verifyCloudStoreToken } = require('../src/cloudStoreSso')
 const { LoginAttemptLimiter, clientIp } = require('../src/security')
 const { invalidateMinecraftAccessTokenCache, isMinecraftProfileAuthError } = require('../src/authCache')
-const { createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, isVersionNewer, parsePeriodicRightClickArgs, parseSmartCommand, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
+const { upgradeObjectState } = require('../src/supervisorHotReload')
+const { activateNearestVault, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, isVersionNewer, mountNearestMinecart, parsePeriodicRightClickArgs, parseSmartCommand, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
 
 test('login attempts are blocked by IP after repeated failures', () => {
   const limiter = new LoginAttemptLimiter({ maxFailures: 3, windowMs: 1000, blockMs: 2000 })
@@ -33,11 +34,143 @@ test('client IP only trusts forwarding headers when configured', () => {
 })
 
 test('smart runtime versions compare numeric release parts', () => {
-  assert.equal(isVersionNewer('1.0.4', '1.0.3'), true)
+  assert.equal(isVersionNewer('1.0.5', '1.0.4'), true)
   assert.equal(isVersionNewer('1.1.0', '1.0.9'), true)
   assert.equal(isVersionNewer('2.0.0', '10.0.0'), false)
   assert.equal(isVersionNewer('1.0.3', '1.0.3'), false)
   assert.equal(isVersionNewer('invalid', '1.0.3'), false)
+})
+
+test('supervisor hot reload preserves live state and adds new manager fields', () => {
+  class OldManager {
+    oldMethod () { return 'old' }
+  }
+  class NewManager {
+    constructor () {
+      this.processes = new Map()
+      this.newState = new Set(['default'])
+    }
+
+    newMethod () { return 'new' }
+  }
+  const liveProcesses = new Map([['bot-1', { pid: 123 }]])
+  const manager = Object.assign(Object.create(OldManager.prototype), { processes: liveProcesses })
+  upgradeObjectState(manager, NewManager)
+  assert.equal(manager.processes, liveProcesses)
+  assert.deepEqual([...manager.processes.keys()], ['bot-1'])
+  assert.deepEqual([...manager.newState], ['default'])
+  assert.equal(manager.newMethod(), 'new')
+})
+
+test('bot list reports the running runtime version and a newer available version', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-platform-runtime-version-'))
+  const instancePath = path.join(root, 'runtime', 'bot-1')
+  try {
+    fs.mkdirSync(path.join(root, 'smart-runtime'), { recursive: true })
+    fs.mkdirSync(instancePath, { recursive: true })
+    fs.writeFileSync(path.join(root, 'smart-runtime', 'package.json'), JSON.stringify({ version: '1.2.0' }))
+    fs.writeFileSync(path.join(instancePath, 'package.json'), JSON.stringify({ version: '1.1.0' }))
+    const manager = new BotManager({
+      getModePrices: () => ({ smartHourlyPrice: 0.03, signinOncePrice: 0.01 }),
+      getSmartBotScheduleStatus: () => ({ automation: {}, tasks: [] })
+    }, { root })
+    manager.processes.set('bot-1', { instancePath })
+    const row = manager.publicBot({ id: 'bot-1', mode: 'smart', oauthJson: '', templateVarsJson: '' })
+    assert.equal(row.runtimeVersion, '1.1.0')
+    assert.equal(row.latestRuntimeVersion, '1.2.0')
+    assert.equal(row.updateAvailable, true)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('runtime update restart waits for process exit and keeps the bot desired state running', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-platform-runtime-restart-'))
+  const instancePath = path.join(root, 'runtime', 'bot-1')
+  const bot = { id: 'bot-1', userId: 'user-1', accountId: 'account-1', mode: 'smart', desiredState: 'running', runtimeState: 'online', oauthJson: '', templateVarsJson: '' }
+  try {
+    fs.mkdirSync(path.join(root, 'smart-runtime'), { recursive: true })
+    fs.mkdirSync(instancePath, { recursive: true })
+    fs.writeFileSync(path.join(root, 'smart-runtime', 'package.json'), JSON.stringify({ version: '1.2.0' }))
+    fs.writeFileSync(path.join(instancePath, 'package.json'), JSON.stringify({ version: '1.1.0' }))
+    const db = {
+      getBot: () => ({ ...bot }),
+      updateBotRuntime: (id, fields) => Object.assign(bot, fields),
+      getModePrices: () => ({ smartHourlyPrice: 0.03, signinOncePrice: 0.01 }),
+      getSmartBotScheduleStatus: () => ({ automation: {}, tasks: [] })
+    }
+    const manager = new BotManager(db, { root })
+    const signals = []
+    const state = {
+      child: { kill: signal => signals.push(signal) },
+      instancePath,
+      runtimeVersion: '1.1.0',
+      accountId: bot.accountId,
+      protocolIndex: 0,
+      billingMode: 'hourly',
+      stopping: false
+    }
+    manager.processes.set(bot.id, state)
+    manager.accountLocks.set(bot.accountId, bot.id)
+    let launched = null
+    manager.launchAttempt = current => { launched = current }
+
+    await manager.restart(bot.id, bot.userId)
+    assert.deepEqual(signals, ['SIGTERM'])
+    assert.equal(bot.desiredState, 'running')
+    assert.equal(bot.runtimeState, 'restarting')
+    assert.equal(launched, null)
+
+    manager.handleExit(bot.id, state, 0, 'SIGTERM')
+    await new Promise(resolve => setTimeout(resolve, 650))
+    assert.equal(launched.id, bot.id)
+    assert.equal(bot.desiredState, 'running')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a stopped Minecraft connection terminates its runtime and automatically reconnects', async () => {
+  const bot = {
+    id: 'bot-1',
+    userId: 'user-1',
+    accountId: 'account-1',
+    mode: 'smart',
+    desiredState: 'running',
+    runtimeState: 'online',
+    lastError: 'Kicked: connection problem',
+    oauthJson: '',
+    templateVarsJson: ''
+  }
+  const db = {
+    getBot: () => ({ ...bot }),
+    updateBotRuntime: (id, fields) => Object.assign(bot, fields),
+    getModePrices: () => ({ smartHourlyPrice: 0.03, signinOncePrice: 0.01 }),
+    getSmartBotScheduleStatus: () => ({ automation: {}, tasks: [] })
+  }
+  const manager = new BotManager(db, { reconnectDelayMs: 10 })
+  const signals = []
+  const state = {
+    child: { kill: signal => signals.push(signal) },
+    accountId: bot.accountId,
+    protocolIndex: 0,
+    billingMode: 'hourly',
+    stopping: false,
+    reachedOnline: true
+  }
+  manager.processes.set(bot.id, state)
+  manager.accountLocks.set(bot.accountId, bot.id)
+  let launched = null
+  manager.launchAttempt = current => { launched = current }
+
+  manager.handleMessage(bot.id, { type: 'state', state: 'stopped', reason: 'socketClosed' })
+  assert.equal(state.disconnectPending, true)
+  assert.deepEqual(signals, ['SIGTERM'])
+  manager.handleExit(bot.id, state, 0, 'SIGTERM')
+  assert.equal(bot.runtimeState, 'reconnecting')
+  assert.match(bot.lastError, /Kicked: connection problem；1 秒后自动重连/)
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(launched.id, bot.id)
 })
 
 test('profile auth recovery only clears the short-lived Minecraft token', () => {
@@ -423,6 +556,54 @@ test('dismount uses the Minecraft sneak control and releases it after leaving th
   assert.deepEqual(controls, [['sneak', true], ['sneak', false]])
 })
 
+test('mount always interacts with the nearest minecart even when already mounted', async () => {
+  const entity = { position: { distanceTo: () => 2 } }
+  const minecart = { id: 7, name: 'minecart', position: {}, passengers: [entity] }
+  const mounted = []
+  const bot = {
+    entity,
+    entities: { 7: minecart },
+    vehicle: minecart,
+    nearestEntity: predicate => predicate(minecart) ? minecart : null,
+    mount: target => mounted.push(target)
+  }
+  assert.deepEqual(await mountNearestMinecart(bot), { status: 'mounted' })
+  assert.deepEqual(mounted, [minecart])
+})
+
+test('vehicle state left behind by death is cleared before mount and dismount', async () => {
+  const oldPlayerEntity = { id: 1 }
+  const respawnedEntity = { id: 2, position: { distanceTo: () => 2 } }
+  const minecart = { id: 7, name: 'minecart', position: {}, passengers: [oldPlayerEntity] }
+  const bot = {
+    entity: respawnedEntity,
+    entities: { 7: minecart },
+    vehicle: minecart,
+    nearestEntity: predicate => predicate(minecart) ? minecart : null,
+    mount: target => {
+      target.passengers.push(respawnedEntity)
+      respawnedEntity.vehicle = target
+      bot.vehicle = target
+    }
+  }
+
+  assert.deepEqual(await dismountVehicle(bot), { status: 'missing' })
+  assert.equal(bot.vehicle, null)
+  assert.deepEqual(await mountNearestMinecart(bot), { status: 'mounted' })
+  assert.equal(bot.vehicle, minecart)
+})
+
+test('open vault activates the nearest vault block exactly once', async () => {
+  const vault = { name: 'vault', displayName: 'Vault' }
+  const activated = []
+  const bot = {
+    findBlock: options => options.maxDistance === 6 && options.matching(vault) ? vault : null,
+    activateBlock: async block => activated.push(block)
+  }
+  assert.equal((await activateNearestVault(bot)).status, 'activated')
+  assert.deepEqual(activated, [vault])
+})
+
 test('admin overview aggregates accounts, bots and precise user consumption', () => {
   const f = fixture()
   try {
@@ -803,6 +984,10 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   bot.nearestEntity = predicate => predicate(minecart) ? minecart : null
   bot.mount = entity => { bot.vehicle = entity }
   bot.dismount = () => { bot.vehicle = null }
+  const vault = { name: 'vault', displayName: 'Vault' }
+  let vaultActivations = 0
+  bot.findBlock = options => options.matching(vault) ? vault : null
+  bot.activateBlock = async block => { if (block === vault) vaultActivations += 1 }
   let inventoryItems = [{ name: 'stone', count: 32, slot: 9 }, { name: 'dirt', count: 5, slot: 10 }]
   bot.inventory = { items: () => inventoryItems }
   bot.tossStack = async item => { inventoryItems = inventoryItems.filter(row => row !== item) }
@@ -893,7 +1078,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: '@near' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.3')
+  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.6')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })
@@ -914,6 +1099,9 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   assert.match(chats.pop(), /已上车/)
   await handler({ username: 'White', message: 'PlatformBot下车' })
   assert.match(chats.pop(), /已下车/)
+  await handler({ username: 'White', message: 'PlatformBot开宝库' })
+  assert.equal(vaultActivations, 1)
+  assert.match(chats.pop(), /已右键附近的宝库/)
   await handler({ username: 'White', message: 'PlatformBot切换 9' })
   assert.equal(quickBarSlot, 8)
   assert.match(chats.pop(), /第 9 格/)
@@ -953,7 +1141,7 @@ test('smart command tells each player about a newer runtime only once', async ()
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.4' }
+        if (action === 'runtime_version') return { version: '1.0.7' }
         if (action === 'schedule_status') return { automation: {}, tasks: [] }
         throw new Error(`unexpected action ${action}`)
       }

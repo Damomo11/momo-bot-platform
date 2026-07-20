@@ -426,12 +426,13 @@ async function api (req, res, url) {
     botForUser(input.id, user)
     return json(res, 200, { ok: true, bot: await bots.setSchedule(input.id, Boolean(input.enabled), String(input.cron || ''), user.role === 'admin' ? null : user.id) })
   }
-  if (req.method === 'POST' && ['/api/bots/start', '/api/bots/stop', '/api/bots/delete'].includes(url.pathname)) {
+  if (req.method === 'POST' && ['/api/bots/start', '/api/bots/stop', '/api/bots/restart', '/api/bots/delete'].includes(url.pathname)) {
     const user = requireUser(req)
     const input = await body(req)
     botForUser(input.id, user)
     if (url.pathname.endsWith('/start')) await bots.start(input.id, user.role === 'admin' ? null : user.id)
     if (url.pathname.endsWith('/stop')) await bots.stop(input.id, user.role === 'admin' ? null : user.id)
+    if (url.pathname.endsWith('/restart')) await bots.restart(input.id, user.role === 'admin' ? null : user.id)
     if (url.pathname.endsWith('/delete')) await bots.remove(input.id, user.role === 'admin' ? null : user.id)
     return json(res, 200, { ok: true })
   }
@@ -457,7 +458,15 @@ async function api (req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/overview') {
     requireAdmin(req)
-    return json(res, 200, { ok: true, ...db.adminOverview() })
+    const overview = db.adminOverview()
+    const runtimeById = new Map((await bots.list()).map(bot => [bot.id, bot]))
+    overview.bots = overview.bots.map(bot => {
+      const runtime = runtimeById.get(bot.id)
+      return runtime
+        ? { ...bot, runtimeVersion: runtime.runtimeVersion, latestRuntimeVersion: runtime.latestRuntimeVersion, updateAvailable: runtime.updateAvailable, smartSchedules: runtime.smartSchedules }
+        : bot
+    })
+    return json(res, 200, { ok: true, ...overview })
   }
   if (req.method === 'POST' && url.pathname === '/api/admin/momoc') {
     const admin = requireAdmin(req)
