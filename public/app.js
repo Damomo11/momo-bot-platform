@@ -61,6 +61,8 @@ const MESSAGE_LABELS = Object.fromEntries(Object.keys(MESSAGE_DEFAULTS).map(key 
 
 MESSAGE_LABELS.scheduleStatus = '定时状态'
 
+const HIDDEN_MESSAGE_KEYS = new Set(['periodicRightClickUsage', 'periodicRightClickEnabled', 'periodicRightClickDisabled', 'periodicRightClickStatusOn', 'periodicRightClickStatusOff'])
+
 const MESSAGE_GROUPS = [
   { command: '查白 / 查黑 / 查超管', note: '权限查询反馈', keys: ['permissionUsage', 'permissionResult'] },
   { command: '开盒', note: '玩家坐标查询反馈', keys: ['openBoxUsage', 'openBoxSuccess', 'openBoxFailure'] },
@@ -71,7 +73,6 @@ const MESSAGE_GROUPS = [
   { command: '清空', note: '背包清空反馈', keys: ['clearEmpty', 'clearSuccess', 'clearFailure'] },
   { command: '切换', note: '快捷栏切换反馈', keys: ['switchUsage', 'switchSuccess'] },
   { command: '定时灾厄之瓶', note: '定时饮用与状态反馈', keys: ['ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff'] },
-  { command: '定时放置', note: '定时放置与状态反馈', keys: ['periodicRightClickUsage', 'periodicRightClickEnabled', 'periodicRightClickDisabled', 'periodicRightClickStatusOn', 'periodicRightClickStatusOff'] },
   { command: '右键', note: '实体或方块交互反馈', keys: ['rightClickUsage', 'rightClickSuccess', 'rightClickFailure'] },
   { command: '放置', note: '单次放置反馈', keys: ['placeUsage', 'placeSuccess', 'placeFailure'] },
   { command: '定时任务', note: '自定义任务定时开关反馈', keys: ['taskUsage', 'taskScheduled', 'taskStopped'] },
@@ -360,7 +361,6 @@ function smartScheduleHtml (bot) {
   const automation = schedules.automation || {}
   const rows = []
   if (automation.ominousBottleEnabled) rows.push({ label: '定时灾厄之瓶', action: 'stop_ominous' })
-  if (automation.periodicRightClickEnabled) rows.push({ label: `定时放置 (${automation.periodicRightClickX}, ${automation.periodicRightClickY}, ${automation.periodicRightClickZ}) · ${automation.periodicRightClickIntervalTicks}gt`, action: 'stop_periodic_right_click' })
   for (const task of schedules.tasks || []) rows.push({ label: `定时任务 ${task.name} · ${task.intervalTicks}gt`, action: 'stop_task', name: task.name })
   if (!rows.length) return '<div class="smart-schedules"><span class="muted">当前无定时任务</span></div>'
   return `<div class="smart-schedules">${rows.map(row => `<div class="smart-schedule-row"><span>${esc(row.label)}</span><button type="button" class="danger" data-stop-smart-schedule="${esc(row.action)}" data-smart-schedule-bot="${esc(bot.id)}"${row.name ? ` data-smart-schedule-name="${esc(row.name)}"` : ''}>停止</button></div>`).join('')}</div>`
@@ -610,8 +610,7 @@ function renderTaskEditor (actions = [{ command: '放置', args: '' }], waits = 
     const actionRow = `<div class="task-action-row" data-task-action><span class="step-number">${index + 1}</span><label>平台命令<select data-task-command>${commandOptions}</select></label><label class="task-args">参数<input data-task-args value="${esc(action.args || '')}" placeholder="${esc(taskArgumentHint(action.command))}"${['上车', '下车', '清空'].includes(action.command) ? ' disabled' : ''}></label><button type="button" class="danger task-remove" data-remove-task-step aria-label="删除第 ${index + 1} 个命令">删除</button></div>`
     if (index === actions.length - 1) return actionRow
     const wait = Number(waits[index] || 5)
-    const waitOptions = [1, 2, 5, 10, 20, 40, 100, 200].map(value => `<option value="${value}"${value === wait ? ' selected' : ''}>${value}gt</option>`).join('')
-    return `${actionRow}<div class="task-wait-row"><span>然后等待</span><select data-task-wait aria-label="第 ${index + 1} 和 ${index + 2} 个命令之间的等待时间">${waitOptions}</select><span>再执行下一条</span></div>`
+    return `${actionRow}<div class="task-wait-row"><span>然后等待</span><input data-task-wait type="number" min="1" max="28800" step="1" value="${Number.isInteger(wait) ? wait : 5}" aria-label="第 ${index + 1} 和 ${index + 2} 个命令之间的等待时间"><span>gt 再执行下一条</span></div>`
   }).join('')
   bindTaskEditor()
 }
@@ -638,7 +637,7 @@ function bindTaskEditor () {
 function collectTaskDraft () {
   return {
     actions: [...document.querySelectorAll('[data-task-action]')].map(row => ({ command: row.querySelector('[data-task-command]').value, args: row.querySelector('[data-task-args]').value.trim() })),
-    waits: [...document.querySelectorAll('[data-task-wait]')].map(select => Number(select.value))
+    waits: [...document.querySelectorAll('[data-task-wait]')].map(input => Number(input.value))
   }
 }
 
@@ -647,7 +646,7 @@ function collectTaskSteps () {
   const steps = []
   draft.actions.forEach((action, index) => {
     steps.push({ type: 'command', command: action.command, args: action.args ? action.args.split(/\s+/) : [] })
-    if (index < draft.actions.length - 1) steps.push({ type: 'wait', ticks: draft.waits[index] || 1 })
+    if (index < draft.actions.length - 1) steps.push({ type: 'wait', ticks: draft.waits[index] })
   })
   return steps
 }
@@ -683,7 +682,7 @@ async function loadMessages () {
     return `<label class="message-field"><span><strong>${esc(MESSAGE_LABELS[key] || key)}</strong><small>${esc(key)}${placeholders ? ` · 可用 ${esc(placeholders)}` : ''}</small></span><div class="message-input-actions"><input data-message-key="${esc(key)}" value="${esc(values[key])}" maxlength="256"><button type="button" data-reset-message="${esc(key)}"${changed ? '' : ' disabled'}>重置</button></div></label>`
   }
   const grouped = new Set(MESSAGE_GROUPS.flatMap(group => group.keys))
-  const groups = [...MESSAGE_GROUPS, { command: '其他', note: '未归类的消息', keys: Object.keys(MESSAGE_DEFAULTS).filter(key => !grouped.has(key)) }]
+  const groups = [...MESSAGE_GROUPS, { command: '其他', note: '未归类的消息', keys: Object.keys(MESSAGE_DEFAULTS).filter(key => !grouped.has(key) && !HIDDEN_MESSAGE_KEYS.has(key)) }]
     .filter(group => group.keys.length)
   $('messageFields').innerHTML = groups.map(group => `<section class="message-command-group"><div class="message-command-head"><div><code>${esc(group.command)}</code><span>${esc(group.note)}</span></div><small>${group.keys.length} 条消息</small></div><div class="message-command-fields">${group.keys.map(field).join('')}</div></section>`).join('')
   document.querySelectorAll('[data-message-key]').forEach(input => {

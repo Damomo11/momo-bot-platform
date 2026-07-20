@@ -84,7 +84,7 @@ main { min-width: 0; height: 100vh; overflow-y: auto; padding: 40px; }
 .step-number { width: 30px; height: 30px; display: grid; place-items: center; align-self: center; border-radius: 50%; background: #2a251e; color: var(--gold); font-weight: 700; }
 .task-remove { min-height: 40px; }
 .task-wait-row { width: fit-content; display: flex; align-items: center; gap: 10px; margin: 7px 0 7px 47px; border-left: 2px solid #4a3921; padding: 5px 0 5px 14px; color: var(--muted); font-size: 12px; }
-.task-wait-row select { width: 92px; padding-block: 6px; }
+.task-wait-row input { width: 120px; padding-block: 6px; }
 .message-field-list { display: grid; gap: 14px; }
 .message-command-group { overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: #151517; }
 .message-command-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); background: #1c1a18; padding: 11px 14px; }

@@ -846,6 +846,33 @@ test('periodic right click parser uses direct coordinates without direction suff
   assert.equal(parsePeriodicRightClickArgs(['100', '64', '200', '0']), null)
 })
 
+test('custom task waits allow up to 28800gt between commands', () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('task_owner', 'password-123')
+    const bot = f.db.createBot(user.id, { mode: 'smart', label: 'Smart', microsoftEmail: 'task-owner@example.com', serverHost: 'localhost' })
+    const saved = f.db.setSmartBotTask(bot.id, {
+      name: 'long_wait',
+      steps: [
+        { type: 'command', command: '切换', args: ['1'] },
+        { type: 'wait', ticks: 28800 },
+        { type: 'command', command: '切换', args: ['2'] }
+      ]
+    })
+    assert.equal(saved.steps[1].ticks, 28800)
+    assert.throws(() => f.db.setSmartBotTask(bot.id, {
+      name: 'too_long_wait',
+      steps: [
+        { type: 'command', command: '切换', args: ['1'] },
+        { type: 'wait', ticks: 28801 },
+        { type: 'command', command: '切换', args: ['2'] }
+      ]
+    }), /1-28800gt/)
+  } finally {
+    f.close()
+  }
+})
+
 test('periodic right click places at the exact target using an automatically selected neighbor', async () => {
   const placed = []
   const bot = {
@@ -1114,12 +1141,10 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'White', message: 'PlatformBot定时灾厄之瓶 开' })
   assert.equal(ominousSettings.ominousBottleEnabled, true)
   assert.match(chats.pop(), /已开启/)
-  await handler({ username: 'White', message: 'PlatformBot定时放置 100 64 200 20' })
-  assert.equal(periodicSettings.periodicRightClickEnabled, true)
-  assert.deepEqual([periodicSettings.periodicRightClickX, periodicSettings.periodicRightClickY, periodicSettings.periodicRightClickZ], [100, 64, 200])
-  assert.match(chats.pop(), /定时放置已开启/)
   await handler({ username: 'White', message: 'custom-prefix-指令 /pay Root 1' })
   assert.match(chats.pop(), /高风险/)
+  await handler({ username: 'Root', message: 'custom-prefix-指令 /pay White 1' })
+  assert.equal(chats.pop(), '/pay White 1')
   await handler({ username: 'White', message: 'custom-prefix-锁定 safe afk' })
   assert.match(chats.pop(), /锁定成功/)
   await handler({ username: 'White', message: 'custom-prefix-指令 /back' })

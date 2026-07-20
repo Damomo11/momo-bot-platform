@@ -1020,7 +1020,7 @@ class PlatformDb {
       if (!step || typeof step !== 'object') throw new Error(`第 ${index + 1} 步无效。`)
       if (step.type === 'wait') {
         const ticks = Number(step.ticks)
-        if (!Number.isInteger(ticks) || ticks < 1 || ticks > 1200) throw new Error(`第 ${index + 1} 步等待时间必须为 1-1200gt。`)
+        if (!Number.isInteger(ticks) || ticks < 1 || ticks > 28800) throw new Error(`第 ${index + 1} 步等待时间必须为 1-28800gt。`)
         return { type: 'wait', ticks }
       }
       const command = String(step.command || '').trim()

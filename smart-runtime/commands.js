@@ -142,13 +142,13 @@ function remainingText (expiresAt) {
   return COMMAND_TEXT.permissionRemaining(minutes)
 }
 
-function validateForwardCommand (text, lock, prefixes = []) {
+function validateForwardCommand (text, lock, prefixes = [], options = {}) {
   const value = String(text || '').trim()
   if (!value || value.length > 256 || /[\r\n]/.test(value)) return { ok: false, reason: 'invalid' }
   const lower = value.toLowerCase()
   if (normalizeCommandPrefixes(prefixes).some(prefix => !prefix.startsWith('/') && lower.startsWith(prefix.toLowerCase()))) return { ok: false, reason: 'nested' }
   const root = value.split(/\s+/, 1)[0].replace(/^\//, '').toLowerCase()
-  if (['gmp', 'pay', 'msg'].includes(root)) return { ok: false, reason: 'dangerous' }
+  if (!options.admin && ['gmp', 'pay', 'msg'].includes(root)) return { ok: false, reason: 'dangerous' }
   if (root.includes('home')) return { ok: false, reason: 'home' }
   if (lock.locked && ['tpa', 'spawn', 'back', 'tpaccept'].includes(root)) return { ok: false, reason: 'locked' }
   return { ok: true, value }
@@ -262,7 +262,6 @@ function formatScheduleStatus (status = {}) {
   const automation = status.automation || {}
   const entries = []
   if (automation.ominousBottleEnabled) entries.push('灾厄之瓶')
-  if (automation.periodicRightClickEnabled) entries.push(`定时放置(${automation.periodicRightClickX},${automation.periodicRightClickY},${automation.periodicRightClickZ}/${automation.periodicRightClickIntervalTicks}gt)`)
   for (const task of status.tasks || []) entries.push(`定时任务 ${task.name}(${task.intervalTicks}gt)`)
   return entries.join('；') || '无'
 }
@@ -789,28 +788,6 @@ function createSmartCommandHandler (bot, options = {}) {
       return
     }
 
-    if (parsed.command === '定时放置') {
-      if (!parsed.args.length) {
-        const settings = await request('periodic_right_click_get', {})
-        reply(settings.periodicRightClickEnabled ? COMMAND_TEXT.periodicRightClickStatusOn(settings) : COMMAND_TEXT.periodicRightClickStatusOff, settings.periodicRightClickEnabled ? 'periodicRightClickStatusOn' : 'periodicRightClickStatusOff', { x: settings.periodicRightClickX, y: settings.periodicRightClickY, z: settings.periodicRightClickZ, ticks: settings.periodicRightClickIntervalTicks })
-        return
-      }
-      if (parsed.args.length === 1 && parsed.args[0] === '关') {
-        const result = await request('periodic_right_click_set', { username, enabled: false })
-        if (!result.allowed) return
-        applyPeriodicRightClickSettings(result.settings)
-        reply(COMMAND_TEXT.periodicRightClickDisabled, 'periodicRightClickDisabled')
-        return
-      }
-      const parsedSettings = parsePeriodicRightClickArgs(parsed.args)
-      if (!parsedSettings) return reply(COMMAND_TEXT.periodicRightClickUsage, 'periodicRightClickUsage')
-      const result = await request('periodic_right_click_set', { username, enabled: true, ...parsedSettings })
-      if (!result.allowed) return
-      applyPeriodicRightClickSettings(result.settings)
-      reply(COMMAND_TEXT.periodicRightClickEnabled(result.settings), 'periodicRightClickEnabled', { x: result.settings.periodicRightClickX, y: result.settings.periodicRightClickY, z: result.settings.periodicRightClickZ, ticks: result.settings.periodicRightClickIntervalTicks })
-      return
-    }
-
     if (parsed.command === '定时任务') {
       if (parsed.args.length === 2 && parsed.args[1] === '关') {
         const result = await request('task_schedule_set', { username, name: parsed.args[0], intervalTicks: null })
@@ -864,7 +841,7 @@ function createSmartCommandHandler (bot, options = {}) {
 
     if (parsed.command === '指令') {
       if (!parsed.args.length) return reply(COMMAND_TEXT.forwardUsage, 'forwardUsage')
-      const checked = validateForwardCommand(parsed.args.join(' '), access.lock, prefixes)
+      const checked = validateForwardCommand(parsed.args.join(' '), access.lock, prefixes, { admin: access.admin })
       const forwardErrors = {
         invalid: COMMAND_TEXT.forwardInvalid,
         nested: COMMAND_TEXT.forwardNested,
