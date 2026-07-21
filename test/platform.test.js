@@ -16,7 +16,7 @@ const { verifyCloudStoreToken } = require('../src/cloudStoreSso')
 const { LoginAttemptLimiter, clientIp } = require('../src/security')
 const { invalidateMinecraftAccessTokenCache, isMinecraftProfileAuthError } = require('../src/authCache')
 const { upgradeObjectState } = require('../src/supervisorHotReload')
-const { activateNearestVault, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, isVersionNewer, mountNearestMinecart, parsePeriodicRightClickArgs, parseSmartCommand, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
+const { activateNearestVault, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, isVersionNewer, mountNearestMinecart, parsePeriodicRightClickArgs, parseSmartCommand, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
 
 test('login attempts are blocked by IP after repeated failures', () => {
   const limiter = new LoginAttemptLimiter({ maxFailures: 3, windowMs: 1000, blockMs: 2000 })
@@ -873,6 +873,31 @@ test('custom task waits allow up to 28800gt between commands', () => {
   }
 })
 
+test('custom task continues with later commands after one command fails', async () => {
+  const slots = []
+  const warnings = []
+  const bot = {
+    setQuickBarSlot: async slot => {
+      slots.push(slot)
+      if (slot === 1) throw new Error('slot unavailable')
+    }
+  }
+  const result = await executeCustomTask(bot, {
+    name: 'continue_after_failure',
+    steps: [
+      { type: 'command', command: '切换', args: ['1'] },
+      { type: 'wait', ticks: 1 },
+      { type: 'command', command: '切换', args: ['2'] },
+      { type: 'wait', ticks: 1 },
+      { type: 'command', command: '切换', args: ['3'] }
+    ]
+  }, { logger: { warn: message => warnings.push(message) } })
+
+  assert.deepEqual(slots, [0, 1, 2])
+  assert.deepEqual(result.failures, [{ commandIndex: 2, command: '切换', message: 'slot unavailable' }])
+  assert.match(warnings[0], /第 2 条指令.*slot unavailable/)
+})
+
 test('periodic right click places at the exact target using an automatically selected neighbor', async () => {
   const placed = []
   const bot = {
@@ -1105,7 +1130,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: '@near' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.6')
+  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.8')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })
@@ -1145,6 +1170,12 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   assert.match(chats.pop(), /高风险/)
   await handler({ username: 'Root', message: 'custom-prefix-指令 /pay White 1' })
   assert.equal(chats.pop(), '/pay White 1')
+  await handler({ username: 'White', message: 'custom-prefix-指令 /home' })
+  assert.match(chats.pop(), /home 命令已禁用/)
+  await handler({ username: 'Root', message: 'custom-prefix-指令 /home' })
+  assert.equal(chats.pop(), '/home')
+  await handler({ username: 'Root', message: 'custom-prefix-指令 /sethome base' })
+  assert.equal(chats.pop(), '/sethome base')
   await handler({ username: 'White', message: 'custom-prefix-锁定 safe afk' })
   assert.match(chats.pop(), /锁定成功/)
   await handler({ username: 'White', message: 'custom-prefix-指令 /back' })
@@ -1166,7 +1197,7 @@ test('smart command tells each player about a newer runtime only once', async ()
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.7' }
+        if (action === 'runtime_version') return { version: '1.0.9' }
         if (action === 'schedule_status') return { automation: {}, tasks: [] }
         throw new Error(`unexpected action ${action}`)
       }

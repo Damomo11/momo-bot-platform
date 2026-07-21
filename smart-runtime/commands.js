@@ -149,7 +149,7 @@ function validateForwardCommand (text, lock, prefixes = [], options = {}) {
   if (normalizeCommandPrefixes(prefixes).some(prefix => !prefix.startsWith('/') && lower.startsWith(prefix.toLowerCase()))) return { ok: false, reason: 'nested' }
   const root = value.split(/\s+/, 1)[0].replace(/^\//, '').toLowerCase()
   if (!options.admin && ['gmp', 'pay', 'msg'].includes(root)) return { ok: false, reason: 'dangerous' }
-  if (root.includes('home')) return { ok: false, reason: 'home' }
+  if (!options.admin && root.includes('home')) return { ok: false, reason: 'home' }
   if (lock.locked && ['tpa', 'spawn', 'back', 'tpaccept'].includes(root)) return { ok: false, reason: 'locked' }
   return { ok: true, value }
 }
@@ -266,20 +266,31 @@ function formatScheduleStatus (status = {}) {
   return entries.join('；') || '无'
 }
 
-async function executeCustomTask (bot, task) {
+async function executeCustomTask (bot, task, options = {}) {
+  const failures = []
+  const logger = options.logger || console
+  let commandIndex = 0
   for (const step of task.steps || []) {
     if (step.type === 'wait') await delay(step.ticks * 50)
     else if (step.type === 'command') {
+      commandIndex += 1
       const args = step.args || []
-      if (step.command === '上车') await mountNearestMinecart(bot)
-      else if (step.command === '下车') await dismountVehicle(bot)
-      else if (step.command === '清空') await clearInventory(bot)
-      else if (step.command === '切换') await bot.setQuickBarSlot(Number(args[0]) - 1)
-      else if (step.command === '放置') await placePeriodicRightClick(bot, { periodicRightClickX: Number(args[0]), periodicRightClickY: Number(args[1]), periodicRightClickZ: Number(args[2]) })
-      else if (step.command === '右键') await rightClickTarget(bot, args)
-      else if (step.command === '指令') bot.chat(args.join(' ').slice(0, 256))
+      try {
+        if (step.command === '上车') await mountNearestMinecart(bot)
+        else if (step.command === '下车') await dismountVehicle(bot)
+        else if (step.command === '清空') await clearInventory(bot)
+        else if (step.command === '切换') await bot.setQuickBarSlot(Number(args[0]) - 1)
+        else if (step.command === '放置') await placePeriodicRightClick(bot, { periodicRightClickX: Number(args[0]), periodicRightClickY: Number(args[1]), periodicRightClickZ: Number(args[2]) })
+        else if (step.command === '右键') await rightClickTarget(bot, args)
+        else if (step.command === '指令') bot.chat(args.join(' ').slice(0, 256))
+      } catch (error) {
+        const message = String(error?.message || error)
+        failures.push({ commandIndex, command: step.command, message })
+        logger.warn?.(`[smart-task] 任务 ${task.name || '未命名'} 第 ${commandIndex} 条指令“${step.command}”执行失败: ${message}`)
+      }
     }
   }
+  return { failures }
 }
 
 async function clearInventory (bot) {
