@@ -149,7 +149,7 @@ function validateForwardCommand (text, lock, prefixes = [], options = {}) {
   if (normalizeCommandPrefixes(prefixes).some(prefix => !prefix.startsWith('/') && lower.startsWith(prefix.toLowerCase()))) return { ok: false, reason: 'nested' }
   const root = value.split(/\s+/, 1)[0].replace(/^\//, '').toLowerCase()
   if (!options.admin && ['gmp', 'pay', 'msg'].includes(root)) return { ok: false, reason: 'dangerous' }
-  if (root.includes('home')) return { ok: false, reason: 'home' }
+  if (!options.admin && root.includes('home')) return { ok: false, reason: 'home' }
   if (lock.locked && ['tpa', 'spawn', 'back', 'tpaccept'].includes(root)) return { ok: false, reason: 'locked' }
   return { ok: true, value }
 }
