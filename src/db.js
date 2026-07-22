@@ -158,8 +158,10 @@ class PlatformDb {
       CREATE TABLE IF NOT EXISTS smart_bot_tasks (
         bot_id TEXT NOT NULL,
         name TEXT NOT NULL COLLATE NOCASE,
+        parameters_json TEXT NOT NULL DEFAULT '[]',
         steps_json TEXT NOT NULL DEFAULT '[]',
         interval_ticks INTEGER,
+        schedule_args_json TEXT NOT NULL DEFAULT '[]',
         next_due_at INTEGER,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (bot_id, name),
@@ -250,6 +252,8 @@ class PlatformDb {
     this.ensureColumn('smart_bot_automation', 'periodic_right_click_last_run_at', 'INTEGER')
     this.ensureColumn('smart_bot_automation', 'periodic_right_click_next_due_at', 'INTEGER')
     this.ensureColumn('smart_bot_settings', 'message_overrides_json', "TEXT NOT NULL DEFAULT '{}'")
+    this.ensureColumn('smart_bot_tasks', 'parameters_json', "TEXT NOT NULL DEFAULT '[]'")
+    this.ensureColumn('smart_bot_tasks', 'schedule_args_json', "TEXT NOT NULL DEFAULT '[]'")
     this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_external_identity ON users(auth_source, external_id) WHERE external_id IS NOT NULL AND external_id <> ''")
     this.db.exec('DROP TABLE IF EXISTS bot_modules; DROP TABLE IF EXISTS feature_modules; DROP TABLE IF EXISTS user_bot_settings;')
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_hourly_price', '0.03')").run()
@@ -993,7 +997,15 @@ class PlatformDb {
   }
 
   listSmartBotTasks (botId) {
-    return this.db.prepare('SELECT name, steps_json AS stepsJson, interval_ticks AS intervalTicks, next_due_at AS nextDueAt, updated_at AS updatedAt FROM smart_bot_tasks WHERE bot_id = ? ORDER BY name COLLATE NOCASE').all(botId).map(row => ({ ...row, steps: JSON.parse(row.stepsJson || '[]'), stepsJson: undefined }))
+    return this.db.prepare('SELECT name, parameters_json AS parametersJson, steps_json AS stepsJson, interval_ticks AS intervalTicks, schedule_args_json AS scheduleArgsJson, next_due_at AS nextDueAt, updated_at AS updatedAt FROM smart_bot_tasks WHERE bot_id = ? ORDER BY name COLLATE NOCASE').all(botId).map(row => ({
+      ...row,
+      parameters: JSON.parse(row.parametersJson || '[]'),
+      steps: JSON.parse(row.stepsJson || '[]'),
+      scheduleArgs: JSON.parse(row.scheduleArgsJson || '[]'),
+      parametersJson: undefined,
+      stepsJson: undefined,
+      scheduleArgsJson: undefined
+    }))
   }
 
   getSmartBotScheduleStatus (botId) {
@@ -1012,8 +1024,12 @@ class PlatformDb {
 
   setSmartBotTask (botId, input = {}) {
     const name = String(input.name || '').trim()
+    const parameters = Array.isArray(input.parameters) ? input.parameters.map(value => String(value).trim()) : []
     const steps = input.steps
     if (!name || name.length > 32 || /\s/.test(name)) throw new Error('任务名必须为 1-32 个不含空格的字符。')
+    if (parameters.length > 10) throw new Error('任务最多可声明 10 个参数。')
+    if (parameters.some(value => !/^[\p{L}_][\p{L}\p{N}_]{0,15}$/u.test(value))) throw new Error('参数名必须为 1-16 个字母、数字或下划线，且不能以数字开头。')
+    if (new Set(parameters).size !== parameters.length) throw new Error('任务参数名不能重复。')
     if (!Array.isArray(steps) || !steps.length || steps.length > 100) throw new Error('任务必须包含 1-100 个步骤。')
     const allowedCommands = new Set(['上车', '下车', '清空', '切换', '放置', '右键', '指令'])
     const normalizedSteps = steps.map((step, index) => {
@@ -1025,11 +1041,17 @@ class PlatformDb {
       }
       const command = String(step.command || '').trim()
       const args = Array.isArray(step.args) ? step.args.map(value => String(value).trim()).filter(Boolean) : []
+      for (const arg of args) {
+        for (const match of arg.matchAll(/\{([\p{L}_][\p{L}\p{N}_]{0,15})\}/gu)) {
+          if (!parameters.includes(match[1])) throw new Error(`第 ${index + 1} 步使用了未声明的参数“${match[1]}”。`)
+        }
+      }
+      const hasTemplate = value => /\{[\p{L}_][\p{L}\p{N}_]{0,15}\}/u.test(value)
       if (!allowedCommands.has(command)) throw new Error(`第 ${index + 1} 步不是可用的平台命令。`)
       if (['上车', '下车', '清空'].includes(command) && args.length) throw new Error(`${command} 命令不需要参数。`)
-      if (command === '切换' && (args.length !== 1 || !/^[1-9]$/.test(args[0]))) throw new Error('切换命令参数必须为 1-9。')
-      if (command === '放置' && (args.length !== 3 || !args.every(value => /^-?\d+$/.test(value)))) throw new Error('放置命令需要三个整数坐标。')
-      if (command === '右键' && !((args.length === 1 && args[0].length <= 32) || (args.length === 3 && args.every(value => /^-?\d+$/.test(value))))) throw new Error('右键命令需要玩家名或三个整数坐标。')
+      if (command === '切换' && (args.length !== 1 || (!/^[1-9]$/.test(args[0]) && !hasTemplate(args[0])))) throw new Error('切换命令参数必须为 1-9 或参数占位符。')
+      if (command === '放置' && (args.length !== 3 || !args.every(value => /^-?\d+$/.test(value) || hasTemplate(value)))) throw new Error('放置命令需要三个整数坐标或参数占位符。')
+      if (command === '右键' && !((args.length === 1 && args[0].length <= 64) || (args.length === 3 && args.every(value => /^-?\d+$/.test(value) || hasTemplate(value))))) throw new Error('右键命令需要玩家名或三个整数坐标。')
       if (command === '指令') {
         const text = args.join(' ')
         const root = text.split(/\s+/, 1)[0].replace(/^\//, '').toLowerCase()
@@ -1043,16 +1065,23 @@ class PlatformDb {
       if (i % 2 === 1 && (step.type !== 'wait' || !Number.isInteger(step.ticks) || step.ticks < 1)) throw new Error('每两个指令之间必须有至少 1gt 的等待步骤。')
     }
     if (normalizedSteps.length % 2 === 0) throw new Error('任务不能以等待步骤结束。')
-    this.db.prepare(`INSERT INTO smart_bot_tasks (bot_id, name, steps_json) VALUES (?, ?, ?) ON CONFLICT(bot_id, name) DO UPDATE SET steps_json=excluded.steps_json, updated_at=CURRENT_TIMESTAMP`).run(botId, name, JSON.stringify(normalizedSteps))
+    this.db.prepare(`INSERT INTO smart_bot_tasks (bot_id, name, parameters_json, steps_json) VALUES (?, ?, ?, ?) ON CONFLICT(bot_id, name) DO UPDATE SET parameters_json=excluded.parameters_json, steps_json=excluded.steps_json, interval_ticks=NULL, schedule_args_json='[]', next_due_at=NULL, updated_at=CURRENT_TIMESTAMP`).run(botId, name, JSON.stringify(parameters), JSON.stringify(normalizedSteps))
     return this.getSmartBotTask(botId, name)
   }
 
   deleteSmartBotTask (botId, name) { return this.db.prepare('DELETE FROM smart_bot_tasks WHERE bot_id = ? AND name = ? COLLATE NOCASE').run(botId, String(name || '')).changes }
 
-  scheduleSmartBotTask (botId, name, intervalTicks) {
+  scheduleSmartBotTask (botId, name, intervalTicks, scheduleArgs = []) {
     const ticks = intervalTicks == null ? null : Number(intervalTicks)
     if (ticks != null && (!Number.isInteger(ticks) || ticks < 1 || ticks > 1728000)) throw new Error('定时任务间隔必须为 1-1728000gt。')
-    const result = this.db.prepare('UPDATE smart_bot_tasks SET interval_ticks = ?, next_due_at = ?, updated_at=CURRENT_TIMESTAMP WHERE bot_id = ? AND name = ? COLLATE NOCASE').run(ticks, ticks == null ? null : Date.now() + ticks * 50, botId, name)
+    const task = this.getSmartBotTask(botId, name)
+    if (!task) throw new Error('任务不存在。')
+    const args = ticks == null ? [] : Array.isArray(scheduleArgs) ? scheduleArgs.map(value => String(value)) : []
+    const parameterCount = task.parameters.length
+    const argumentCountValid = ticks == null || (parameterCount === 0 ? args.length === 0 : parameterCount === 1 ? args.length >= 1 : args.length === parameterCount)
+    if (!argumentCountValid) throw new Error(`任务“${task.name}”需要 ${parameterCount} 个参数：${task.parameters.join(' ')}。`)
+    if (args.some(value => value.length > 256) || args.join(' ').length > 512) throw new Error('任务参数内容过长。')
+    const result = this.db.prepare('UPDATE smart_bot_tasks SET interval_ticks = ?, schedule_args_json = ?, next_due_at = ?, updated_at=CURRENT_TIMESTAMP WHERE bot_id = ? AND name = ? COLLATE NOCASE').run(ticks, JSON.stringify(args), ticks == null ? null : Date.now() + ticks * 50, botId, name)
     if (!result.changes) throw new Error('任务不存在。')
     return this.getSmartBotTask(botId, name)
   }

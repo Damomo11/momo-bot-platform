@@ -50,8 +50,9 @@ const COMMAND_TEXT = Object.freeze({
   placeSuccess: '放置成功。',
   taskScheduled: (name, ticks) => `定时任务 ${name} 已开启，每 ${ticks} 游戏刻执行一次。`,
   taskStopped: name => `定时任务 ${name} 已关闭。`,
+  customTaskUsage: task => `正确格式: ${task.name}${task.parameters?.length ? ` ${task.parameters.join(' ')}` : ''}`,
   scheduleStatus: schedules => `定时：${schedules || '无'}`,
-  taskUsage: '正确格式: 定时任务 任务名 5；关闭时使用 定时任务 任务名 关。',
+  taskUsage: '正确格式: 定时任务 任务名 5 [参数...]；关闭时使用 定时任务 任务名 关。',
   locked: (lock, label = '锁定') => `机器人已被 ${lock.lockedBy || '未知玩家'} ${label}，备注: ${lock.reason || '无'}`,
   lockUsage: '正确格式: 锁定 备注',
   alreadyLocked: '机器人已被锁定，请勿重复锁定。',
@@ -269,13 +270,15 @@ function formatScheduleStatus (status = {}) {
 async function executeCustomTask (bot, task, options = {}) {
   const failures = []
   const logger = options.logger || console
+  const variables = bindTaskArguments(task, options.args || task.scheduleArgs || [])
   let commandIndex = 0
   for (const step of task.steps || []) {
     if (step.type === 'wait') await delay(step.ticks * 50)
     else if (step.type === 'command') {
       commandIndex += 1
-      const args = step.args || []
+      const args = (step.args || []).map(value => replaceTaskParameters(value, variables))
       try {
+        validateCustomTaskCommand(step.command, args)
         if (step.command === '上车') await mountNearestMinecart(bot)
         else if (step.command === '下车') await dismountVehicle(bot)
         else if (step.command === '清空') await clearInventory(bot)
@@ -291,6 +294,30 @@ async function executeCustomTask (bot, task, options = {}) {
     }
   }
   return { failures }
+}
+
+function bindTaskArguments (task, args = []) {
+  const parameters = Array.isArray(task?.parameters) ? task.parameters : []
+  const values = Array.isArray(args) ? args.map(value => String(value)) : []
+  const valid = parameters.length === 0 ? values.length === 0 : parameters.length === 1 ? values.length >= 1 : values.length === parameters.length
+  if (!valid) throw new Error(`任务“${task?.name || '未命名'}”需要 ${parameters.length} 个参数：${parameters.join(' ')}。`)
+  return Object.fromEntries(parameters.map((name, index) => [name, parameters.length === 1 ? values.join(' ') : values[index]]))
+}
+
+function replaceTaskParameters (value, variables) {
+  return String(value).replace(/\{([\p{L}_][\p{L}\p{N}_]{0,15})\}/gu, (match, name) => Object.prototype.hasOwnProperty.call(variables, name) ? variables[name] : match)
+}
+
+function validateCustomTaskCommand (command, args) {
+  if (['上车', '下车', '清空'].includes(command) && args.length) throw new Error(`${command} 命令不需要参数。`)
+  if (command === '切换' && (args.length !== 1 || !/^[1-9]$/.test(args[0]))) throw new Error('切换命令参数必须为 1-9。')
+  if (command === '放置' && !parseCoordinates(args)) throw new Error('放置命令需要三个有效整数坐标。')
+  if (command === '右键' && !((args.length === 1 && args[0].length <= 32 && !/\s/.test(args[0])) || parseCoordinates(args))) throw new Error('右键命令需要玩家名或三个有效整数坐标。')
+  if (command === '指令') {
+    const text = args.join(' ')
+    const root = text.split(/\s+/, 1)[0].replace(/^\//, '').toLowerCase()
+    if (!text || text.length > 256 || /[\r\n]/.test(text) || ['gmp', 'pay', 'msg'].includes(root) || root.includes('home')) throw new Error('指令内容无效或属于禁用命令。')
+  }
 }
 
 async function clearInventory (bot) {
@@ -704,6 +731,21 @@ function createSmartCommandHandler (bot, options = {}) {
     if (access.lock.adminLocked && !access.admin && parsed.command !== '状态') return reply(COMMAND_TEXT.locked(access.lock, '超级锁定'), 'locked', { player: access.lock.lockedBy || '未知玩家', label: '超级锁定', reason: access.lock.reason || '无' })
     if (!access.whitelisted) return
 
+    const overridableTaskCommands = new Set(['上车', '下车', '开宝库', '清空', '切换', '放置', '右键'])
+    if (overridableTaskCommands.has(parsed.command)) {
+      const customTask = await request('task_get', { name: parsed.command })
+      if (customTask?.task) {
+        try {
+          bindTaskArguments(customTask.task, parsed.args)
+        } catch {
+          reply(COMMAND_TEXT.customTaskUsage(customTask.task), 'customTaskUsage')
+          return
+        }
+        await runBotAction(() => executeCustomTask(bot, customTask.task, { args: parsed.args }))
+        return
+      }
+    }
+
     if (parsed.command === '上车') {
       if (parsed.args.length) return reply(COMMAND_TEXT.mountFailure, 'mountFailure')
       try {
@@ -806,8 +848,8 @@ function createSmartCommandHandler (bot, options = {}) {
         return
       }
       const ticks = Number(String(parsed.args[1] || '').replace(/gt$/i, ''))
-      if (parsed.args.length !== 2 || !Number.isInteger(ticks) || ticks < 1) return reply(COMMAND_TEXT.taskUsage, 'taskUsage')
-      const result = await request('task_schedule_set', { username, name: parsed.args[0], intervalTicks: ticks })
+      if (parsed.args.length < 2 || !Number.isInteger(ticks) || ticks < 1) return reply(COMMAND_TEXT.taskUsage, 'taskUsage')
+      const result = await request('task_schedule_set', { username, name: parsed.args[0], intervalTicks: ticks, args: parsed.args.slice(2) })
       if (result.allowed) reply(COMMAND_TEXT.taskScheduled(parsed.args[0], ticks), 'taskScheduled', { task: parsed.args[0], ticks })
       return
     }
@@ -869,7 +911,13 @@ function createSmartCommandHandler (bot, options = {}) {
     if (!access.admin || !builtInAdminCommands.has(parsed.command)) {
       const customTask = await request('task_get', { name: parsed.command })
       if (customTask?.task) {
-        await runBotAction(() => executeCustomTask(bot, customTask.task))
+        try {
+          bindTaskArguments(customTask.task, parsed.args)
+        } catch {
+          reply(COMMAND_TEXT.customTaskUsage(customTask.task), 'customTaskUsage')
+          return
+        }
+        await runBotAction(() => executeCustomTask(bot, customTask.task, { args: parsed.args }))
         return
       }
     }
@@ -1006,7 +1054,7 @@ function installSmartCommands (bot, options = {}) {
         if (!task.intervalTicks || !task.nextDueAt || task.nextDueAt > now || runningScheduledTasks.has(key) || Number(taskRetryAfter.get(key) || 0) > now) continue
         runningScheduledTasks.add(key)
         try {
-          await runBotAction(() => executeCustomTask(bot, task))
+          await runBotAction(() => executeCustomTask(bot, task, { args: task.scheduleArgs || [] }))
           await platform.request('task_schedule_complete', { name: task.name })
           taskRetryAfter.delete(key)
         } catch (error) {
@@ -1043,6 +1091,7 @@ module.exports = {
   createTeleportRequestHandler,
   dismountVehicle,
   drinkOminousBottle,
+  bindTaskArguments,
   executeCustomTask,
   findPlayerPosition,
   installSmartCommands,
