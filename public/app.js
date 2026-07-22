@@ -50,7 +50,7 @@ const MESSAGE_DEFAULTS = {
   ominousUsage: '正确格式: 定时灾厄之瓶 开|关', ominousEnabled: '定时灾厄之瓶已开启，将立即饮用一瓶；成功后每 31 分钟执行一次。', ominousDisabled: '定时灾厄之瓶已关闭。', ominousStatusOn: '定时灾厄之瓶: 开，下次执行: {nextTime}', ominousStatusOff: '定时灾厄之瓶: 关。',
   periodicRightClickUsage: '正确格式: 定时放置 x y z ngt，例如 定时放置 100 64 200 20。', periodicRightClickEnabled: '定时放置已开启: ({x},{y},{z})，每 {ticks} 游戏刻执行。', periodicRightClickDisabled: '定时放置已关闭。', periodicRightClickStatusOff: '定时放置: 关。', periodicRightClickStatusOn: '定时放置: 开，坐标 ({x},{y},{z})，间隔 {ticks} 游戏刻。',
   rightClickUsage: '正确格式: 右键 玩家名，或 右键 x y z。', rightClickSuccess: '右键交互成功。', rightClickFailure: '右键交互失败，请确认目标存在且在交互距离内。', placeUsage: '正确格式: 放置 x y z。', placeSuccess: '放置成功。', placeFailure: '{reason}',
-  taskUsage: '正确格式: 定时任务 任务名 5；关闭时使用 定时任务 任务名 关。', taskScheduled: '定时任务 {task} 已开启，每 {ticks} 游戏刻执行一次。', taskStopped: '定时任务 {task} 已关闭。', scheduleStatus: '定时：{schedules}',
+  taskUsage: '正确格式: 定时任务 任务名 5 [参数...]；关闭时使用 定时任务 任务名 关。', taskScheduled: '定时任务 {task} 已开启，每 {ticks} 游戏刻执行一次。', taskStopped: '定时任务 {task} 已关闭。', scheduleStatus: '定时：{schedules}',
   locked: '机器人已被 {player} {label}，备注: {reason}', lockUsage: '正确格式: 锁定 备注', alreadyLocked: '机器人已被锁定，请勿重复锁定。', lockSuccess: '锁定成功，由于发消息会取消 afk，请寻找安全地方挂机。', notLocked: '机器人没有被锁定。', adminUnlockRequired: '机器人处于超级锁定，请由超管使用“超级解锁”。', unlockSuccess: '机器人已解锁。',
   forwardUsage: '正确格式: 指令 <服务器指令>', forwardInvalid: '指令内容无效或过长。', forwardNested: '不能嵌套机器人命令前缀。', forwardDangerous: '这条高风险指令已禁用。', forwardHome: 'home 命令已禁用。',
   restartLocked: '机器人锁定中，请先确认挂机状态并解锁。', restarting: '机器人正在重启。',
@@ -604,6 +604,48 @@ function taskArgumentHint (command) {
   return { 上车: '无需参数', 下车: '无需参数', 清空: '无需参数', 切换: '1-9', 放置: 'x y z', 右键: '玩家名 或 x y z', 指令: '服务器指令' }[command] || ''
 }
 
+function renderTaskParameters (parameters = []) {
+  const rows = parameters.map(value => String(value))
+  $('taskParameterRows').dataset.initialized = 'true'
+  $('taskParameterRows').innerHTML = rows.length
+    ? rows.map((value, index) => `<div class="task-parameter-row" data-task-parameter><span class="step-number">${index + 1}</span><label>参数名<input data-task-parameter-name maxlength="16" value="${esc(value)}" placeholder="例如 ${['x', 'y', 'z'][index] || '内容'}"></label><div class="task-parameter-reference"><span>步骤中引用</span><code data-task-parameter-reference>{${esc(value || '参数名')}}</code></div><button type="button" class="danger task-remove" data-remove-task-parameter aria-label="删除第 ${index + 1} 个参数">删除</button></div>`).join('')
+    : '<div class="task-parameter-empty muted">此任务当前不接收参数</div>'
+  bindTaskParameters()
+}
+
+function bindTaskParameters () {
+  const inputs = [...document.querySelectorAll('[data-task-parameter-name]')]
+  inputs.forEach((input, index) => {
+    input.oninput = () => { input.closest('[data-task-parameter]').querySelector('[data-task-parameter-reference]').textContent = `{${input.value.trim() || '参数名'}}` }
+    input.onkeydown = event => {
+      if (event.key !== 'Enter' || index !== inputs.length - 1) return
+      event.preventDefault()
+      addTaskParameter()
+    }
+  })
+  document.querySelectorAll('[data-remove-task-parameter]').forEach((button, index) => {
+    button.onclick = () => {
+      const parameters = collectTaskParameters()
+      parameters.splice(index, 1)
+      renderTaskParameters(parameters)
+    }
+  })
+  $('addTaskParameter').disabled = inputs.length >= 10
+}
+
+function collectTaskParameters () {
+  return [...document.querySelectorAll('[data-task-parameter-name]')].map(input => input.value.trim())
+}
+
+function addTaskParameter () {
+  const parameters = collectTaskParameters()
+  if (parameters.length >= 10) return
+  parameters.push('')
+  renderTaskParameters(parameters)
+  const inputs = document.querySelectorAll('[data-task-parameter-name]')
+  inputs[inputs.length - 1]?.focus()
+}
+
 function renderTaskEditor (actions = [{ command: '放置', args: '' }], waits = []) {
   $('taskSteps').innerHTML = actions.map((action, index) => {
     const commandOptions = TASK_COMMANDS.map(command => `<option value="${command}"${command === action.command ? ' selected' : ''}>${command}</option>`).join('')
@@ -658,17 +700,18 @@ async function loadTasks () {
   if (!smartBots.length) { $('taskRows').innerHTML = '<div class="empty">请先创建智能 Bot。</div>'; return }
   if (!smartBots.some(row => row.id === state.editingTaskBotId)) state.editingTaskBotId = smartBots[0].id
   $('taskBot').value = state.editingTaskBotId
+  if (!$('taskParameterRows').dataset.initialized) renderTaskParameters()
   if (!$('taskSteps').children.length) renderTaskEditor()
   const data = await request(`/api/smart/tasks?botId=${encodeURIComponent(state.editingTaskBotId)}`)
-  $('taskRows').innerHTML = data.rows.length ? `<table><thead><tr><th>任务</th><th>命令数</th><th>游戏内调用</th><th></th></tr></thead><tbody>${data.rows.map(row => `<tr><td><strong>${esc(row.name)}</strong></td><td>${Math.ceil(row.steps.length / 2)}</td><td><code>${esc(row.name)}</code><div class="muted">定时任务 ${esc(row.name)} 5</div></td><td><button class="danger" data-delete-task="${esc(row.name)}">删除</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">尚未创建任务。</div>'
+  $('taskRows').innerHTML = data.rows.length ? `<table><thead><tr><th>任务</th><th>命令数</th><th>游戏内调用</th><th></th></tr></thead><tbody>${data.rows.map(row => { const parameters = row.parameters || []; const signature = [row.name, ...parameters].join(' '); return `<tr><td><strong>${esc(row.name)}</strong>${parameters.length ? `<div class="muted">参数：${esc(parameters.join('、'))}</div>` : ''}</td><td>${Math.ceil(row.steps.length / 2)}</td><td><code>${esc(signature)}</code><div class="muted">定时任务 ${esc(row.name)} 5${parameters.length ? ` ${esc(parameters.join(' '))}` : ''}</div></td><td><button class="danger" data-delete-task="${esc(row.name)}">删除</button></td></tr>` }).join('')}</tbody></table>` : '<div class="empty">尚未创建任务。</div>'
   document.querySelectorAll('[data-delete-task]').forEach(btn => { btn.onclick = async () => { await post('/api/smart/tasks', { botId: state.editingTaskBotId, action: 'delete', name: btn.dataset.deleteTask }); await loadTasks() } })
 }
 
 async function saveTask () {
   $('taskError').textContent = ''
   try {
-    await post('/api/smart/tasks', { botId: $('taskBot').value, name: $('taskName').value, steps: collectTaskSteps() })
-    $('taskName').value = ''; renderTaskEditor()
+    await post('/api/smart/tasks', { botId: $('taskBot').value, name: $('taskName').value, parameters: collectTaskParameters(), steps: collectTaskSteps() })
+    $('taskName').value = ''; renderTaskParameters(); renderTaskEditor()
     await loadTasks(); toast('任务已保存')
   } catch (error) { $('taskError').textContent = error.message; throw error }
 }
@@ -1454,6 +1497,7 @@ $('refreshManagedBots').onclick = () => loadManagedBots().catch(error => toast(e
 $('refreshTasks').onclick = () => loadTasks().catch(error => toast(error.message))
 $('taskBot').onchange = () => { state.editingTaskBotId = $('taskBot').value; loadTasks().catch(error => toast(error.message)) }
 $('saveTask').onclick = () => saveTask().catch(error => toast(error.message))
+$('addTaskParameter').onclick = addTaskParameter
 $('addTaskStep').onclick = () => {
   const draft = collectTaskDraft()
   draft.actions.push({ command: '放置', args: '' })

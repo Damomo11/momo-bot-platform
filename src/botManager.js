@@ -467,7 +467,7 @@ class BotManager {
 
     if (action === 'task_schedule_set') {
       if (!actor.whitelisted || lock.adminLocked) return { allowed: false, silent: true }
-      return { allowed: true, task: this.db.scheduleSmartBotTask(botId, payload.name, payload.intervalTicks) }
+      return { allowed: true, task: this.db.scheduleSmartBotTask(botId, payload.name, payload.intervalTicks, payload.args) }
     }
 
     if (action === 'lock_set') {

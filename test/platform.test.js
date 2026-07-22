@@ -16,7 +16,7 @@ const { verifyCloudStoreToken } = require('../src/cloudStoreSso')
 const { LoginAttemptLimiter, clientIp } = require('../src/security')
 const { invalidateMinecraftAccessTokenCache, isMinecraftProfileAuthError } = require('../src/authCache')
 const { upgradeObjectState } = require('../src/supervisorHotReload')
-const { activateNearestVault, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, isVersionNewer, mountNearestMinecart, parsePeriodicRightClickArgs, parseSmartCommand, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
+const { activateNearestVault, bindTaskArguments, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, isVersionNewer, mountNearestMinecart, parsePeriodicRightClickArgs, parseSmartCommand, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
 
 test('login attempts are blocked by IP after repeated failures', () => {
   const limiter = new LoginAttemptLimiter({ maxFailures: 3, windowMs: 1000, blockMs: 2000 })
@@ -873,6 +873,81 @@ test('custom task waits allow up to 28800gt between commands', () => {
   }
 })
 
+test('custom task parameters are validated, persisted, and saved with scheduled arguments', () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('parameter_task_owner', 'password-123')
+    const bot = f.db.createBot(user.id, { mode: 'smart', label: 'Smart', microsoftEmail: 'parameter-task@example.com', serverHost: 'localhost' })
+    const saved = f.db.setSmartBotTask(bot.id, {
+      name: '自动放置',
+      parameters: ['x', 'y', 'z'],
+      steps: [
+        { type: 'command', command: '放置', args: ['{x}', '{y}', '{z}'] },
+        { type: 'wait', ticks: 1 },
+        { type: 'command', command: '指令', args: ['say', '当前放置点在({x},{y},{z})'] }
+      ]
+    })
+    assert.deepEqual(saved.parameters, ['x', 'y', 'z'])
+    assert.deepEqual(saved.scheduleArgs, [])
+    assert.throws(() => f.db.scheduleSmartBotTask(bot.id, saved.name, 20, ['100', '64']), /需要 3 个参数/)
+    const scheduled = f.db.scheduleSmartBotTask(bot.id, saved.name, 20, ['100', '64', '-200'])
+    assert.deepEqual(scheduled.scheduleArgs, ['100', '64', '-200'])
+    const stopped = f.db.scheduleSmartBotTask(bot.id, saved.name, null)
+    assert.equal(stopped.intervalTicks, null)
+    assert.deepEqual(stopped.scheduleArgs, [])
+    assert.throws(() => f.db.setSmartBotTask(bot.id, {
+      name: '未声明参数',
+      parameters: ['x'],
+      steps: [{ type: 'command', command: '指令', args: ['say', '{missing}'] }]
+    }), /未声明的参数/)
+  } finally {
+    f.close()
+  }
+})
+
+test('custom task parameters interpolate inside every command argument', async () => {
+  const placed = []
+  const chats = []
+  const bot = {
+    entity: {},
+    heldItem: { name: 'oak_sapling' },
+    blockAt: position => position.x === 100 && position.y === 63 && position.z === 200
+      ? { name: 'dirt', boundingBox: 'block', position }
+      : { name: 'air', boundingBox: 'empty', position },
+    placeBlock: async (reference, face) => placed.push({ reference: reference.position, face }),
+    chat: message => chats.push(message)
+  }
+  const task = {
+    name: '自动放置',
+    parameters: ['x', 'y', 'z'],
+    steps: [
+      { type: 'command', command: '放置', args: ['{x}', '{y}', '{z}'] },
+      { type: 'wait', ticks: 1 },
+      { type: 'command', command: '指令', args: ['say', '当前放置点在({x},{y},{z})'] }
+    ]
+  }
+  const result = await executeCustomTask(bot, task, { args: ['100', '64', '200'] })
+  assert.deepEqual(result.failures, [])
+  assert.equal(placed.length, 1)
+  assert.deepEqual(chats, ['say 当前放置点在(100,64,200)'])
+
+  const contentTask = { name: '自动喊话', parameters: ['内容'], steps: [{ type: 'command', command: '指令', args: ['say', '{内容}'] }] }
+  assert.deepEqual(bindTaskArguments(contentTask, ['大家好', '欢迎回来']), { 内容: '大家好 欢迎回来' })
+  await executeCustomTask(bot, contentTask, { args: ['大家好', '欢迎回来'] })
+  assert.equal(chats.pop(), 'say 大家好 欢迎回来')
+})
+
+test('custom task parameters cannot bypass blocked forwarded commands', async () => {
+  const chats = []
+  const result = await executeCustomTask({ chat: message => chats.push(message) }, {
+    name: '动态指令',
+    parameters: ['命令'],
+    steps: [{ type: 'command', command: '指令', args: ['{命令}', 'Target', '1'] }]
+  }, { args: ['pay'], logger: { warn: () => {} } })
+  assert.equal(result.failures.length, 1)
+  assert.deepEqual(chats, [])
+})
+
 test('custom task continues with later commands after one command fails', async () => {
   const slots = []
   const warnings = []
@@ -1083,9 +1158,11 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
         return { allowed: true, settings: ominousSettings }
       }
       if (action === 'periodic_right_click_get') return periodicSettings
-      if (action === 'task_get') return payload.name === '单次任务'
-        ? { task: { name: '单次任务', steps: [{ type: 'command', command: '切换', args: ['2'] }] } }
-        : { task: null }
+      if (action === 'task_get') {
+        if (payload.name === '单次任务') return { task: { name: '单次任务', parameters: ['格'], steps: [{ type: 'command', command: '切换', args: ['{格}'] }] } }
+        if (payload.name === '放置') return { task: { name: '放置', parameters: ['x', 'y', 'z'], steps: [{ type: 'command', command: '指令', args: ['say', '当前放置点在({x},{y},{z})'] }] } }
+        return { task: null }
+      }
       if (action === 'schedule_status') return { automation: periodicSettings, tasks: [{ name: '单次任务', intervalTicks: 20 }] }
       if (action === 'periodic_right_click_set') {
         periodicSettings = {
@@ -1130,7 +1207,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: '@near' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.8')
+  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.9')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })
@@ -1157,9 +1234,13 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'White', message: 'PlatformBot切换 9' })
   assert.equal(quickBarSlot, 8)
   assert.match(chats.pop(), /第 9 格/)
-  await handler({ username: 'White', message: 'PlatformBot单次任务' })
+  await handler({ username: 'White', message: 'PlatformBot单次任务 2' })
   assert.equal(quickBarSlot, 1)
   assert.equal(requests.some(row => row.action === 'task_get' && row.payload.name === '单次任务'), true)
+  await handler({ username: 'White', message: 'PlatformBot单次任务' })
+  assert.equal(chats.pop(), '正确格式: 单次任务 格')
+  await handler({ username: 'White', message: 'PlatformBot放置 100 64 200' })
+  assert.equal(chats.pop(), 'say 当前放置点在(100,64,200)')
   await handler({ username: 'White', message: 'PlatformBot清空' })
   assert.equal(inventoryItems.length, 0)
   assert.match(chats.pop(), /2 组、37 个/)
@@ -1197,7 +1278,7 @@ test('smart command tells each player about a newer runtime only once', async ()
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.9' }
+        if (action === 'runtime_version') return { version: '1.0.10' }
         if (action === 'schedule_status') return { automation: {}, tasks: [] }
         throw new Error(`unexpected action ${action}`)
       }
