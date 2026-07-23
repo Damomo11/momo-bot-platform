@@ -16,6 +16,7 @@
     "adm-zip": "^0.5.16",
     "better-sqlite3": "^12.10.0",
     "mineflayer": "^4.37.1",
+    "mineflayer-pathfinder": "^2.4.5",
     "node-cron": "^4.6.0",
     "prismarine-auth": "^3.1.1"
   }

@@ -11,6 +11,8 @@ const crypto = require('node:crypto')
 const http = require('node:http')
 const net = require('node:net')
 const { execFileSync, spawn } = require('node:child_process')
+const { Vec3 } = require('vec3')
+const { goals: pathfinderGoals } = require('mineflayer-pathfinder')
 const { installZenoxChatParser, normalizeServerChatText } = require('../src/zenoxChatParser')
 const { verifyCloudStoreToken } = require('../src/cloudStoreSso')
 const { LoginAttemptLimiter, clientIp } = require('../src/security')
@@ -1207,7 +1209,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: '@near' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.10')
+  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.12')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })
@@ -1270,6 +1272,70 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   assert.equal(requests.some(row => row.action === 'permission_add' && row.payload.minutes === 30), true)
 })
 
+test('smart command can take items, move, and look at players', async () => {
+  const bot = new EventEmitter()
+  bot.username = 'PlatformBot'
+  bot.entity = { position: new Vec3(0, 0, 0) }
+  bot.entities = {
+    steve: { type: 'player', username: 'Steve', position: new Vec3(4, 0, 0) }
+  }
+  const chats = []
+  const looks = []
+  let inventoryItems = [{ name: 'stone', count: 1, slot: 9 }]
+  bot.chat = message => chats.push(message)
+  bot.inventory = { items: () => inventoryItems }
+  bot.equip = async (item, destination) => { bot.heldItem = { item, destination } }
+  bot.lookAt = async (point, force) => { looks.push({ point, force }) }
+  const pathfinderGoalsUsed = []
+  bot.pathfinder = {
+    setGoal: () => {},
+    goto: async goal => {
+      pathfinderGoalsUsed.push(goal)
+      if (goal instanceof pathfinderGoals.GoalNear) bot.entity.position = new Vec3(goal.x, goal.y, goal.z)
+      if (goal instanceof pathfinderGoals.GoalFollow) bot.entity.position = goal.entity.position.clone()
+    }
+  }
+  const handler = createSmartCommandHandler(bot, {
+    commandPrefixes: ['PlatformBot'],
+    platform: {
+      request: async action => {
+        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
+        if (action === 'runtime_version') return { version: '1.0.12' }
+        if (action === 'task_get') return { task: null }
+        if (action === 'schedule_status') return { automation: {}, tasks: [] }
+        throw new Error(`unexpected action ${action}`)
+      }
+    },
+    scheduleRestart: () => {}
+  })
+
+  await handler({ username: 'White', message: 'PlatformBot拿出 stone' })
+  assert.equal(bot.heldItem.destination, 'hand')
+  assert.equal(chats.pop(), '已将 minecraft:stone 拿到主手。')
+
+  bot.entity.position = new Vec3(0, 0, 0)
+  looks.length = 0
+  await handler({ username: 'White', message: 'PlatformBot移动 1 0 0' })
+  assert.equal(chats.pop(), '已移动到目标附近。')
+  assert.equal(pathfinderGoalsUsed.at(-1) instanceof pathfinderGoals.GoalNear, true)
+  assert.equal(pathfinderGoalsUsed.at(-1).rangeSq, 0.09)
+  assert.equal(bot.entity.position.x, 1)
+  assert.equal(bot.entity.position.z, 0)
+
+  bot.entity.position = new Vec3(0, 0, 0)
+  looks.length = 0
+  await handler({ username: 'White', message: 'PlatformBot移动 Steve' })
+  assert.equal(chats.pop(), '已移动到目标附近。')
+  assert.equal(pathfinderGoalsUsed.at(-1) instanceof pathfinderGoals.GoalFollow, true)
+  assert.equal(pathfinderGoalsUsed.at(-1).entity.username, 'Steve')
+  assert.equal(pathfinderGoalsUsed.at(-1).rangeSq, 4)
+  assert.equal(bot.entity.position.x, 4)
+
+  await handler({ username: 'White', message: 'PlatformBot注视 Steve' })
+  assert.equal(chats.pop(), '已调整视角。')
+  assert.equal(looks.at(-1).point.x, 4)
+})
+
 test('smart command tells each player about a newer runtime only once', async () => {
   const bot = { username: 'PlatformBot', chat: message => chats.push(message) }
   const chats = []
@@ -1278,7 +1344,7 @@ test('smart command tells each player about a newer runtime only once', async ()
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.11' }
+        if (action === 'runtime_version') return { version: '1.0.13' }
         if (action === 'schedule_status') return { automation: {}, tasks: [] }
         throw new Error(`unexpected action ${action}`)
       }
