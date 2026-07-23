@@ -1,4 +1,5 @@
 const { Vec3 } = require('vec3')
+const { goals } = require('mineflayer-pathfinder')
 const { version: SMART_BOT_VERSION } = require('./package.json')
 
 const PLAYER_MAP_URL = 'https://map.zenoxs.cn/tiles/settings.json'
@@ -31,6 +32,9 @@ const COMMAND_TEXT = Object.freeze({
   clearEmpty: '机器人背包已经是空的。',
   clearSuccess: (stacks, items) => `背包已清空，共丢出 ${stacks} 组、${items} 个物品。`,
   clearFailure: (stacks, error) => `清空背包中断，已丢出 ${stacks} 组。原因: ${error}`,
+  takeUsage: '正确格式: 拿出 物品id',
+  takeSuccess: item => `已将 ${item} 拿到主手。`,
+  takeMissing: item => `背包中没有 ${item}。`,
   switchUsage: '正确格式: 切换 1-9',
   switchSuccess: slot => `快捷栏已切换到第 ${slot} 格。`,
   ominousUsage: '正确格式: 定时灾厄之瓶 开|关',
@@ -46,6 +50,12 @@ const COMMAND_TEXT = Object.freeze({
   rightClickUsage: '正确格式: 右键 玩家名，或 右键 x y z。',
   rightClickSuccess: '右键交互成功。',
   rightClickFailure: '右键交互失败，请确认目标存在且在交互距离内。',
+  moveUsage: '正确格式: 移动 x y z [停止距离]，或 移动 玩家名 [停止距离]，或 移动 东|西|南|北 格数 [停止距离]',
+  moveSuccess: '已移动到目标附近。',
+  moveFailure: '移动失败，请确认目标可达。',
+  lookUsage: '正确格式: 注视 玩家名',
+  lookSuccess: '已调整视角。',
+  lookFailure: '注视失败，请确认目标存在。',
   placeUsage: '正确格式: 放置 x y z。',
   placeSuccess: '放置成功。',
   taskScheduled: (name, ticks) => `定时任务 ${name} 已开启，每 ${ticks} 游戏刻执行一次。`,
@@ -259,6 +269,143 @@ function parseCoordinates (args) {
   return { x, y, z }
 }
 
+function normalizeItemId (value) {
+  const text = String(value || '').trim().toLowerCase()
+  if (!text) return ''
+  return text.includes(':') ? text : `minecraft:${text}`
+}
+
+function displayItemId (value) {
+  const text = normalizeItemId(value)
+  return text || '物品'
+}
+
+function findInventoryItem (bot, itemId) {
+  const target = normalizeItemId(itemId)
+  if (!target || !bot?.inventory?.items) return null
+  return bot.inventory.items().find(item => normalizeItemId(item?.name) === target)
+}
+
+function findPlayerEntity (bot, username) {
+  const target = String(username || '').toLowerCase()
+  if (!target) return null
+  return Object.values(bot.entities || {}).find(row => row?.type === 'player' && String(row.username || '').toLowerCase() === target) || null
+}
+
+function moveDirectionOffset (direction, blocks) {
+  const distance = Number(blocks)
+  if (!Number.isInteger(distance) || distance < 1) return null
+  const step = distance
+  const normalized = String(direction || '').trim()
+  const offsets = {
+    东: new Vec3(step, 0, 0),
+    西: new Vec3(-step, 0, 0),
+    南: new Vec3(0, 0, step),
+    北: new Vec3(0, 0, -step)
+  }
+  return offsets[normalized] || null
+}
+
+function createMoveGoal (plan) {
+  if (!plan) return null
+  if (plan.kind === 'player') {
+    if (!plan.entity || !plan.entity.position || !Number.isFinite(Number(plan.stopDistance))) return null
+    return new goals.GoalFollow(plan.entity, plan.stopDistance)
+  }
+  if (plan.kind === 'position') {
+    const target = plan.target instanceof Vec3 ? plan.target : new Vec3(Number(plan.target?.x), Number(plan.target?.y), Number(plan.target?.z))
+    if (![target.x, target.y, target.z].every(Number.isFinite) || !Number.isFinite(Number(plan.stopDistance))) return null
+    return new goals.GoalNear(target.x, target.y, target.z, plan.stopDistance)
+  }
+  return null
+}
+
+function parseStopDistance (value, fallback = 0.3) {
+  if (value === undefined || value === null || value === '') return fallback
+  const distance = Number(value)
+  if (!Number.isFinite(distance) || distance < 0 || distance > 64) return null
+  return distance
+}
+
+function isValidMoveSyntax (args) {
+  if (!Array.isArray(args) || !args.length) return false
+  if ((args.length === 3 || args.length === 4) && parseCoordinates(args.slice(0, 3))) return parseStopDistance(args[3], 0.3) !== null
+  if ((args.length === 2 || args.length === 3) && moveDirectionOffset(args[0], args[1])) return parseStopDistance(args[2], 0.3) !== null
+  if (args.length === 1) return String(args[0] || '').trim().length > 0
+  if (args.length === 2 && String(args[0] || '').trim().length > 0) return parseStopDistance(args[1], 2) !== null
+  return false
+}
+
+function resolveMovePlan (bot, args) {
+  if (!Array.isArray(args) || !args.length) return null
+  if (args.length === 3 || args.length === 4) {
+    const coords = parseCoordinates(args.slice(0, 3))
+    if (coords) {
+      const stopDistance = parseStopDistance(args[3], 0.3)
+      if (stopDistance === null) return null
+      return { kind: 'position', target: new Vec3(coords.x, coords.y, coords.z), stopDistance }
+    }
+  }
+  if (args.length === 2 || args.length === 3) {
+    const offset = moveDirectionOffset(args[0], args[1])
+    if (offset) {
+      const base = bot.entity?.position
+      if (!base) return null
+      const stopDistance = parseStopDistance(args[2], 0.3)
+      if (stopDistance === null) return null
+      return { kind: 'position', target: base.plus(offset), stopDistance }
+    }
+  }
+  if (args.length === 1 || args.length === 2) {
+    const entity = findPlayerEntity(bot, args[0])
+    if (!entity) return null
+    const stopDistance = parseStopDistance(args[1], 2)
+    if (stopDistance === null) return null
+    return { kind: 'player', entity, stopDistance }
+  }
+  return null
+}
+
+async function moveTowardsTarget (bot, plan) {
+  if (!bot.entity?.position || !bot.pathfinder?.goto || typeof bot.pathfinder.setGoal !== 'function') throw new Error('机器人尚未进入服务器。')
+  const goal = createMoveGoal(plan)
+  if (!goal) throw new Error('目标不存在。')
+  const timeoutMs = Math.max(8000, Math.min(45000, Math.ceil((bot.entity.position.distanceTo(plan.kind === 'player' ? plan.entity.position : plan.target) + 8) * 1200)))
+  let timeoutTimer
+  try {
+    await Promise.race([
+      bot.pathfinder.goto(goal),
+      new Promise((_, reject) => {
+        timeoutTimer = setTimeout(() => {
+          try { bot.pathfinder.setGoal(null) } catch {}
+          reject(new Error('移动超时，请确认目标可达。'))
+        }, timeoutMs)
+        timeoutTimer.unref?.()
+      })
+    ])
+  } finally {
+    if (timeoutTimer) clearTimeout(timeoutTimer)
+  }
+  return { status: 'arrived' }
+}
+
+async function collectItemToHand (bot, itemId) {
+  if (!bot.entity || !bot.inventory || typeof bot.equip !== 'function') throw new Error('机器人尚未进入服务器。')
+  const target = displayItemId(itemId)
+  const item = findInventoryItem(bot, itemId)
+  if (!item) throw new Error(target)
+  await bot.equip(item, 'hand')
+  return { item: item.name || target }
+}
+
+async function lookAtPlayer (bot, username) {
+  const entity = findPlayerEntity(bot, username)
+  if (!entity) throw new Error('player missing')
+  if (typeof bot.lookAt !== 'function') throw new Error('机器人无法调整视角。')
+  await bot.lookAt(entity.position.offset(0, 1.2, 0), true)
+  return { username: entity.username || username }
+}
+
 function formatScheduleStatus (status = {}) {
   const automation = status.automation || {}
   const entries = []
@@ -282,9 +429,16 @@ async function executeCustomTask (bot, task, options = {}) {
         if (step.command === '上车') await mountNearestMinecart(bot)
         else if (step.command === '下车') await dismountVehicle(bot)
         else if (step.command === '清空') await clearInventory(bot)
+        else if (step.command === '拿出') await collectItemToHand(bot, args[0])
         else if (step.command === '切换') await bot.setQuickBarSlot(Number(args[0]) - 1)
         else if (step.command === '放置') await placePeriodicRightClick(bot, { periodicRightClickX: Number(args[0]), periodicRightClickY: Number(args[1]), periodicRightClickZ: Number(args[2]) })
         else if (step.command === '右键') await rightClickTarget(bot, args)
+        else if (step.command === '移动') {
+          const plan = resolveMovePlan(bot, args)
+          if (!plan) throw new Error('移动命令参数无效。')
+          await moveTowardsTarget(bot, plan)
+        }
+        else if (step.command === '注视') await lookAtPlayer(bot, args[0])
         else if (step.command === '指令') bot.chat(args.join(' ').slice(0, 256))
       } catch (error) {
         const message = String(error?.message || error)
@@ -310,9 +464,12 @@ function replaceTaskParameters (value, variables) {
 
 function validateCustomTaskCommand (command, args) {
   if (['上车', '下车', '清空'].includes(command) && args.length) throw new Error(`${command} 命令不需要参数。`)
+  if (command === '拿出' && (args.length !== 1 || !normalizeItemId(args[0]))) throw new Error('拿出命令需要一个物品 id。')
   if (command === '切换' && (args.length !== 1 || !/^[1-9]$/.test(args[0]))) throw new Error('切换命令参数必须为 1-9。')
   if (command === '放置' && !parseCoordinates(args)) throw new Error('放置命令需要三个有效整数坐标。')
   if (command === '右键' && !((args.length === 1 && args[0].length <= 32 && !/\s/.test(args[0])) || parseCoordinates(args))) throw new Error('右键命令需要玩家名或三个有效整数坐标。')
+  if (command === '移动' && !isValidMoveSyntax(args)) throw new Error('移动命令需要坐标、玩家名或方向与距离。')
+  if (command === '注视' && (args.length !== 1 || !args[0].length)) throw new Error('注视命令需要一个玩家名。')
   if (command === '指令') {
     const text = args.join(' ')
     const root = text.split(/\s+/, 1)[0].replace(/^\//, '').toLowerCase()
@@ -669,7 +826,9 @@ function createSmartCommandHandler (bot, options = {}) {
     try {
       const latest = await request('runtime_version', {})
       if (!isVersionNewer(latest?.version, SMART_BOT_VERSION)) return
-      bot.chat(`/msg ${username} bot已有新版本，重启后自动更新新版本。`)
+      const summary = latest?.release?.summary || latest?.release?.title || ''
+      const note = summary ? ` 更新内容: ${summary}` : ''
+      bot.chat(`/msg ${username} bot已有新版本，重启后自动更新新版本。${note}`.slice(0, 256))
       versionNotifiedPlayers.add(key)
     } catch (error) {
       platform.log?.(`检查智能 Bot 版本失败: ${error?.message || error}`)
@@ -683,7 +842,16 @@ function createSmartCommandHandler (bot, options = {}) {
     if (!parsed) return
 
     if (parsed.command === '版本') {
-      bot.chat(`智能 Bot 版本：v${SMART_BOT_VERSION}`)
+      try {
+        const latest = await request('runtime_version', {})
+        const summary = latest?.release?.summary || latest?.release?.title || ''
+        const updateText = isVersionNewer(latest?.version, SMART_BOT_VERSION)
+          ? `，最新 v${latest.version}${summary ? `：${summary}` : ''}`
+          : summary ? `，本版说明：${summary}` : ''
+        bot.chat(`智能 Bot 版本：v${SMART_BOT_VERSION}${updateText}`.slice(0, 256))
+      } catch {
+        bot.chat(`智能 Bot 版本：v${SMART_BOT_VERSION}`)
+      }
       return
     }
 
@@ -731,7 +899,7 @@ function createSmartCommandHandler (bot, options = {}) {
     if (access.lock.adminLocked && !access.admin && parsed.command !== '状态') return reply(COMMAND_TEXT.locked(access.lock, '超级锁定'), 'locked', { player: access.lock.lockedBy || '未知玩家', label: '超级锁定', reason: access.lock.reason || '无' })
     if (!access.whitelisted) return
 
-    const overridableTaskCommands = new Set(['上车', '下车', '开宝库', '清空', '切换', '放置', '右键'])
+    const overridableTaskCommands = new Set(['上车', '下车', '开宝库', '清空', '拿出', '切换', '放置', '右键', '移动', '注视'])
     if (overridableTaskCommands.has(parsed.command)) {
       const customTask = await request('task_get', { name: parsed.command })
       if (customTask?.task) {
@@ -802,11 +970,47 @@ function createSmartCommandHandler (bot, options = {}) {
       return
     }
 
+    if (parsed.command === '拿出') {
+      if (parsed.args.length !== 1) return reply(COMMAND_TEXT.takeUsage, 'takeUsage')
+      try {
+        const result = await runBotAction(() => collectItemToHand(bot, parsed.args[0]))
+        const item = displayItemId(result.item)
+        reply(COMMAND_TEXT.takeSuccess(item), 'takeSuccess', { item })
+      } catch (error) {
+        const item = displayItemId(parsed.args[0])
+        reply(COMMAND_TEXT.takeMissing(item), 'takeMissing', { item })
+      }
+      return
+    }
+
     if (parsed.command === '切换') {
       const slot = Number(parsed.args[0])
       if (parsed.args.length !== 1 || !Number.isInteger(slot) || slot < 1 || slot > 9) return reply(COMMAND_TEXT.switchUsage, 'switchUsage')
       await runBotAction(() => bot.setQuickBarSlot(slot - 1))
       reply(COMMAND_TEXT.switchSuccess(slot), 'switchSuccess', { slot })
+      return
+    }
+
+    if (parsed.command === '移动') {
+      const plan = resolveMovePlan(bot, parsed.args)
+      if (!plan) return reply(COMMAND_TEXT.moveUsage, 'moveUsage')
+      try {
+        await runBotAction(() => moveTowardsTarget(bot, plan))
+        reply(COMMAND_TEXT.moveSuccess, 'moveSuccess')
+      } catch {
+        reply(COMMAND_TEXT.moveFailure, 'moveFailure')
+      }
+      return
+    }
+
+    if (parsed.command === '注视') {
+      if (parsed.args.length !== 1) return reply(COMMAND_TEXT.lookUsage, 'lookUsage')
+      try {
+        await runBotAction(() => lookAtPlayer(bot, parsed.args[0]))
+        reply(COMMAND_TEXT.lookSuccess, 'lookSuccess')
+      } catch {
+        reply(COMMAND_TEXT.lookFailure, 'lookFailure')
+      }
       return
     }
 

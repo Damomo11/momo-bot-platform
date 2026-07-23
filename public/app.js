@@ -27,7 +27,9 @@ const state = {
   originalContent: '',
   dirty: false,
   collapsedDirs: new Set(),
-  fileDialogMode: 'create'
+  fileDialogMode: 'create',
+  runtimeUpdates: null,
+  runtimeUpdatesLoadedAt: 0
 }
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch])
@@ -37,7 +39,7 @@ const balanceText = user => `${formatMomoc(user?.momoc)} momoc${Number(user?.res
 const templatePrice = template => `${formatMomoc(template?.priceMomoc)} momoc / ${template?.billingMode === 'once' ? '次' : '1h'}`
 const commandUsage = command => `${state.botSettings?.commandPrefix || '!'}${String(command || '').replace(/^\s*[!@=]+/, '')}`
 const kindLabel = value => ({ bot_usage: '机器人基础运行', bot_minute: '机器人基础运行', bot_hourly: '机器人基础运行', bot_once: '模板按次执行', module_hourly: '功能模块运行', module_once: '功能模块执行', admin_adjust: '管理员调整' })[value] || value
-const TASK_COMMANDS = ['上车', '下车', '清空', '切换', '放置', '右键', '指令']
+const TASK_COMMANDS = ['上车', '下车', '清空', '拿出', '切换', '放置', '右键', '移动', '注视', '指令']
 const MESSAGE_DEFAULTS = {
   permissionUsage: '正确格式: {command} 玩家名', permissionResult: '玩家 {player} {status}{label}中{remaining}',
   openBoxUsage: '正确格式: 开盒 玩家名', openBoxSuccess: '开盒成功！玩家 {player} 的坐标为 ({x},{z}) {dimension}', openBoxFailure: '开盒失败！未找到该玩家或地图服务暂时不可用。',
@@ -45,11 +47,11 @@ const MESSAGE_DEFAULTS = {
   mountAlready: '机器人已经在载具上。', mountMissing: '附近 6 格内没有可乘坐的矿车。', mountSuccess: '机器人已上车。', mountFailure: '上车失败，请确认矿车可乘坐且距离足够近。',
   dismountMissing: '机器人当前没有乘坐矿车。', dismountSuccess: '机器人已下车。', dismountFailure: '下车失败，请稍后重试。',
   vaultSuccess: '已右键附近的宝库。', vaultMissing: '附近 6 格内没有找到宝库。', vaultFailure: '开启宝库失败，请确认宝库在交互距离内。',
-  clearEmpty: '机器人背包已经是空的。', clearSuccess: '背包已清空，共丢出 {stacks} 组、{items} 个物品。', clearFailure: '清空背包中断，已丢出 {stacks} 组。原因: {reason}',
+  clearEmpty: '机器人背包已经是空的。', clearSuccess: '背包已清空，共丢出 {stacks} 组、{items} 个物品。', clearFailure: '清空背包中断，已丢出 {stacks} 组。原因: {reason}', takeUsage: '正确格式: 拿出 物品id', takeSuccess: '已将 {item} 拿到主手。', takeMissing: '背包中没有 {item}。',
   switchUsage: '正确格式: 切换 1-9', switchSuccess: '快捷栏已切换到第 {slot} 格。',
   ominousUsage: '正确格式: 定时灾厄之瓶 开|关', ominousEnabled: '定时灾厄之瓶已开启，将立即饮用一瓶；成功后每 31 分钟执行一次。', ominousDisabled: '定时灾厄之瓶已关闭。', ominousStatusOn: '定时灾厄之瓶: 开，下次执行: {nextTime}', ominousStatusOff: '定时灾厄之瓶: 关。',
   periodicRightClickUsage: '正确格式: 定时放置 x y z ngt，例如 定时放置 100 64 200 20。', periodicRightClickEnabled: '定时放置已开启: ({x},{y},{z})，每 {ticks} 游戏刻执行。', periodicRightClickDisabled: '定时放置已关闭。', periodicRightClickStatusOff: '定时放置: 关。', periodicRightClickStatusOn: '定时放置: 开，坐标 ({x},{y},{z})，间隔 {ticks} 游戏刻。',
-  rightClickUsage: '正确格式: 右键 玩家名，或 右键 x y z。', rightClickSuccess: '右键交互成功。', rightClickFailure: '右键交互失败，请确认目标存在且在交互距离内。', placeUsage: '正确格式: 放置 x y z。', placeSuccess: '放置成功。', placeFailure: '{reason}',
+  rightClickUsage: '正确格式: 右键 玩家名，或 右键 x y z。', rightClickSuccess: '右键交互成功。', rightClickFailure: '右键交互失败，请确认目标存在且在交互距离内。', moveUsage: '正确格式: 移动 x y z [停止距离]，或 移动 玩家名 [停止距离]，或 移动 东|西|南|北 格数 [停止距离]', moveSuccess: '已移动到目标附近。', moveFailure: '移动失败，请确认目标可达。', lookUsage: '正确格式: 注视 玩家名', lookSuccess: '已调整视角。', lookFailure: '注视失败，请确认目标存在。', placeUsage: '正确格式: 放置 x y z。', placeSuccess: '放置成功。', placeFailure: '{reason}',
   taskUsage: '正确格式: 定时任务 任务名 5 [参数...]；关闭时使用 定时任务 任务名 关。', taskScheduled: '定时任务 {task} 已开启，每 {ticks} 游戏刻执行一次。', taskStopped: '定时任务 {task} 已关闭。', scheduleStatus: '定时：{schedules}',
   locked: '机器人已被 {player} {label}，备注: {reason}', lockUsage: '正确格式: 锁定 备注', alreadyLocked: '机器人已被锁定，请勿重复锁定。', lockSuccess: '锁定成功，由于发消息会取消 afk，请寻找安全地方挂机。', notLocked: '机器人没有被锁定。', adminUnlockRequired: '机器人处于超级锁定，请由超管使用“超级解锁”。', unlockSuccess: '机器人已解锁。',
   forwardUsage: '正确格式: 指令 <服务器指令>', forwardInvalid: '指令内容无效或过长。', forwardNested: '不能嵌套机器人命令前缀。', forwardDangerous: '这条高风险指令已禁用。', forwardHome: 'home 命令已禁用。',
@@ -57,7 +59,7 @@ const MESSAGE_DEFAULTS = {
   permissionAdded: '玩家 {player} 已成功加入{label}', permissionExists: '玩家 {player} 已经在{label}中', permissionRemoved: '玩家 {player} 已从{label}移除', permissionMissing: '玩家 {player} 不在{label}中', temporaryUsage: '正确格式: {command} 玩家名 分钟数', temporaryAdded: '玩家 {player} 已临时加入{label}，持续 {minutes} 分钟',
   adminLockUsage: '正确格式: 超级锁定 备注', alreadyAdminLocked: '机器人已被超级锁定，请勿重复锁定。', adminLockSuccess: '超级锁定成功，禁用一切白名单命令，仅超管可使用“超级解锁”。', notAdminLocked: '机器人没有被超级锁定。', adminUnlockSuccess: '机器人已超级解锁，普通锁定也已同时解除。'
 }
-const MESSAGE_LABELS = Object.fromEntries(Object.keys(MESSAGE_DEFAULTS).map(key => [key, ({ permissionUsage: '权限查询格式', permissionResult: '权限查询结果', openBoxUsage: '开盒格式', openBoxSuccess: '开盒成功', openBoxFailure: '开盒失败', nearUsage: '附近查询格式', nearSuccess: '附近查询结果', nearEmpty: '附近无人', nearFailure: '附近查询失败', mountAlready: '已经在载具中', mountMissing: '未找到矿车', mountSuccess: '上车成功', mountFailure: '上车失败', dismountMissing: '当前未乘车', dismountSuccess: '下车成功', dismountFailure: '下车失败', vaultSuccess: '开启宝库成功', vaultMissing: '未找到宝库', vaultFailure: '开启宝库失败', clearEmpty: '背包已空', clearSuccess: '清空成功', clearFailure: '清空失败', switchUsage: '切换格式', switchSuccess: '切换成功', ominousUsage: '灾厄之瓶格式', ominousEnabled: '灾厄定时开启', ominousDisabled: '灾厄定时关闭', ominousStatusOn: '灾厄定时状态开启', ominousStatusOff: '灾厄定时状态关闭', periodicRightClickUsage: '定时放置格式', periodicRightClickEnabled: '定时放置开启', periodicRightClickDisabled: '定时放置关闭', periodicRightClickStatusOn: '定时放置状态开启', periodicRightClickStatusOff: '定时放置状态关闭', rightClickUsage: '右键格式', rightClickSuccess: '右键成功', rightClickFailure: '右键失败', placeUsage: '放置格式', placeSuccess: '放置成功', placeFailure: '放置失败', taskUsage: '定时任务格式', taskScheduled: '定时任务开启', taskStopped: '定时任务关闭', locked: '锁定状态', lockUsage: '锁定格式', alreadyLocked: '重复锁定', lockSuccess: '锁定成功', notLocked: '未锁定', adminUnlockRequired: '需要超级解锁', unlockSuccess: '解锁成功', forwardUsage: '指令格式', forwardInvalid: '指令无效', forwardNested: '嵌套指令', forwardDangerous: '高风险指令', forwardHome: 'Home 禁用', restartLocked: '锁定时重启', restarting: '正在重启', permissionAdded: '添加权限成功', permissionExists: '权限已存在', permissionRemoved: '移除权限成功', permissionMissing: '权限不存在', temporaryUsage: '临时权限格式', temporaryAdded: '临时权限成功', adminLockUsage: '超级锁定格式', alreadyAdminLocked: '重复超级锁定', adminLockSuccess: '超级锁定成功', notAdminLocked: '未超级锁定', adminUnlockSuccess: '超级解锁成功' })[key] || key]))
+const MESSAGE_LABELS = Object.fromEntries(Object.keys(MESSAGE_DEFAULTS).map(key => [key, ({ permissionUsage: '权限查询格式', permissionResult: '权限查询结果', openBoxUsage: '开盒格式', openBoxSuccess: '开盒成功', openBoxFailure: '开盒失败', nearUsage: '附近查询格式', nearSuccess: '附近查询结果', nearEmpty: '附近无人', nearFailure: '附近查询失败', mountAlready: '已经在载具中', mountMissing: '未找到矿车', mountSuccess: '上车成功', mountFailure: '上车失败', dismountMissing: '当前未乘车', dismountSuccess: '下车成功', dismountFailure: '下车失败', vaultSuccess: '开启宝库成功', vaultMissing: '未找到宝库', vaultFailure: '开启宝库失败', clearEmpty: '背包已空', clearSuccess: '清空成功', clearFailure: '清空失败', takeUsage: '拿出格式', takeSuccess: '拿出成功', takeMissing: '拿出失败', switchUsage: '切换格式', switchSuccess: '切换成功', ominousUsage: '灾厄之瓶格式', ominousEnabled: '灾厄定时开启', ominousDisabled: '灾厄定时关闭', ominousStatusOn: '灾厄定时状态开启', ominousStatusOff: '灾厄定时状态关闭', periodicRightClickUsage: '定时放置格式', periodicRightClickEnabled: '定时放置开启', periodicRightClickDisabled: '定时放置关闭', periodicRightClickStatusOn: '定时放置状态开启', periodicRightClickStatusOff: '定时放置状态关闭', rightClickUsage: '右键格式', rightClickSuccess: '右键成功', rightClickFailure: '右键失败', moveUsage: '移动格式', moveSuccess: '移动成功', moveFailure: '移动失败', lookUsage: '注视格式', lookSuccess: '注视成功', lookFailure: '注视失败', placeUsage: '放置格式', placeSuccess: '放置成功', placeFailure: '放置失败', taskUsage: '定时任务格式', taskScheduled: '定时任务开启', taskStopped: '定时任务关闭', locked: '锁定状态', lockUsage: '锁定格式', alreadyLocked: '重复锁定', lockSuccess: '锁定成功', notLocked: '未锁定', adminUnlockRequired: '需要超级解锁', unlockSuccess: '解锁成功', forwardUsage: '指令格式', forwardInvalid: '指令无效', forwardNested: '嵌套指令', forwardDangerous: '高风险指令', forwardHome: 'Home 禁用', restartLocked: '锁定时重启', restarting: '正在重启', permissionAdded: '添加权限成功', permissionExists: '权限已存在', permissionRemoved: '移除权限成功', permissionMissing: '权限不存在', temporaryUsage: '临时权限格式', temporaryAdded: '临时权限成功', adminLockUsage: '超级锁定格式', alreadyAdminLocked: '重复超级锁定', adminLockSuccess: '超级锁定成功', notAdminLocked: '未超级锁定', adminUnlockSuccess: '超级解锁成功' })[key] || key]))
 
 MESSAGE_LABELS.scheduleStatus = '定时状态'
 
@@ -71,9 +73,12 @@ const MESSAGE_GROUPS = [
   { command: '下车', note: '离开载具反馈', keys: ['dismountMissing', 'dismountSuccess', 'dismountFailure'] },
   { command: '开宝库', note: '附近宝库交互反馈', keys: ['vaultSuccess', 'vaultMissing', 'vaultFailure'] },
   { command: '清空', note: '背包清空反馈', keys: ['clearEmpty', 'clearSuccess', 'clearFailure'] },
+  { command: '拿出', note: '物品拿出反馈', keys: ['takeUsage', 'takeSuccess', 'takeMissing'] },
   { command: '切换', note: '快捷栏切换反馈', keys: ['switchUsage', 'switchSuccess'] },
   { command: '定时灾厄之瓶', note: '定时饮用与状态反馈', keys: ['ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff'] },
   { command: '右键', note: '实体或方块交互反馈', keys: ['rightClickUsage', 'rightClickSuccess', 'rightClickFailure'] },
+  { command: '移动', note: '移动与寻路反馈', keys: ['moveUsage', 'moveSuccess', 'moveFailure'] },
+  { command: '注视', note: '视角调整反馈', keys: ['lookUsage', 'lookSuccess', 'lookFailure'] },
   { command: '放置', note: '单次放置反馈', keys: ['placeUsage', 'placeSuccess', 'placeFailure'] },
   { command: '定时任务', note: '自定义任务定时开关反馈', keys: ['taskUsage', 'taskScheduled', 'taskStopped'] },
   { command: '锁定 / 解锁 / 状态', note: '挂机锁定与定时状态反馈', keys: ['locked', 'lockUsage', 'alreadyLocked', 'lockSuccess', 'notLocked', 'adminUnlockRequired', 'unlockSuccess', 'scheduleStatus'] },
@@ -134,8 +139,18 @@ async function loadMe () {
   $('changePassword').classList.toggle('hidden', data.user.authSource === 'cloud_store')
   document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('hidden', data.user.role !== 'admin'))
   await loadPlatformSettings()
+  await loadRuntimeUpdates().catch(() => null)
   await loadAccountsData()
   await loadView()
+}
+
+async function loadRuntimeUpdates (force = false) {
+  const now = Date.now()
+  if (!force && state.runtimeUpdates && now - state.runtimeUpdatesLoadedAt < 60000) return state.runtimeUpdates
+  const data = await request('/api/runtime-updates')
+  state.runtimeUpdates = data
+  state.runtimeUpdatesLoadedAt = now
+  return data
 }
 
 async function loadPublicSettings () {
@@ -366,15 +381,75 @@ function smartScheduleHtml (bot) {
   return `<div class="smart-schedules">${rows.map(row => `<div class="smart-schedule-row"><span>${esc(row.label)}</span><button type="button" class="danger" data-stop-smart-schedule="${esc(row.action)}" data-smart-schedule-bot="${esc(bot.id)}"${row.name ? ` data-smart-schedule-name="${esc(row.name)}"` : ''}>停止</button></div>`).join('')}</div>`
 }
 
+function runtimeReleaseFor (mode, version) {
+  const runtime = state.runtimeUpdates?.[mode]
+  if (!runtime) return null
+  return (runtime.releases || []).find(item => String(item.version || '') === String(version || '')) || null
+}
+
 function botRuntimeVersionHtml (bot) {
   const current = String(bot.runtimeVersion || '')
   const latest = String(bot.latestRuntimeVersion || '')
+  const latestRelease = state.runtimeUpdates?.[bot.mode]?.latestRelease || null
+  const currentRelease = runtimeReleaseFor(bot.mode, current)
+  const note = bot.updateAvailable ? (latestRelease?.summary || latestRelease?.title || '') : (currentRelease?.summary || currentRelease?.title || '')
   if (!current) return `<div class="runtime-version"><span class="muted">未运行</span>${latest ? `<small>最新 v${esc(latest)}</small>` : ''}</div>`
-  return `<div class="runtime-version"><code>v${esc(current)}</code>${bot.updateAvailable ? `<span class="version-update">可更新至 v${esc(latest)}</span>` : '<span class="positive">已是最新</span>'}</div>`
+  return `<div class="runtime-version"><code>v${esc(current)}</code>${bot.updateAvailable ? `<span class="version-update">可更新至 v${esc(latest)}</span>` : '<span class="positive">已是最新</span>'}${note ? `<small>${esc(note)}</small>` : ''}</div>`
 }
 
-async function loadBots () {
-  const data = await request('/api/bots')
+function renderRuntimeReleasePanel () {
+  const panel = $('runtimeReleasePanel')
+  if (!panel) return
+  const runtime = state.runtimeUpdates?.smart
+  if (!runtime) {
+    panel.classList.add('hidden')
+    return
+  }
+  const releases = runtime.releases || []
+  const latest = runtime.latestRelease || releases[0] || null
+  const smartBots = state.bots.filter(bot => bot.mode === 'smart')
+  const updateCount = smartBots.filter(bot => bot.updateAvailable).length
+  const onlineCount = smartBots.filter(bot => bot.runtimeState === 'online').length
+  const installedVersions = [...new Set(smartBots.map(bot => bot.runtimeVersion).filter(Boolean))]
+  const highlights = (latest?.highlights || []).slice(0, 4)
+  const statusText = smartBots.length
+    ? (updateCount > 0 ? `${updateCount} 个智能 Bot 可更新` : `${onlineCount} 个智能 Bot 已在线`)
+    : '当前没有智能 Bot'
+  panel.classList.remove('hidden')
+  panel.innerHTML = `
+    <div class="release-panel-head">
+      <div>
+        <span class="release-kicker">智能 Bot 更新说明</span>
+        <h2>${esc(latest?.title || `v${runtime.version || 'unknown'}`)}</h2>
+        <p>${esc(latest?.summary || '这里会显示智能 Bot 最新版本的更新内容。')}</p>
+      </div>
+      <div class="release-meta">
+        <strong>${esc(runtime.version ? `v${runtime.version}` : '未知版本')}</strong>
+        <span>${esc(statusText)}</span>
+        <small>${installedVersions.length ? `运行中：${esc(installedVersions.map(v => `v${v}`).join(' / '))}` : '暂无运行中的智能 Bot'}</small>
+      </div>
+    </div>
+    <div class="release-body">
+      <div class="release-highlights">
+        ${highlights.length ? highlights.map(item => `<div class="release-highlight"><span></span><p>${esc(item)}</p></div>`).join('') : '<div class="muted">暂无更新摘要。</div>'}
+      </div>
+      ${releases.length > 1 ? `
+        <details class="release-history">
+          <summary>查看历史版本</summary>
+          <div class="release-history-list">
+            ${releases.slice(0, 4).map(item => `<article class="release-history-item"><strong>v${esc(item.version)}</strong><span>${esc(item.date || '')}</span><p>${esc(item.summary || item.title || '')}</p></article>`).join('')}
+          </div>
+        </details>
+      ` : ''}
+    </div>
+  `
+}
+
+async function loadBots (forceUpdates = false) {
+  const [data] = await Promise.all([
+    request('/api/bots'),
+    loadRuntimeUpdates(forceUpdates).catch(() => null)
+  ])
   state.bots = data.rows
   $('createBot').disabled = state.botCreationEnabled === false
   $('createBot').title = $('createBot').disabled ? '平台已暂停创建新 Bot' : ''
@@ -398,6 +473,7 @@ async function loadBots () {
       }).join('') + '</tbody></table>'
     : '<div class="empty">还没有机器人。</div>'
   bindBotActions()
+  renderRuntimeReleasePanel()
 }
 
 function managedBotCards (rows) {
@@ -601,7 +677,7 @@ async function saveSmartCommandPrefix () {
 }
 
 function taskArgumentHint (command) {
-  return { 上车: '无需参数', 下车: '无需参数', 清空: '无需参数', 切换: '1-9', 放置: 'x y z', 右键: '玩家名 或 x y z', 指令: '服务器指令' }[command] || ''
+  return { 上车: '无需参数', 下车: '无需参数', 清空: '无需参数', 拿出: 'minecraft:stone 或 stone', 切换: '1-9', 放置: 'x y z', 右键: '玩家名 或 x y z', 移动: 'x y z [停止距离] / 玩家名 / 东 5', 注视: '玩家名', 指令: '服务器指令' }[command] || ''
 }
 
 function renderTaskParameters (parameters = []) {
@@ -1492,7 +1568,7 @@ $('botMode').onchange = updateModeFields
 $('createAccount').onclick = createAccount
 $('refreshAccounts').onclick = loadAccounts
 $('botTemplate').onchange = renderCreateVariables
-$('refreshBots').onclick = loadBots
+$('refreshBots').onclick = () => loadBots(true).catch(error => toast(error.message))
 $('refreshManagedBots').onclick = () => loadManagedBots().catch(error => toast(error.message))
 $('refreshTasks').onclick = () => loadTasks().catch(error => toast(error.message))
 $('taskBot').onchange = () => { state.editingTaskBotId = $('taskBot').value; loadTasks().catch(error => toast(error.message)) }
