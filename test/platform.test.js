@@ -1207,7 +1207,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: '@near' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.9')
+  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.10')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })
@@ -1278,7 +1278,7 @@ test('smart command tells each player about a newer runtime only once', async ()
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.10' }
+        if (action === 'runtime_version') return { version: '1.0.11' }
         if (action === 'schedule_status') return { automation: {}, tasks: [] }
         throw new Error(`unexpected action ${action}`)
       }

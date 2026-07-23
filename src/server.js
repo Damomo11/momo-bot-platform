@@ -11,6 +11,7 @@ const AccountManager = require('./accountManager')
 const { normalizeDefinitions, readDefinitions, validateValues } = require('./templateVariables')
 const { verifyCloudStoreToken } = require('./cloudStoreSso')
 const { LoginAttemptLimiter, clientIp } = require('./security')
+const { readRuntimeUpdates } = require('./runtimeUpdates')
 
 const config = loadConfig()
 const db = new PlatformDb(config)
@@ -249,6 +250,10 @@ async function api (req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { ok: true, service: 'bot-self-hosting-platform' })
   if (req.method === 'GET' && url.pathname === '/api/public-settings') {
     return json(res, 200, { ok: true, registrationEnabled: db.getRegistrationEnabled(), ...db.getRuntimeSettings(), platformName: 'Bot 自托管平台' })
+  }
+  if (req.method === 'GET' && url.pathname === '/api/runtime-updates') {
+    requireUser(req)
+    return json(res, 200, { ok: true, smart: readRuntimeUpdates(config.root, 'smart') })
   }
   if (req.method === 'GET' && url.pathname === '/api/me') {
     const user = currentUser(req)

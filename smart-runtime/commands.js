@@ -669,7 +669,9 @@ function createSmartCommandHandler (bot, options = {}) {
     try {
       const latest = await request('runtime_version', {})
       if (!isVersionNewer(latest?.version, SMART_BOT_VERSION)) return
-      bot.chat(`/msg ${username} bot已有新版本，重启后自动更新新版本。`)
+      const summary = latest?.release?.summary || latest?.release?.title || ''
+      const note = summary ? ` 更新内容: ${summary}` : ''
+      bot.chat(`/msg ${username} bot已有新版本，重启后自动更新新版本。${note}`.slice(0, 256))
       versionNotifiedPlayers.add(key)
     } catch (error) {
       platform.log?.(`检查智能 Bot 版本失败: ${error?.message || error}`)
@@ -683,7 +685,16 @@ function createSmartCommandHandler (bot, options = {}) {
     if (!parsed) return
 
     if (parsed.command === '版本') {
-      bot.chat(`智能 Bot 版本：v${SMART_BOT_VERSION}`)
+      try {
+        const latest = await request('runtime_version', {})
+        const summary = latest?.release?.summary || latest?.release?.title || ''
+        const updateText = isVersionNewer(latest?.version, SMART_BOT_VERSION)
+          ? `，最新 v${latest.version}${summary ? `：${summary}` : ''}`
+          : summary ? `，本版说明：${summary}` : ''
+        bot.chat(`智能 Bot 版本：v${SMART_BOT_VERSION}${updateText}`.slice(0, 256))
+      } catch {
+        bot.chat(`智能 Bot 版本：v${SMART_BOT_VERSION}`)
+      }
       return
     }
 

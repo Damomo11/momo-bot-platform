@@ -27,7 +27,9 @@ const state = {
   originalContent: '',
   dirty: false,
   collapsedDirs: new Set(),
-  fileDialogMode: 'create'
+  fileDialogMode: 'create',
+  runtimeUpdates: null,
+  runtimeUpdatesLoadedAt: 0
 }
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch])
@@ -134,8 +136,18 @@ async function loadMe () {
   $('changePassword').classList.toggle('hidden', data.user.authSource === 'cloud_store')
   document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('hidden', data.user.role !== 'admin'))
   await loadPlatformSettings()
+  await loadRuntimeUpdates().catch(() => null)
   await loadAccountsData()
   await loadView()
+}
+
+async function loadRuntimeUpdates (force = false) {
+  const now = Date.now()
+  if (!force && state.runtimeUpdates && now - state.runtimeUpdatesLoadedAt < 60000) return state.runtimeUpdates
+  const data = await request('/api/runtime-updates')
+  state.runtimeUpdates = data
+  state.runtimeUpdatesLoadedAt = now
+  return data
 }
 
 async function loadPublicSettings () {
@@ -366,15 +378,75 @@ function smartScheduleHtml (bot) {
   return `<div class="smart-schedules">${rows.map(row => `<div class="smart-schedule-row"><span>${esc(row.label)}</span><button type="button" class="danger" data-stop-smart-schedule="${esc(row.action)}" data-smart-schedule-bot="${esc(bot.id)}"${row.name ? ` data-smart-schedule-name="${esc(row.name)}"` : ''}>停止</button></div>`).join('')}</div>`
 }
 
+function runtimeReleaseFor (mode, version) {
+  const runtime = state.runtimeUpdates?.[mode]
+  if (!runtime) return null
+  return (runtime.releases || []).find(item => String(item.version || '') === String(version || '')) || null
+}
+
 function botRuntimeVersionHtml (bot) {
   const current = String(bot.runtimeVersion || '')
   const latest = String(bot.latestRuntimeVersion || '')
+  const latestRelease = state.runtimeUpdates?.[bot.mode]?.latestRelease || null
+  const currentRelease = runtimeReleaseFor(bot.mode, current)
+  const note = bot.updateAvailable ? (latestRelease?.summary || latestRelease?.title || '') : (currentRelease?.summary || currentRelease?.title || '')
   if (!current) return `<div class="runtime-version"><span class="muted">未运行</span>${latest ? `<small>最新 v${esc(latest)}</small>` : ''}</div>`
-  return `<div class="runtime-version"><code>v${esc(current)}</code>${bot.updateAvailable ? `<span class="version-update">可更新至 v${esc(latest)}</span>` : '<span class="positive">已是最新</span>'}</div>`
+  return `<div class="runtime-version"><code>v${esc(current)}</code>${bot.updateAvailable ? `<span class="version-update">可更新至 v${esc(latest)}</span>` : '<span class="positive">已是最新</span>'}${note ? `<small>${esc(note)}</small>` : ''}</div>`
 }
 
-async function loadBots () {
-  const data = await request('/api/bots')
+function renderRuntimeReleasePanel () {
+  const panel = $('runtimeReleasePanel')
+  if (!panel) return
+  const runtime = state.runtimeUpdates?.smart
+  if (!runtime) {
+    panel.classList.add('hidden')
+    return
+  }
+  const releases = runtime.releases || []
+  const latest = runtime.latestRelease || releases[0] || null
+  const smartBots = state.bots.filter(bot => bot.mode === 'smart')
+  const updateCount = smartBots.filter(bot => bot.updateAvailable).length
+  const onlineCount = smartBots.filter(bot => bot.runtimeState === 'online').length
+  const installedVersions = [...new Set(smartBots.map(bot => bot.runtimeVersion).filter(Boolean))]
+  const highlights = (latest?.highlights || []).slice(0, 4)
+  const statusText = smartBots.length
+    ? (updateCount > 0 ? `${updateCount} 个智能 Bot 可更新` : `${onlineCount} 个智能 Bot 已在线`)
+    : '当前没有智能 Bot'
+  panel.classList.remove('hidden')
+  panel.innerHTML = `
+    <div class="release-panel-head">
+      <div>
+        <span class="release-kicker">智能 Bot 更新说明</span>
+        <h2>${esc(latest?.title || `v${runtime.version || 'unknown'}`)}</h2>
+        <p>${esc(latest?.summary || '这里会显示智能 Bot 最新版本的更新内容。')}</p>
+      </div>
+      <div class="release-meta">
+        <strong>${esc(runtime.version ? `v${runtime.version}` : '未知版本')}</strong>
+        <span>${esc(statusText)}</span>
+        <small>${installedVersions.length ? `运行中：${esc(installedVersions.map(v => `v${v}`).join(' / '))}` : '暂无运行中的智能 Bot'}</small>
+      </div>
+    </div>
+    <div class="release-body">
+      <div class="release-highlights">
+        ${highlights.length ? highlights.map(item => `<div class="release-highlight"><span></span><p>${esc(item)}</p></div>`).join('') : '<div class="muted">暂无更新摘要。</div>'}
+      </div>
+      ${releases.length > 1 ? `
+        <details class="release-history">
+          <summary>查看历史版本</summary>
+          <div class="release-history-list">
+            ${releases.slice(0, 4).map(item => `<article class="release-history-item"><strong>v${esc(item.version)}</strong><span>${esc(item.date || '')}</span><p>${esc(item.summary || item.title || '')}</p></article>`).join('')}
+          </div>
+        </details>
+      ` : ''}
+    </div>
+  `
+}
+
+async function loadBots (forceUpdates = false) {
+  const [data] = await Promise.all([
+    request('/api/bots'),
+    loadRuntimeUpdates(forceUpdates).catch(() => null)
+  ])
   state.bots = data.rows
   $('createBot').disabled = state.botCreationEnabled === false
   $('createBot').title = $('createBot').disabled ? '平台已暂停创建新 Bot' : ''
@@ -398,6 +470,7 @@ async function loadBots () {
       }).join('') + '</tbody></table>'
     : '<div class="empty">还没有机器人。</div>'
   bindBotActions()
+  renderRuntimeReleasePanel()
 }
 
 function managedBotCards (rows) {
@@ -1492,7 +1565,7 @@ $('botMode').onchange = updateModeFields
 $('createAccount').onclick = createAccount
 $('refreshAccounts').onclick = loadAccounts
 $('botTemplate').onchange = renderCreateVariables
-$('refreshBots').onclick = loadBots
+$('refreshBots').onclick = () => loadBots(true).catch(error => toast(error.message))
 $('refreshManagedBots').onclick = () => loadManagedBots().catch(error => toast(error.message))
 $('refreshTasks').onclick = () => loadTasks().catch(error => toast(error.message))
 $('taskBot').onchange = () => { state.editingTaskBotId = $('taskBot').value; loadTasks().catch(error => toast(error.message)) }

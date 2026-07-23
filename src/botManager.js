@@ -4,6 +4,7 @@ const { fork } = require('node:child_process')
 const cron = require('node-cron')
 const { environmentForValues } = require('./templateVariables')
 const { invalidateMinecraftAccessTokenCache } = require('./authCache')
+const { readRuntimeUpdates } = require('./runtimeUpdates')
 
 function isReleaseNewer (candidate, current) {
   const parse = value => {
@@ -400,12 +401,8 @@ class BotManager {
     if (!bot || bot.mode !== 'smart') throw new Error('智能 Bot 不存在。')
     if (action === 'settings') return this.db.getSmartBotSettings(bot.id)
     if (action === 'runtime_version') {
-      try {
-        const packageJson = JSON.parse(fs.readFileSync(path.join(this.config.root, 'smart-runtime', 'package.json'), 'utf8'))
-        return { version: String(packageJson.version || '') }
-      } catch {
-        return { version: '' }
-      }
+      const runtime = readRuntimeUpdates(this.config.root, 'smart')
+      return { version: runtime.version, release: runtime.latestRelease, releases: runtime.releases }
     }
     if (action === 'ominous_schedule_get') return this.db.getSmartBotAutomation(botId)
     if (action === 'ominous_schedule_complete') return this.db.completeSmartBotOminousBottle(botId)
