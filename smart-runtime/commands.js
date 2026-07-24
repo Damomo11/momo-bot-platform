@@ -1,6 +1,7 @@
 const { Vec3 } = require('vec3')
 const { goals } = require('mineflayer-pathfinder')
 const { version: SMART_BOT_VERSION } = require('./package.json')
+const ITEM_NAME_ALIASES = require('./item-name-aliases.json')
 
 const PLAYER_MAP_URL = 'https://map.zenoxs.cn/tiles/settings.json'
 const OMINOUS_BOTTLE_INTERVAL_MS = 31 * 60 * 1000
@@ -32,9 +33,13 @@ const COMMAND_TEXT = Object.freeze({
   clearEmpty: '机器人背包已经是空的。',
   clearSuccess: (stacks, items) => `背包已清空，共丢出 ${stacks} 组、${items} 个物品。`,
   clearFailure: (stacks, error) => `清空背包中断，已丢出 ${stacks} 组。原因: ${error}`,
-  takeUsage: '正确格式: 拿出 物品id',
+  takeUsage: '正确格式: 拿出 物品中文名或id',
   takeSuccess: item => `已将 ${item} 拿到主手。`,
   takeMissing: item => `背包中没有 ${item}。`,
+  dropUsage: '正确格式: 丢弃 物品中文名或id',
+  dropSuccess: (item, stacks, items) => `已丢弃背包中的全部 ${item}，共 ${stacks} 组、${items} 个。`,
+  dropMissing: item => `背包中没有 ${item}。`,
+  dropFailure: (item, items, reason) => `丢弃 ${item} 中断，已丢出 ${items} 个。原因: ${reason}`,
   switchUsage: '正确格式: 切换 1-9',
   switchSuccess: slot => `快捷栏已切换到第 ${slot} 格。`,
   ominousUsage: '正确格式: 定时灾厄之瓶 开|关',
@@ -269,10 +274,13 @@ function parseCoordinates (args) {
   return { x, y, z }
 }
 
+const ITEM_NAME_TO_ID = new Map(Object.entries(ITEM_NAME_ALIASES).map(([name, itemId]) => [String(name).trim().toLowerCase(), String(itemId).trim().toLowerCase()]))
+
 function normalizeItemId (value) {
   const text = String(value || '').trim().toLowerCase()
   if (!text) return ''
-  return text.includes(':') ? text : `minecraft:${text}`
+  const resolved = ITEM_NAME_TO_ID.get(text) || text
+  return resolved.includes(':') ? resolved : `minecraft:${resolved}`
 }
 
 function displayItemId (value) {
@@ -398,6 +406,38 @@ async function collectItemToHand (bot, itemId) {
   return { item: item.name || target }
 }
 
+async function discardInventoryItems (bot, itemId) {
+  if (!bot.entity || !bot.inventory || typeof bot.tossStack !== 'function') throw new Error('机器人尚未进入服务器。')
+  const target = displayItemId(itemId)
+  if (!findInventoryItem(bot, target)) {
+    const error = new Error(target)
+    error.code = 'ITEM_MISSING'
+    throw error
+  }
+  let stacks = 0
+  let items = 0
+  while (true) {
+    const item = findInventoryItem(bot, target)
+    if (!item) return { item: target, stacks, items }
+    if (stacks >= 64) {
+      const error = new Error('库存状态长时间未更新，已停止继续丢弃。')
+      error.droppedStacks = stacks
+      error.droppedItems = items
+      throw error
+    }
+    try {
+      await bot.tossStack(item)
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause))
+      error.droppedStacks = stacks
+      error.droppedItems = items
+      throw error
+    }
+    stacks += 1
+    items += Number(item.count || 0)
+  }
+}
+
 async function lookAtPlayer (bot, username) {
   const entity = findPlayerEntity(bot, username)
   if (!entity) throw new Error('player missing')
@@ -430,6 +470,7 @@ async function executeCustomTask (bot, task, options = {}) {
         else if (step.command === '下车') await dismountVehicle(bot)
         else if (step.command === '清空') await clearInventory(bot)
         else if (step.command === '拿出') await collectItemToHand(bot, args[0])
+        else if (step.command === '丢弃') await discardInventoryItems(bot, args[0])
         else if (step.command === '切换') await bot.setQuickBarSlot(Number(args[0]) - 1)
         else if (step.command === '放置') await placePeriodicRightClick(bot, { periodicRightClickX: Number(args[0]), periodicRightClickY: Number(args[1]), periodicRightClickZ: Number(args[2]) })
         else if (step.command === '右键') await rightClickTarget(bot, args)
@@ -464,7 +505,7 @@ function replaceTaskParameters (value, variables) {
 
 function validateCustomTaskCommand (command, args) {
   if (['上车', '下车', '清空'].includes(command) && args.length) throw new Error(`${command} 命令不需要参数。`)
-  if (command === '拿出' && (args.length !== 1 || !normalizeItemId(args[0]))) throw new Error('拿出命令需要一个物品 id。')
+  if (['拿出', '丢弃'].includes(command) && (args.length !== 1 || !normalizeItemId(args[0]) || /\s/.test(args[0]))) throw new Error(`${command}命令需要一个物品中文名或 id。`)
   if (command === '切换' && (args.length !== 1 || !/^[1-9]$/.test(args[0]))) throw new Error('切换命令参数必须为 1-9。')
   if (command === '放置' && !parseCoordinates(args)) throw new Error('放置命令需要三个有效整数坐标。')
   if (command === '右键' && !((args.length === 1 && args[0].length <= 32 && !/\s/.test(args[0])) || parseCoordinates(args))) throw new Error('右键命令需要玩家名或三个有效整数坐标。')
@@ -899,7 +940,7 @@ function createSmartCommandHandler (bot, options = {}) {
     if (access.lock.adminLocked && !access.admin && parsed.command !== '状态') return reply(COMMAND_TEXT.locked(access.lock, '超级锁定'), 'locked', { player: access.lock.lockedBy || '未知玩家', label: '超级锁定', reason: access.lock.reason || '无' })
     if (!access.whitelisted) return
 
-    const overridableTaskCommands = new Set(['上车', '下车', '开宝库', '清空', '拿出', '切换', '放置', '右键', '移动', '注视'])
+    const overridableTaskCommands = new Set(['上车', '下车', '开宝库', '清空', '拿出', '丢弃', '切换', '放置', '右键', '移动', '注视'])
     if (overridableTaskCommands.has(parsed.command)) {
       const customTask = await request('task_get', { name: parsed.command })
       if (customTask?.task) {
@@ -979,6 +1020,23 @@ function createSmartCommandHandler (bot, options = {}) {
       } catch (error) {
         const item = displayItemId(parsed.args[0])
         reply(COMMAND_TEXT.takeMissing(item), 'takeMissing', { item })
+      }
+      return
+    }
+
+    if (parsed.command === '丢弃') {
+      if (parsed.args.length !== 1) return reply(COMMAND_TEXT.dropUsage, 'dropUsage')
+      const item = displayItemId(parsed.args[0])
+      try {
+        const result = await runBotAction(() => discardInventoryItems(bot, parsed.args[0]))
+        reply(COMMAND_TEXT.dropSuccess(result.item, result.stacks, result.items), 'dropSuccess', { item: result.item, stacks: result.stacks, items: result.items })
+      } catch (error) {
+        if (error?.code === 'ITEM_MISSING') reply(COMMAND_TEXT.dropMissing(item), 'dropMissing', { item })
+        else {
+          const items = Number(error?.droppedItems || 0)
+          const reason = error?.message || '未知错误'
+          reply(COMMAND_TEXT.dropFailure(item, items, reason), 'dropFailure', { item, items, reason })
+        }
       }
       return
     }
@@ -1293,6 +1351,7 @@ module.exports = {
   createPlayerMapClient,
   createSmartCommandHandler,
   createTeleportRequestHandler,
+  discardInventoryItems,
   dismountVehicle,
   drinkOminousBottle,
   bindTaskArguments,
@@ -1304,6 +1363,7 @@ module.exports = {
   isOminousBottleItem,
   mapDimensionLabel,
   mountNearestMinecart,
+  normalizeItemId,
   normalizeCommandPrefixes,
   parseSmartCommand,
   parsePeriodicRightClickArgs,
