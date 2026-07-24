@@ -1326,6 +1326,8 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: '@near' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
+  assert.deepEqual(chats, [])
+  await handler({ username: 'White', message: 'PlatformBot版本' })
   assert.equal(chats.pop(), '智能 Bot 版本：v1.0.13')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
@@ -1461,14 +1463,14 @@ test('smart command can take and discard Chinese-named items, move, and look at 
   assert.equal(looks.at(-1).point.x, 4)
 })
 
-test('smart command tells each player about a newer runtime only once', async () => {
+test('smart command tells only super admins about a newer runtime once', async () => {
   const bot = { username: 'PlatformBot', chat: message => chats.push(message) }
   const chats = []
   const handler = createSmartCommandHandler(bot, {
     commandPrefixes: ['PlatformBot'],
     platform: {
-      request: async action => {
-        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
+      request: async (action, payload) => {
+        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: payload.username === 'Alice', lock: { locked: false, adminLocked: false } }
         if (action === 'runtime_version') return { version: '1.0.14' }
         if (action === 'schedule_status') return { automation: {}, tasks: [] }
         throw new Error(`unexpected action ${action}`)
@@ -1476,8 +1478,10 @@ test('smart command tells each player about a newer runtime only once', async ()
     }
   })
 
+  await handler({ username: 'Bob', message: 'PlatformBot状态' })
   await handler({ username: 'Alice', message: 'PlatformBot状态' })
   await handler({ username: 'Alice', message: 'PlatformBot状态' })
+  assert.equal(chats.filter(message => message.startsWith('/msg Bob ')).length, 0)
   assert.equal(chats.filter(message => message.startsWith('/msg Alice ')).length, 1)
-  assert.equal(chats.filter(message => message.includes('机器人没有被锁定')).length, 2)
+  assert.equal(chats.filter(message => message.includes('机器人没有被锁定')).length, 3)
 })
