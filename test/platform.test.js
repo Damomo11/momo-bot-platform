@@ -132,6 +132,66 @@ test('runtime update restart waits for process exit and keeps the bot desired st
   }
 })
 
+test('Zenox connections always use only Minecraft 1.21.11', () => {
+  const manager = new BotManager({}, {})
+  assert.deepEqual(manager.protocolVersions({ serverHost: 'mc.zenoxs.cn', minecraftVersion: '1.21.8' }), ['1.21.11'])
+  assert.deepEqual(manager.protocolVersions({ serverHost: 'MC.ZENOXS.CN', minecraftVersion: '' }), ['1.21.11'])
+  assert.deepEqual(manager.protocolVersions({ serverHost: 'example.org', minecraftVersion: '1.20.4' }), ['1.20.4'])
+})
+
+test('connection timeout retries the same version without stopping the bot', async () => {
+  const bot = {
+    id: 'bot-timeout',
+    userId: 'user-1',
+    accountId: 'account-1',
+    mode: 'smart',
+    desiredState: 'running',
+    runtimeState: 'connecting',
+    lastError: '',
+    oauthJson: '',
+    templateVarsJson: '',
+    serverHost: 'mc.zenoxs.cn',
+    minecraftVersion: '1.21.11'
+  }
+  const db = {
+    getBot: () => ({ ...bot }),
+    updateBotRuntime: (id, fields) => Object.assign(bot, fields),
+    getModePrices: () => ({ smartHourlyPrice: 0.03, signinOncePrice: 0.01 }),
+    getSmartBotScheduleStatus: () => ({ automation: {}, tasks: [] })
+  }
+  const manager = new BotManager(db, { reconnectDelayMs: 10 })
+  const signals = []
+  const state = {
+    child: { kill: signal => signals.push(signal) },
+    accountId: bot.accountId,
+    versions: ['1.21.11'],
+    protocolIndex: 0,
+    activeVersion: '1.21.11',
+    billingMode: 'hourly',
+    priceMomoc: 0.03,
+    stopping: false,
+    retryPending: false,
+    profileAuthRecoveryPending: false,
+    reachedOnline: false
+  }
+  manager.processes.set(bot.id, state)
+  manager.accountLocks.set(bot.accountId, bot.id)
+  let launched = null
+  manager.launchAttempt = (current, protocolIndex) => { launched = { current, protocolIndex } }
+
+  assert.equal(manager.requestConnectionRetry(bot.id, '120 秒内仍未进入服务器'), true)
+  assert.equal(bot.desiredState, 'running')
+  assert.equal(bot.runtimeState, 'reconnecting')
+  assert.match(bot.lastError, /继续使用 Minecraft 1\.21\.11 自动重连/)
+  assert.deepEqual(signals, ['SIGTERM'])
+
+  manager.handleExit(bot.id, state, 0, 'SIGTERM')
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(launched.current.id, bot.id)
+  assert.equal(launched.protocolIndex, 0)
+  assert.equal(bot.desiredState, 'running')
+})
+
 test('a stopped Minecraft connection terminates its runtime and automatically reconnects', async () => {
   const bot = {
     id: 'bot-1',
@@ -1266,6 +1326,8 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: '@near' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
+  assert.deepEqual(chats, [])
+  await handler({ username: 'White', message: 'PlatformBot版本' })
   assert.equal(chats.pop(), '智能 Bot 版本：v1.0.13')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
@@ -1401,14 +1463,14 @@ test('smart command can take and discard Chinese-named items, move, and look at 
   assert.equal(looks.at(-1).point.x, 4)
 })
 
-test('smart command tells each player about a newer runtime only once', async () => {
+test('smart command tells only super admins about a newer runtime once', async () => {
   const bot = { username: 'PlatformBot', chat: message => chats.push(message) }
   const chats = []
   const handler = createSmartCommandHandler(bot, {
     commandPrefixes: ['PlatformBot'],
     platform: {
-      request: async action => {
-        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
+      request: async (action, payload) => {
+        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: payload.username === 'Alice', lock: { locked: false, adminLocked: false } }
         if (action === 'runtime_version') return { version: '1.0.14' }
         if (action === 'schedule_status') return { automation: {}, tasks: [] }
         throw new Error(`unexpected action ${action}`)
@@ -1416,8 +1478,10 @@ test('smart command tells each player about a newer runtime only once', async ()
     }
   })
 
+  await handler({ username: 'Bob', message: 'PlatformBot状态' })
   await handler({ username: 'Alice', message: 'PlatformBot状态' })
   await handler({ username: 'Alice', message: 'PlatformBot状态' })
+  assert.equal(chats.filter(message => message.startsWith('/msg Bob ')).length, 0)
   assert.equal(chats.filter(message => message.startsWith('/msg Alice ')).length, 1)
-  assert.equal(chats.filter(message => message.includes('机器人没有被锁定')).length, 2)
+  assert.equal(chats.filter(message => message.includes('机器人没有被锁定')).length, 3)
 })

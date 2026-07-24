@@ -76,7 +76,7 @@ class BotManager {
     const runtimeVersion = state?.runtimeVersion || this.readPackageVersion(state?.instancePath)
     const latestRuntimeVersion = this.readPackageVersion(path.join(this.config.root || '', bot.mode === 'signin' ? 'signin-runtime' : 'smart-runtime'))
     const updateAvailable = bot.mode === 'smart' && Boolean(state) && isReleaseNewer(latestRuntimeVersion, runtimeVersion)
-    return { ...safe, billingMode: bot.mode === 'signin' ? 'once' : 'hourly', priceMomoc: bot.mode === 'signin' ? prices.signinOncePrice : prices.smartHourlyPrice, allowScheduling: bot.mode === 'signin', scheduleEnabled: Boolean(bot.scheduleEnabled), oauth, smartSchedules, runtimeVersion, latestRuntimeVersion, updateAvailable, logs: this.listLogs(bot.id) }
+    return { ...safe, minecraftVersion: this.protocolVersions(bot)[0], billingMode: bot.mode === 'signin' ? 'once' : 'hourly', priceMomoc: bot.mode === 'signin' ? prices.signinOncePrice : prices.smartHourlyPrice, allowScheduling: bot.mode === 'signin', scheduleEnabled: Boolean(bot.scheduleEnabled), oauth, smartSchedules, runtimeVersion, latestRuntimeVersion, updateAvailable, logs: this.listLogs(bot.id) }
   }
 
   readPackageVersion (directory) {
@@ -105,9 +105,7 @@ class BotManager {
   protocolVersions (bot) {
     const configured = String(bot.minecraftVersion || '').trim()
     const isZenox = String(bot.serverHost || '').trim().toLowerCase() === 'mc.zenoxs.cn'
-    const versions = configured ? [configured] : (isZenox ? ['1.21.11'] : [''])
-    if (versions[0] === '1.21.11') versions.push('1.21.9', '1.21.8')
-    return [...new Set(versions)]
+    return [isZenox ? '1.21.11' : configured]
   }
 
   async start (id, actorUserId = null) {
@@ -201,7 +199,7 @@ class BotManager {
       authTimer: null,
       killTimer: null,
       stopping: false,
-      fallbackPending: false,
+      retryPending: false,
       profileAuthRecoveryPending: false,
       disconnectPending: false,
       reachedOnline: false
@@ -222,12 +220,7 @@ class BotManager {
     })
     child.on('message', message => this.handleMessage(bot.id, message))
     child.on('exit', (code, signal) => this.handleExit(bot.id, state, code, signal))
-    state.connectTimer = setTimeout(() => {
-      if (this.processes.get(bot.id) !== state || state.reachedOnline) return
-      const reason = `使用 Minecraft ${activeVersion || '自动检测'} 后 120 秒内仍未进入服务器。`
-      if (!this.requestProtocolFallback(bot.id, reason)) this.stopFailedConnection(bot.id, reason)
-    }, 120000)
-    state.connectTimer.unref()
+    this.armConnectionTimeout(bot.id, state)
   }
 
   prepareProject (bot) {
@@ -309,13 +302,14 @@ class BotManager {
       return
     }
     if (message?.type === 'oauth') {
+      this.clearConnectionTimers(state)
       this.appendLog(id, 'info', 'Microsoft OAuth authorization is required.')
       this.db.updateBotRuntime(id, { runtimeState: 'auth_required', oauthJson: JSON.stringify(message.oauth) })
       this.db.updateMicrosoftAccountAuth(state.accountId, { authState: 'auth_required', oauthJson: JSON.stringify(message.oauth) })
       return
     }
     if (message?.type === 'protocol_failure') {
-      this.requestProtocolFallback(id, String(message.error || '登录前协议解析失败'))
+      this.requestConnectionRetry(id, String(message.error || '登录前协议解析失败'))
       return
     }
     if (message?.type === 'profile_auth_failure') {
@@ -343,20 +337,21 @@ class BotManager {
       return
     }
     if (message?.type === 'resource_pack') {
-      if (state.fallbackPending || state.reachedOnline) return
+      if (state.retryPending || state.fallbackPending || state.reachedOnline) return
+      this.armConnectionTimeout(id, state)
       const phases = { requested: '服务器请求资源包', accepted: '已接受资源包', downloaded: '资源包已下载', loaded: '资源包已加载' }
       this.appendLog(id, 'info', phases[message.phase] || 'Processing server resource pack.')
       this.db.updateBotRuntime(id, { runtimeState: 'resource_pack', lastError: phases[message.phase] || '正在处理资源包' })
       return
     }
     if (message?.type === 'state') {
-      if (state.fallbackPending) return
+      if (state.retryPending || state.fallbackPending) return
       this.appendLog(id, 'info', `Runtime state: ${String(message.state || 'unknown')}`)
+      if (['project_started', 'authenticated', 'logging_in'].includes(message.state)) this.armConnectionTimeout(id, state)
       if (message.state === 'project_started') {
         this.db.updateBotRuntime(id, { runtimeState: 'connecting' })
         return
       }
-      if (message.state === 'authenticated') this.armAuthenticatedTimeout(id, state)
       if (message.state === 'authenticated') this.db.updateMicrosoftAccountAuth(state.accountId, { authState: 'authorized', minecraftName: message.minecraftName || '', lastError: '', oauthJson: '' })
       if (message.state === 'logging_in' && state.authTimer) {
         clearTimeout(state.authTimer)
@@ -375,7 +370,7 @@ class BotManager {
       if (message.state === 'stopped') this.terminateDisconnectedRuntime(id, state)
       return
     }
-    if (message?.type === 'error' && !state.fallbackPending) {
+    if (message?.type === 'error' && !state.retryPending && !state.fallbackPending) {
       this.appendLog(id, 'error', message.error || 'unknown error')
       this.db.updateBotRuntime(id, { lastError: String(message.error || 'unknown error') })
     }
@@ -485,7 +480,7 @@ class BotManager {
   }
 
   handleTemplateSuccess (id, state, detail) {
-    if (state.billingMode !== 'once' || state.onceCharged || state.fallbackPending) return
+    if (state.billingMode !== 'once' || state.onceCharged || state.retryPending || state.fallbackPending) return
     const result = this.db.chargeOnce(id, state.priceMomoc, detail)
     if (!result.ok) {
       this.releaseOnceReservation(id, state)
@@ -500,29 +495,34 @@ class BotManager {
     setTimeout(() => this.stop(id).catch(error => this.setError(id, error)), 500).unref()
   }
 
-  armAuthenticatedTimeout (id, state) {
-    if (state.authTimer) clearTimeout(state.authTimer)
-    state.authTimer = setTimeout(() => {
-      if (this.processes.get(id) !== state || state.reachedOnline) return
-      const reason = `Microsoft OAuth 已完成，但 Minecraft ${state.activeVersion || '自动检测'} 在 45 秒内没有进入登录阶段。`
-      if (!this.requestProtocolFallback(id, reason)) this.stopFailedConnection(id, reason)
-    }, 45000)
-    state.authTimer.unref()
+  armConnectionTimeout (id, state) {
+    if (state.connectTimer) clearTimeout(state.connectTimer)
+    const timeoutMs = Math.max(1, Number(this.config.connectionTimeoutMs ?? 120000))
+    const timeoutSeconds = Math.ceil(timeoutMs / 1000)
+    state.connectTimer = setTimeout(() => {
+      if (this.processes.get(id) !== state || state.stopping || state.reachedOnline) return
+      const reason = `使用 Minecraft ${state.activeVersion || '自动检测'} 后 ${timeoutSeconds} 秒内仍未进入服务器。`
+      this.requestConnectionRetry(id, reason)
+    }, timeoutMs)
+    state.connectTimer.unref()
   }
 
-  requestProtocolFallback (id, reason) {
+  requestConnectionRetry (id, reason) {
     const state = this.processes.get(id)
-    if (!state || state.fallbackPending || state.reachedOnline) return Boolean(state?.fallbackPending)
-    if (state.protocolIndex >= state.versions.length - 1) return false
-    state.fallbackPending = true
+    const bot = state && this.db.getBot(id)
+    if (!state || !bot || bot.desiredState !== 'running' || state.stopping || state.restartPending || state.disconnectPending || state.retryPending || state.fallbackPending || state.profileAuthRecoveryPending || state.reachedOnline) return Boolean(state?.retryPending || state?.fallbackPending)
+    state.retryPending = true
     this.clearConnectionTimers(state)
-    const nextVersion = state.versions[state.protocolIndex + 1]
+    const reconnectDelayMs = Math.max(0, Number(this.config.reconnectDelayMs ?? 10000))
+    const reconnectSeconds = Math.ceil(reconnectDelayMs / 1000)
+    const version = state.activeVersion || '自动检测'
     this.db.updateBotRuntime(id, {
-      runtimeState: 'protocol_fallback',
-      lastError: `${reason} 正在切换到 Minecraft ${nextVersion}。`,
+      runtimeState: 'reconnecting',
+      lastError: `${reason}；${reconnectSeconds} 秒后继续使用 Minecraft ${version} 自动重连。`,
       oauthJson: ''
     })
-    console.warn(`[bot:${id}] ${reason} Falling back ${state.activeVersion || 'auto'} -> ${nextVersion}`)
+    this.appendLog(id, 'error', `${reason} Retrying Minecraft ${version}.`)
+    console.warn(`[bot:${id}] ${reason} Retrying Minecraft ${version}.`)
     state.child.kill('SIGTERM')
     state.killTimer = setTimeout(() => {
       if (this.processes.get(id) === state) state.child.kill('SIGKILL')
@@ -531,9 +531,19 @@ class BotManager {
     return true
   }
 
+  // Keep old hot-reloaded timeout callbacks safe while changing fallback into
+  // a same-version retry. New connections call requestConnectionRetry directly.
+  requestProtocolFallback (id, reason) {
+    return this.requestConnectionRetry(id, reason)
+  }
+
+  stopFailedConnection (id, reason) {
+    return this.requestConnectionRetry(id, reason)
+  }
+
   requestProfileAuthRecovery (id, reason) {
     const state = this.processes.get(id)
-    if (!state || state.profileAuthRecoveryPending || state.reachedOnline) return false
+    if (!state || state.retryPending || state.fallbackPending || state.profileAuthRecoveryPending || state.reachedOnline) return false
     state.profileAuthRecoveryPending = true
     this.clearConnectionTimers(state)
     const now = Date.now()
@@ -558,21 +568,6 @@ class BotManager {
     return true
   }
 
-  stopFailedConnection (id, reason) {
-    const state = this.processes.get(id)
-    if (!state) return
-    state.stopping = true
-    this.releaseOnceReservation(id, state)
-    this.clearConnectionTimers(state)
-    this.db.updateBotRuntime(id, {
-      desiredState: 'stopped',
-      runtimeState: 'stopped',
-      lastError: `${reason} 已尝试全部协议版本，机器人已停止。`,
-      oauthJson: ''
-    })
-    state.child.kill('SIGTERM')
-  }
-
   clearConnectionTimers (state) {
     if (state.connectTimer) clearTimeout(state.connectTimer)
     if (state.authTimer) clearTimeout(state.authTimer)
@@ -594,7 +589,7 @@ class BotManager {
   }
 
   terminateDisconnectedRuntime (id, state) {
-    if (this.processes.get(id) !== state || state.stopping || state.restartPending || state.fallbackPending || state.profileAuthRecoveryPending || state.disconnectPending) return
+    if (this.processes.get(id) !== state || state.stopping || state.restartPending || state.retryPending || state.fallbackPending || state.profileAuthRecoveryPending || state.disconnectPending) return
     state.disconnectPending = true
     this.clearStateTimers(state)
     this.appendLog(id, 'info', 'Minecraft connection ended; terminating the runtime before reconnecting.')
@@ -691,13 +686,14 @@ class BotManager {
       return
     }
 
-    if (exitedState.fallbackPending && bot.desiredState === 'running') {
-      const nextIndex = exitedState.protocolIndex + 1
+    if ((exitedState.retryPending || exitedState.fallbackPending) && bot.desiredState === 'running') {
+      const reconnectDelayMs = Math.max(0, Number(this.config.reconnectDelayMs ?? 10000))
+      this.db.updateBotRuntime(id, { runtimeState: 'reconnecting', startedAt: null, oauthJson: '' })
       setTimeout(() => {
         const current = this.db.getBot(id)
         if (!current || current.desiredState !== 'running' || this.processes.has(id)) return
-        try { this.launchAttempt(current, nextIndex, { billingMode: exitedState.billingMode, priceMomoc: exitedState.priceMomoc }) } catch (error) { this.releaseOnceReservation(id, exitedState); if (this.accountLocks.get(exitedState.accountId) === id) this.accountLocks.delete(exitedState.accountId); this.setError(id, error) }
-      }, 1000).unref()
+        try { this.launchAttempt(current, 0, { billingMode: exitedState.billingMode, priceMomoc: exitedState.priceMomoc }) } catch (error) { this.releaseOnceReservation(id, exitedState); if (this.accountLocks.get(exitedState.accountId) === id) this.accountLocks.delete(exitedState.accountId); this.setError(id, error) }
+      }, reconnectDelayMs).unref()
       return
     }
 

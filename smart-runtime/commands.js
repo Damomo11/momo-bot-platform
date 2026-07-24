@@ -882,7 +882,13 @@ function createSmartCommandHandler (bot, options = {}) {
     const parsed = parseSmartCommand(event.message, prefixes)
     if (!parsed) return
 
+    const username = String(event.username).replace(/^#/, '')
+    platform.log?.(`命令匹配 · ${username}: ${String(event.message || '').slice(0, 240)}`)
+    const access = await request('access', { username })
+    if (access.blacklisted) return
+
     if (parsed.command === '版本') {
+      if (!access.whitelisted && !access.admin) return
       try {
         const latest = await request('runtime_version', {})
         const summary = latest?.release?.summary || latest?.release?.title || ''
@@ -896,11 +902,7 @@ function createSmartCommandHandler (bot, options = {}) {
       return
     }
 
-    const username = String(event.username).replace(/^#/, '')
-    platform.log?.(`命令匹配 · ${username}: ${String(event.message || '').slice(0, 240)}`)
-    const access = await request('access', { username })
-    if (access.blacklisted) return
-    await notifyNewVersion(username)
+    if (access.admin) await notifyNewVersion(username)
 
     if (parsed.command === '查白' || parsed.command === '查黑' || parsed.command === '查超管') {
       if (parsed.args.length !== 1) return reply(COMMAND_TEXT.permissionUsage(parsed.command), 'permissionUsage', { command: parsed.command })
