@@ -1031,7 +1031,7 @@ class PlatformDb {
     if (parameters.some(value => !/^[\p{L}_][\p{L}\p{N}_]{0,15}$/u.test(value))) throw new Error('参数名必须为 1-16 个字母、数字或下划线，且不能以数字开头。')
     if (new Set(parameters).size !== parameters.length) throw new Error('任务参数名不能重复。')
     if (!Array.isArray(steps) || !steps.length || steps.length > 100) throw new Error('任务必须包含 1-100 个步骤。')
-    const allowedCommands = new Set(['上车', '下车', '清空', '切换', '放置', '右键', '指令'])
+    const allowedCommands = new Set(['上车', '下车', '清空', '拿出', '切换', '放置', '右键', '移动', '注视', '指令'])
     const normalizedSteps = steps.map((step, index) => {
       if (!step || typeof step !== 'object') throw new Error(`第 ${index + 1} 步无效。`)
       if (step.type === 'wait') {
@@ -1047,11 +1047,22 @@ class PlatformDb {
         }
       }
       const hasTemplate = value => /\{[\p{L}_][\p{L}\p{N}_]{0,15}\}/u.test(value)
+      const isIntegerOrTemplate = value => /^-?\d+$/.test(value) || hasTemplate(value)
+      const isStopDistanceOrTemplate = value => value == null || /^(\d+|\d+\.\d+|\.\d+)$/.test(value) || hasTemplate(value)
+      const isNameOrTemplate = value => String(value || '').length <= 64 || hasTemplate(value)
       if (!allowedCommands.has(command)) throw new Error(`第 ${index + 1} 步不是可用的平台命令。`)
       if (['上车', '下车', '清空'].includes(command) && args.length) throw new Error(`${command} 命令不需要参数。`)
+      if (command === '拿出' && (args.length !== 1 || (!/^[a-z0-9_.:-]+$/i.test(args[0]) && !hasTemplate(args[0])))) throw new Error('拿出命令需要一个物品 id 或参数占位符。')
       if (command === '切换' && (args.length !== 1 || (!/^[1-9]$/.test(args[0]) && !hasTemplate(args[0])))) throw new Error('切换命令参数必须为 1-9 或参数占位符。')
-      if (command === '放置' && (args.length !== 3 || !args.every(value => /^-?\d+$/.test(value) || hasTemplate(value)))) throw new Error('放置命令需要三个整数坐标或参数占位符。')
-      if (command === '右键' && !((args.length === 1 && args[0].length <= 64) || (args.length === 3 && args.every(value => /^-?\d+$/.test(value) || hasTemplate(value))))) throw new Error('右键命令需要玩家名或三个整数坐标。')
+      if (command === '放置' && (args.length !== 3 || !args.every(isIntegerOrTemplate))) throw new Error('放置命令需要三个整数坐标或参数占位符。')
+      if (command === '右键' && !((args.length === 1 && isNameOrTemplate(args[0])) || (args.length === 3 && args.every(isIntegerOrTemplate)))) throw new Error('右键命令需要玩家名或三个整数坐标。')
+      if (command === '移动') {
+        const coordinateMove = (args.length === 3 || args.length === 4) && args.slice(0, 3).every(isIntegerOrTemplate) && isStopDistanceOrTemplate(args[3])
+        const directionMove = (args.length === 2 || args.length === 3) && ((['东', '西', '南', '北'].includes(args[0]) || hasTemplate(args[0])) && isIntegerOrTemplate(args[1]) && isStopDistanceOrTemplate(args[2]))
+        const playerMove = (args.length === 1 || args.length === 2) && isNameOrTemplate(args[0]) && isStopDistanceOrTemplate(args[1])
+        if (!(coordinateMove || directionMove || playerMove)) throw new Error('移动命令需要坐标、玩家名或方向与距离。')
+      }
+      if (command === '注视' && (args.length !== 1 || !isNameOrTemplate(args[0]))) throw new Error('注视命令需要一个玩家名或参数占位符。')
       if (command === '指令') {
         const text = args.join(' ')
         const root = text.split(/\s+/, 1)[0].replace(/^\//, '').toLowerCase()

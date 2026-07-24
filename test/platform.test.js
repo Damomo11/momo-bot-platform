@@ -907,6 +907,28 @@ test('custom task parameters are validated, persisted, and saved with scheduled 
   }
 })
 
+test('custom task accepts all commands exposed by the task editor', () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('task_editor_commands_owner', 'password-123')
+    const bot = f.db.createBot(user.id, { mode: 'smart', label: 'Smart', microsoftEmail: 'task-editor-commands@example.com', serverHost: 'localhost' })
+    const saved = f.db.setSmartBotTask(bot.id, {
+      name: '拿出测试',
+      parameters: ['玩家'],
+      steps: [
+        { type: 'command', command: '拿出', args: ['stone'] },
+        { type: 'wait', ticks: 1 },
+        { type: 'command', command: '移动', args: ['东', '5'] },
+        { type: 'wait', ticks: 1 },
+        { type: 'command', command: '注视', args: ['{玩家}'] }
+      ]
+    })
+    assert.deepEqual(saved.steps.map(step => step.type === 'command' ? step.command : step.type), ['拿出', 'wait', '移动', 'wait', '注视'])
+  } finally {
+    f.close()
+  }
+})
+
 test('custom task parameters interpolate inside every command argument', async () => {
   const placed = []
   const chats = []
