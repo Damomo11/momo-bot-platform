@@ -18,7 +18,7 @@ const { verifyCloudStoreToken } = require('../src/cloudStoreSso')
 const { LoginAttemptLimiter, clientIp } = require('../src/security')
 const { invalidateMinecraftAccessTokenCache, isMinecraftProfileAuthError } = require('../src/authCache')
 const { upgradeObjectState } = require('../src/supervisorHotReload')
-const { activateNearestVault, bindTaskArguments, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, isVersionNewer, mountNearestMinecart, parsePeriodicRightClickArgs, parseSmartCommand, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
+const { activateNearestVault, bindTaskArguments, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, isVersionNewer, mountNearestMinecart, normalizeItemId, parsePeriodicRightClickArgs, parseSmartCommand, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
 
 test('login attempts are blocked by IP after repeated failures', () => {
   const limiter = new LoginAttemptLimiter({ maxFailures: 3, windowMs: 1000, blockMs: 2000 })
@@ -916,17 +916,52 @@ test('custom task accepts all commands exposed by the task editor', () => {
       name: '拿出测试',
       parameters: ['玩家'],
       steps: [
-        { type: 'command', command: '拿出', args: ['stone'] },
+        { type: 'command', command: '拿出', args: ['石头'] },
+        { type: 'wait', ticks: 1 },
+        { type: 'command', command: '丢弃', args: ['圆石'] },
         { type: 'wait', ticks: 1 },
         { type: 'command', command: '移动', args: ['东', '5'] },
         { type: 'wait', ticks: 1 },
         { type: 'command', command: '注视', args: ['{玩家}'] }
       ]
     })
-    assert.deepEqual(saved.steps.map(step => step.type === 'command' ? step.command : step.type), ['拿出', 'wait', '移动', 'wait', '注视'])
+    assert.deepEqual(saved.steps.map(step => step.type === 'command' ? step.command : step.type), ['拿出', 'wait', '丢弃', 'wait', '移动', 'wait', '注视'])
   } finally {
     f.close()
   }
+})
+
+test('custom task discards every stack matching a Chinese item name parameter', async () => {
+  let inventoryItems = [
+    { name: 'stone', count: 32, slot: 9 },
+    { name: 'dirt', count: 5, slot: 10 },
+    { name: 'stone', count: 3, slot: 11 }
+  ]
+  const dropped = []
+  const bot = {
+    entity: {},
+    inventory: { items: () => inventoryItems },
+    tossStack: async item => {
+      dropped.push(item)
+      inventoryItems = inventoryItems.filter(row => row !== item)
+    }
+  }
+  const result = await executeCustomTask(bot, {
+    name: '按名称丢弃',
+    parameters: ['物品'],
+    steps: [{ type: 'command', command: '丢弃', args: ['{物品}'] }]
+  }, { args: ['石头'] })
+
+  assert.deepEqual(result.failures, [])
+  assert.deepEqual(dropped.map(item => item.count), [32, 3])
+  assert.deepEqual(inventoryItems.map(item => item.name), ['dirt'])
+})
+
+test('official Chinese item names resolve to Minecraft item ids', () => {
+  assert.equal(normalizeItemId('石头'), 'minecraft:stone')
+  assert.equal(normalizeItemId('钻石'), 'minecraft:diamond')
+  assert.equal(normalizeItemId('stone'), 'minecraft:stone')
+  assert.equal(normalizeItemId('minecraft:stone'), 'minecraft:stone')
 })
 
 test('custom task parameters interpolate inside every command argument', async () => {
@@ -1231,7 +1266,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: '@near' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.12')
+  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.13')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })
@@ -1294,7 +1329,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   assert.equal(requests.some(row => row.action === 'permission_add' && row.payload.minutes === 30), true)
 })
 
-test('smart command can take items, move, and look at players', async () => {
+test('smart command can take and discard Chinese-named items, move, and look at players', async () => {
   const bot = new EventEmitter()
   bot.username = 'PlatformBot'
   bot.entity = { position: new Vec3(0, 0, 0) }
@@ -1307,6 +1342,7 @@ test('smart command can take items, move, and look at players', async () => {
   bot.chat = message => chats.push(message)
   bot.inventory = { items: () => inventoryItems }
   bot.equip = async (item, destination) => { bot.heldItem = { item, destination } }
+  bot.tossStack = async item => { inventoryItems = inventoryItems.filter(row => row !== item) }
   bot.lookAt = async (point, force) => { looks.push({ point, force }) }
   const pathfinderGoalsUsed = []
   bot.pathfinder = {
@@ -1331,9 +1367,16 @@ test('smart command can take items, move, and look at players', async () => {
     scheduleRestart: () => {}
   })
 
-  await handler({ username: 'White', message: 'PlatformBot拿出 stone' })
+  await handler({ username: 'White', message: 'PlatformBot拿出 石头' })
   assert.equal(bot.heldItem.destination, 'hand')
   assert.equal(chats.pop(), '已将 minecraft:stone 拿到主手。')
+
+  inventoryItems = [{ name: 'stone', count: 32, slot: 9 }, { name: 'dirt', count: 5, slot: 10 }, { name: 'stone', count: 3, slot: 11 }]
+  await handler({ username: 'White', message: 'PlatformBot丢弃 石头' })
+  assert.equal(chats.pop(), '已丢弃背包中的全部 minecraft:stone，共 2 组、35 个。')
+  assert.deepEqual(inventoryItems.map(item => item.name), ['dirt'])
+  await handler({ username: 'White', message: 'PlatformBot丢弃 钻石' })
+  assert.equal(chats.pop(), '背包中没有 minecraft:diamond。')
 
   bot.entity.position = new Vec3(0, 0, 0)
   looks.length = 0
@@ -1366,7 +1409,7 @@ test('smart command tells each player about a newer runtime only once', async ()
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.13' }
+        if (action === 'runtime_version') return { version: '1.0.14' }
         if (action === 'schedule_status') return { automation: {}, tasks: [] }
         throw new Error(`unexpected action ${action}`)
       }
