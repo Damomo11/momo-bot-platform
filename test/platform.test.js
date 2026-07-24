@@ -132,6 +132,66 @@ test('runtime update restart waits for process exit and keeps the bot desired st
   }
 })
 
+test('Zenox connections always use only Minecraft 1.21.11', () => {
+  const manager = new BotManager({}, {})
+  assert.deepEqual(manager.protocolVersions({ serverHost: 'mc.zenoxs.cn', minecraftVersion: '1.21.8' }), ['1.21.11'])
+  assert.deepEqual(manager.protocolVersions({ serverHost: 'MC.ZENOXS.CN', minecraftVersion: '' }), ['1.21.11'])
+  assert.deepEqual(manager.protocolVersions({ serverHost: 'example.org', minecraftVersion: '1.20.4' }), ['1.20.4'])
+})
+
+test('connection timeout retries the same version without stopping the bot', async () => {
+  const bot = {
+    id: 'bot-timeout',
+    userId: 'user-1',
+    accountId: 'account-1',
+    mode: 'smart',
+    desiredState: 'running',
+    runtimeState: 'connecting',
+    lastError: '',
+    oauthJson: '',
+    templateVarsJson: '',
+    serverHost: 'mc.zenoxs.cn',
+    minecraftVersion: '1.21.11'
+  }
+  const db = {
+    getBot: () => ({ ...bot }),
+    updateBotRuntime: (id, fields) => Object.assign(bot, fields),
+    getModePrices: () => ({ smartHourlyPrice: 0.03, signinOncePrice: 0.01 }),
+    getSmartBotScheduleStatus: () => ({ automation: {}, tasks: [] })
+  }
+  const manager = new BotManager(db, { reconnectDelayMs: 10 })
+  const signals = []
+  const state = {
+    child: { kill: signal => signals.push(signal) },
+    accountId: bot.accountId,
+    versions: ['1.21.11'],
+    protocolIndex: 0,
+    activeVersion: '1.21.11',
+    billingMode: 'hourly',
+    priceMomoc: 0.03,
+    stopping: false,
+    retryPending: false,
+    profileAuthRecoveryPending: false,
+    reachedOnline: false
+  }
+  manager.processes.set(bot.id, state)
+  manager.accountLocks.set(bot.accountId, bot.id)
+  let launched = null
+  manager.launchAttempt = (current, protocolIndex) => { launched = { current, protocolIndex } }
+
+  assert.equal(manager.requestConnectionRetry(bot.id, '120 秒内仍未进入服务器'), true)
+  assert.equal(bot.desiredState, 'running')
+  assert.equal(bot.runtimeState, 'reconnecting')
+  assert.match(bot.lastError, /继续使用 Minecraft 1\.21\.11 自动重连/)
+  assert.deepEqual(signals, ['SIGTERM'])
+
+  manager.handleExit(bot.id, state, 0, 'SIGTERM')
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(launched.current.id, bot.id)
+  assert.equal(launched.protocolIndex, 0)
+  assert.equal(bot.desiredState, 'running')
+})
+
 test('a stopped Minecraft connection terminates its runtime and automatically reconnects', async () => {
   const bot = {
     id: 'bot-1',
