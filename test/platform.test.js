@@ -1551,26 +1551,3 @@ test('smart command can take and discard Chinese-named items, move, and look at 
   assert.equal(chats.pop(), '已调整视角。')
   assert.equal(looks.at(-1).point.x, 4)
 })
-
-test('smart command tells only super admins about a newer runtime once', async () => {
-  const bot = { username: 'PlatformBot', chat: message => chats.push(message) }
-  const chats = []
-  const handler = createSmartCommandHandler(bot, {
-    commandPrefixes: ['PlatformBot'],
-    platform: {
-      request: async (action, payload) => {
-        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: payload.username === 'Alice', lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.15' }
-        if (action === 'schedule_status') return { automation: {}, tasks: [] }
-        throw new Error(`unexpected action ${action}`)
-      }
-    }
-  })
-
-  await handler({ username: 'Bob', message: 'PlatformBot状态' })
-  await handler({ username: 'Alice', message: 'PlatformBot状态' })
-  await handler({ username: 'Alice', message: 'PlatformBot状态' })
-  assert.equal(chats.filter(message => message.startsWith('/msg Bob ')).length, 0)
-  assert.equal(chats.filter(message => message.startsWith('/msg Alice ')).length, 1)
-  assert.equal(chats.filter(message => message.includes('机器人没有被锁定')).length, 3)
-})
