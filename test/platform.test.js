@@ -1009,12 +1009,62 @@ test('custom task accepts all commands exposed by the task editor', () => {
         { type: 'wait', ticks: 1 },
         { type: 'command', command: '丢弃', args: ['圆石'] },
         { type: 'wait', ticks: 1 },
+        { type: 'command', command: '副手', args: [] },
+        { type: 'wait', ticks: 1 },
         { type: 'command', command: '移动', args: ['东', '5'] },
         { type: 'wait', ticks: 1 },
         { type: 'command', command: '注视', args: ['{玩家}'] }
       ]
     })
-    assert.deepEqual(saved.steps.map(step => step.type === 'command' ? step.command : step.type), ['拿出', 'wait', '丢弃', 'wait', '移动', 'wait', '注视'])
+    assert.deepEqual(saved.steps.map(step => step.type === 'command' ? step.command : step.type), ['拿出', 'wait', '丢弃', 'wait', '副手', 'wait', '移动', 'wait', '注视'])
+  } finally {
+    f.close()
+  }
+})
+
+test('custom task moves the held item to the off-hand', async () => {
+  const heldItem = { name: 'shield', count: 1, slot: 36 }
+  const equips = []
+  const bot = {
+    entity: {},
+    inventory: {},
+    heldItem,
+    equip: async (item, destination) => equips.push({ item, destination })
+  }
+  const result = await executeCustomTask(bot, {
+    name: '举盾',
+    steps: [{ type: 'command', command: '副手', args: [] }]
+  })
+
+  assert.deepEqual(result.failures, [])
+  assert.deepEqual(equips, [{ item: heldItem, destination: 'off-hand' }])
+})
+
+test('editing a custom task updates and renames it without overwriting another task', () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('task_edit_owner', 'password-123')
+    const bot = f.db.createBot(user.id, { mode: 'smart', label: 'Smart', microsoftEmail: 'task-edit@example.com', serverHost: 'localhost' })
+    f.db.setSmartBotTask(bot.id, { name: '旧任务', steps: [{ type: 'command', command: '切换', args: ['1'] }] })
+    f.db.setSmartBotTask(bot.id, { name: '保留任务', steps: [{ type: 'command', command: '切换', args: ['9'] }] })
+
+    const edited = f.db.setSmartBotTask(bot.id, {
+      originalName: '旧任务',
+      name: '新任务',
+      parameters: ['格'],
+      steps: [{ type: 'command', command: '切换', args: ['{格}'] }]
+    })
+
+    assert.equal(f.db.getSmartBotTask(bot.id, '旧任务'), null)
+    assert.equal(edited.name, '新任务')
+    assert.deepEqual(edited.parameters, ['格'])
+    assert.throws(() => f.db.setSmartBotTask(bot.id, {
+      originalName: '新任务',
+      name: '保留任务',
+      steps: [{ type: 'command', command: '副手', args: [] }]
+    }), /已存在/)
+    assert.equal(f.db.getSmartBotTask(bot.id, '新任务').name, '新任务')
+    assert.deepEqual(f.db.getSmartBotTask(bot.id, '保留任务').steps[0].args, ['9'])
   } finally {
     f.close()
   }
@@ -1357,7 +1407,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.13')
+  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.14')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })
@@ -1432,7 +1482,8 @@ test('smart command can take and discard Chinese-named items, move, and look at 
   let inventoryItems = [{ name: 'stone', count: 1, slot: 9 }]
   bot.chat = message => chats.push(message)
   bot.inventory = { items: () => inventoryItems }
-  bot.equip = async (item, destination) => { bot.heldItem = { item, destination } }
+  const equips = []
+  bot.equip = async (item, destination) => { equips.push({ item, destination }); bot.heldItem = item }
   bot.tossStack = async item => { inventoryItems = inventoryItems.filter(row => row !== item) }
   bot.lookAt = async (point, force) => { looks.push({ point, force }) }
   const pathfinderGoalsUsed = []
@@ -1459,8 +1510,17 @@ test('smart command can take and discard Chinese-named items, move, and look at 
   })
 
   await handler({ username: 'White', message: 'PlatformBot拿出 石头' })
-  assert.equal(bot.heldItem.destination, 'hand')
+  assert.equal(equips.at(-1).destination, 'hand')
   assert.equal(chats.pop(), '已将 minecraft:stone 拿到主手。')
+
+  await handler({ username: 'White', message: 'PlatformBot副手' })
+  assert.equal(equips.at(-1).destination, 'off-hand')
+  assert.equal(chats.pop(), '已将主手的 minecraft:stone 放到副手。')
+
+  bot.heldItem = null
+  await handler({ username: 'White', message: 'PlatformBot副手' })
+  assert.equal(equips.length, 2)
+  assert.equal(chats.pop(), '主手没有物品。')
 
   inventoryItems = [{ name: 'stone', count: 32, slot: 9 }, { name: 'dirt', count: 5, slot: 10 }, { name: 'stone', count: 3, slot: 11 }]
   await handler({ username: 'White', message: 'PlatformBot丢弃 石头' })
@@ -1500,7 +1560,7 @@ test('smart command tells only super admins about a newer runtime once', async (
     platform: {
       request: async (action, payload) => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: payload.username === 'Alice', lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.14' }
+        if (action === 'runtime_version') return { version: '1.0.15' }
         if (action === 'schedule_status') return { automation: {}, tasks: [] }
         throw new Error(`unexpected action ${action}`)
       }

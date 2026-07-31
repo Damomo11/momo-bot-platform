@@ -15,6 +15,8 @@ const state = {
   editingScheduleBotId: '',
   editingPermissionBotId: '',
   editingTaskBotId: '',
+  editingTaskName: '',
+  taskRows: [],
   contractLoaded: false,
   templateRows: [],
   templateId: '',
@@ -39,7 +41,7 @@ const balanceText = user => `${formatMomoc(user?.momoc)} momoc${Number(user?.res
 const templatePrice = template => `${formatMomoc(template?.priceMomoc)} momoc / ${template?.billingMode === 'once' ? '次' : '1h'}`
 const commandUsage = command => `${state.botSettings?.commandPrefix || '!'}${String(command || '').replace(/^\s*[!@=]+/, '')}`
 const kindLabel = value => ({ bot_usage: '机器人基础运行', bot_minute: '机器人基础运行', bot_hourly: '机器人基础运行', bot_once: '模板按次执行', module_hourly: '功能模块运行', module_once: '功能模块执行', admin_adjust: '管理员调整', signup_bonus: '新用户初始金' })[value] || value
-const TASK_COMMANDS = ['上车', '下车', '清空', '拿出', '丢弃', '切换', '放置', '右键', '移动', '注视', '指令']
+const TASK_COMMANDS = ['上车', '下车', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '移动', '注视', '指令']
 const MESSAGE_DEFAULTS = {
   permissionUsage: '正确格式: {command} 玩家名', permissionResult: '玩家 {player} {status}{label}中{remaining}',
   openBoxUsage: '正确格式: 开盒 玩家名', openBoxSuccess: '开盒成功！玩家 {player} 的坐标为 ({x},{z}) {dimension}', openBoxFailure: '开盒失败！未找到该玩家或地图服务暂时不可用。',
@@ -47,7 +49,7 @@ const MESSAGE_DEFAULTS = {
   mountAlready: '机器人已经在载具上。', mountMissing: '附近 6 格内没有可乘坐的矿车。', mountSuccess: '机器人已上车。', mountFailure: '上车失败，请确认矿车可乘坐且距离足够近。',
   dismountMissing: '机器人当前没有乘坐矿车。', dismountSuccess: '机器人已下车。', dismountFailure: '下车失败，请稍后重试。',
   vaultSuccess: '已右键附近的宝库。', vaultMissing: '附近 6 格内没有找到宝库。', vaultFailure: '开启宝库失败，请确认宝库在交互距离内。',
-  clearEmpty: '机器人背包已经是空的。', clearSuccess: '背包已清空，共丢出 {stacks} 组、{items} 个物品。', clearFailure: '清空背包中断，已丢出 {stacks} 组。原因: {reason}', takeUsage: '正确格式: 拿出 物品中文名或id', takeSuccess: '已将 {item} 拿到主手。', takeMissing: '背包中没有 {item}。', dropUsage: '正确格式: 丢弃 物品中文名或id', dropSuccess: '已丢弃背包中的全部 {item}，共 {stacks} 组、{items} 个。', dropMissing: '背包中没有 {item}。', dropFailure: '丢弃 {item} 中断，已丢出 {items} 个。原因: {reason}',
+  clearEmpty: '机器人背包已经是空的。', clearSuccess: '背包已清空，共丢出 {stacks} 组、{items} 个物品。', clearFailure: '清空背包中断，已丢出 {stacks} 组。原因: {reason}', takeUsage: '正确格式: 拿出 物品中文名或id', takeSuccess: '已将 {item} 拿到主手。', takeMissing: '背包中没有 {item}。', offhandUsage: '正确格式: 副手', offhandSuccess: '已将主手的 {item} 放到副手。', offhandEmpty: '主手没有物品。', offhandFailure: '放入副手失败，请稍后重试。', dropUsage: '正确格式: 丢弃 物品中文名或id', dropSuccess: '已丢弃背包中的全部 {item}，共 {stacks} 组、{items} 个。', dropMissing: '背包中没有 {item}。', dropFailure: '丢弃 {item} 中断，已丢出 {items} 个。原因: {reason}',
   switchUsage: '正确格式: 切换 1-9', switchSuccess: '快捷栏已切换到第 {slot} 格。',
   ominousUsage: '正确格式: 定时灾厄之瓶 开|关', ominousEnabled: '定时灾厄之瓶已开启，将立即饮用一瓶；成功后每 31 分钟执行一次。', ominousDisabled: '定时灾厄之瓶已关闭。', ominousStatusOn: '定时灾厄之瓶: 开，下次执行: {nextTime}', ominousStatusOff: '定时灾厄之瓶: 关。',
   periodicRightClickUsage: '正确格式: 定时放置 x y z ngt，例如 定时放置 100 64 200 20。', periodicRightClickEnabled: '定时放置已开启: ({x},{y},{z})，每 {ticks} 游戏刻执行。', periodicRightClickDisabled: '定时放置已关闭。', periodicRightClickStatusOff: '定时放置: 关。', periodicRightClickStatusOn: '定时放置: 开，坐标 ({x},{y},{z})，间隔 {ticks} 游戏刻。',
@@ -62,6 +64,10 @@ const MESSAGE_DEFAULTS = {
 const MESSAGE_LABELS = Object.fromEntries(Object.keys(MESSAGE_DEFAULTS).map(key => [key, ({ permissionUsage: '权限查询格式', permissionResult: '权限查询结果', openBoxUsage: '开盒格式', openBoxSuccess: '开盒成功', openBoxFailure: '开盒失败', nearUsage: '附近查询格式', nearSuccess: '附近查询结果', nearEmpty: '附近无人', nearFailure: '附近查询失败', mountAlready: '已经在载具中', mountMissing: '未找到矿车', mountSuccess: '上车成功', mountFailure: '上车失败', dismountMissing: '当前未乘车', dismountSuccess: '下车成功', dismountFailure: '下车失败', vaultSuccess: '开启宝库成功', vaultMissing: '未找到宝库', vaultFailure: '开启宝库失败', clearEmpty: '背包已空', clearSuccess: '清空成功', clearFailure: '清空失败', takeUsage: '拿出格式', takeSuccess: '拿出成功', takeMissing: '拿出失败', dropUsage: '丢弃格式', dropSuccess: '丢弃成功', dropMissing: '丢弃物品不存在', dropFailure: '丢弃失败', switchUsage: '切换格式', switchSuccess: '切换成功', ominousUsage: '灾厄之瓶格式', ominousEnabled: '灾厄定时开启', ominousDisabled: '灾厄定时关闭', ominousStatusOn: '灾厄定时状态开启', ominousStatusOff: '灾厄定时状态关闭', periodicRightClickUsage: '定时放置格式', periodicRightClickEnabled: '定时放置开启', periodicRightClickDisabled: '定时放置关闭', periodicRightClickStatusOn: '定时放置状态开启', periodicRightClickStatusOff: '定时放置状态关闭', rightClickUsage: '右键格式', rightClickSuccess: '右键成功', rightClickFailure: '右键失败', moveUsage: '移动格式', moveSuccess: '移动成功', moveFailure: '移动失败', lookUsage: '注视格式', lookSuccess: '注视成功', lookFailure: '注视失败', placeUsage: '放置格式', placeSuccess: '放置成功', placeFailure: '放置失败', taskUsage: '定时任务格式', taskScheduled: '定时任务开启', taskStopped: '定时任务关闭', locked: '锁定状态', lockUsage: '锁定格式', alreadyLocked: '重复锁定', lockSuccess: '锁定成功', notLocked: '未锁定', adminUnlockRequired: '需要超级解锁', unlockSuccess: '解锁成功', forwardUsage: '指令格式', forwardInvalid: '指令无效', forwardNested: '嵌套指令', forwardDangerous: '高风险指令', forwardHome: 'Home 禁用', restartLocked: '锁定时重启', restarting: '正在重启', permissionAdded: '添加权限成功', permissionExists: '权限已存在', permissionRemoved: '移除权限成功', permissionMissing: '权限不存在', temporaryUsage: '临时权限格式', temporaryAdded: '临时权限成功', adminLockUsage: '超级锁定格式', alreadyAdminLocked: '重复超级锁定', adminLockSuccess: '超级锁定成功', notAdminLocked: '未超级锁定', adminUnlockSuccess: '超级解锁成功' })[key] || key]))
 
 MESSAGE_LABELS.scheduleStatus = '定时状态'
+MESSAGE_LABELS.offhandUsage = '副手格式'
+MESSAGE_LABELS.offhandSuccess = '放入副手成功'
+MESSAGE_LABELS.offhandEmpty = '主手为空'
+MESSAGE_LABELS.offhandFailure = '放入副手失败'
 
 const HIDDEN_MESSAGE_KEYS = new Set(['periodicRightClickUsage', 'periodicRightClickEnabled', 'periodicRightClickDisabled', 'periodicRightClickStatusOn', 'periodicRightClickStatusOff'])
 
@@ -74,6 +80,7 @@ const MESSAGE_GROUPS = [
   { command: '开宝库', note: '附近宝库交互反馈', keys: ['vaultSuccess', 'vaultMissing', 'vaultFailure'] },
   { command: '清空', note: '背包清空反馈', keys: ['clearEmpty', 'clearSuccess', 'clearFailure'] },
   { command: '拿出', note: '物品拿出反馈', keys: ['takeUsage', 'takeSuccess', 'takeMissing'] },
+  { command: '副手', note: '主手物品转移反馈', keys: ['offhandUsage', 'offhandSuccess', 'offhandEmpty', 'offhandFailure'] },
   { command: '丢弃', note: '指定物品全部丢弃反馈', keys: ['dropUsage', 'dropSuccess', 'dropMissing', 'dropFailure'] },
   { command: '切换', note: '快捷栏切换反馈', keys: ['switchUsage', 'switchSuccess'] },
   { command: '定时灾厄之瓶', note: '定时饮用与状态反馈', keys: ['ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff'] },
@@ -682,7 +689,7 @@ async function saveSmartCommandPrefix () {
 }
 
 function taskArgumentHint (command) {
-  return { 上车: '无需参数', 下车: '无需参数', 清空: '无需参数', 拿出: '石头 / minecraft:stone / stone', 丢弃: '石头 / minecraft:stone / stone', 切换: '1-9', 放置: 'x y z', 右键: '玩家名 或 x y z', 移动: 'x y z [停止距离] / 玩家名 / 东 5', 注视: '玩家名', 指令: '服务器指令' }[command] || ''
+  return { 上车: '无需参数', 下车: '无需参数', 清空: '无需参数', 拿出: '石头 / minecraft:stone / stone', 丢弃: '石头 / minecraft:stone / stone', 副手: '无需参数', 切换: '1-9', 放置: 'x y z', 右键: '玩家名 或 x y z', 移动: 'x y z [停止距离] / 玩家名 / 东 5', 注视: '玩家名', 指令: '服务器指令' }[command] || ''
 }
 
 function renderTaskParameters (parameters = []) {
@@ -730,7 +737,7 @@ function addTaskParameter () {
 function renderTaskEditor (actions = [{ command: '放置', args: '' }], waits = []) {
   $('taskSteps').innerHTML = actions.map((action, index) => {
     const commandOptions = TASK_COMMANDS.map(command => `<option value="${command}"${command === action.command ? ' selected' : ''}>${command}</option>`).join('')
-    const actionRow = `<div class="task-action-row" data-task-action><span class="step-number">${index + 1}</span><label>平台命令<select data-task-command>${commandOptions}</select></label><label class="task-args">参数<input data-task-args value="${esc(action.args || '')}" placeholder="${esc(taskArgumentHint(action.command))}"${['上车', '下车', '清空'].includes(action.command) ? ' disabled' : ''}></label><button type="button" class="danger task-remove" data-remove-task-step aria-label="删除第 ${index + 1} 个命令">删除</button></div>`
+    const actionRow = `<div class="task-action-row" data-task-action><span class="step-number">${index + 1}</span><label>平台命令<select data-task-command>${commandOptions}</select></label><label class="task-args">参数<input data-task-args value="${esc(action.args || '')}" placeholder="${esc(taskArgumentHint(action.command))}"${['上车', '下车', '清空', '副手'].includes(action.command) ? ' disabled' : ''}></label><button type="button" class="danger task-remove" data-remove-task-step aria-label="删除第 ${index + 1} 个命令">删除</button></div>`
     if (index === actions.length - 1) return actionRow
     const wait = Number(waits[index] || 5)
     return `${actionRow}<div class="task-wait-row"><span>然后等待</span><input data-task-wait type="number" min="1" max="28800" step="1" value="${Number.isInteger(wait) ? wait : 5}" aria-label="第 ${index + 1} 和 ${index + 2} 个命令之间的等待时间"><span>gt 再执行下一条</span></div>`
@@ -743,7 +750,7 @@ function bindTaskEditor () {
     select.onchange = () => {
       const input = select.closest('[data-task-action]').querySelector('[data-task-args]')
       input.placeholder = taskArgumentHint(select.value)
-      input.disabled = ['上车', '下车', '清空'].includes(select.value)
+      input.disabled = ['上车', '下车', '清空', '副手'].includes(select.value)
       if (input.disabled) input.value = ''
     }
   })
@@ -774,6 +781,35 @@ function collectTaskSteps () {
   return steps
 }
 
+function resetTaskEditor () {
+  state.editingTaskName = ''
+  $('taskName').value = ''
+  $('taskEditorTitle').textContent = '新建任务'
+  $('saveTask').textContent = '保存任务'
+  $('cancelTaskEdit').classList.add('hidden')
+  $('taskBot').disabled = false
+  $('taskError').textContent = ''
+  renderTaskParameters()
+  renderTaskEditor()
+}
+
+function editTask (name) {
+  const task = state.taskRows.find(row => row.name.toLowerCase() === String(name).toLowerCase())
+  if (!task) return toast('任务不存在，请刷新后重试')
+  const actions = task.steps.filter(step => step.type === 'command').map(step => ({ command: step.command, args: (step.args || []).join(' ') }))
+  const waits = task.steps.filter(step => step.type === 'wait').map(step => step.ticks)
+  state.editingTaskName = task.name
+  $('taskName').value = task.name
+  $('taskEditorTitle').textContent = `编辑任务：${task.name}`
+  $('saveTask').textContent = '保存修改'
+  $('cancelTaskEdit').classList.remove('hidden')
+  $('taskBot').disabled = true
+  $('taskError').textContent = ''
+  renderTaskParameters(task.parameters || [])
+  renderTaskEditor(actions, waits)
+  $('taskName').focus()
+}
+
 async function loadTasks () {
   if (!state.bots.length) await loadBots()
   const smartBots = state.bots.filter(row => row.mode === 'smart')
@@ -784,16 +820,19 @@ async function loadTasks () {
   if (!$('taskParameterRows').dataset.initialized) renderTaskParameters()
   if (!$('taskSteps').children.length) renderTaskEditor()
   const data = await request(`/api/smart/tasks?botId=${encodeURIComponent(state.editingTaskBotId)}`)
-  $('taskRows').innerHTML = data.rows.length ? `<table><thead><tr><th>任务</th><th>命令数</th><th>游戏内调用</th><th></th></tr></thead><tbody>${data.rows.map(row => { const parameters = row.parameters || []; const signature = [row.name, ...parameters].join(' '); return `<tr><td><strong>${esc(row.name)}</strong>${parameters.length ? `<div class="muted">参数：${esc(parameters.join('、'))}</div>` : ''}</td><td>${Math.ceil(row.steps.length / 2)}</td><td><code>${esc(signature)}</code><div class="muted">定时任务 ${esc(row.name)} 5${parameters.length ? ` ${esc(parameters.join(' '))}` : ''}</div></td><td><button class="danger" data-delete-task="${esc(row.name)}">删除</button></td></tr>` }).join('')}</tbody></table>` : '<div class="empty">尚未创建任务。</div>'
-  document.querySelectorAll('[data-delete-task]').forEach(btn => { btn.onclick = async () => { await post('/api/smart/tasks', { botId: state.editingTaskBotId, action: 'delete', name: btn.dataset.deleteTask }); await loadTasks() } })
+  state.taskRows = data.rows
+  $('taskRows').innerHTML = data.rows.length ? `<table><thead><tr><th>任务</th><th>命令数</th><th>游戏内调用</th><th></th></tr></thead><tbody>${data.rows.map(row => { const parameters = row.parameters || []; const signature = [row.name, ...parameters].join(' '); return `<tr><td><strong>${esc(row.name)}</strong>${parameters.length ? `<div class="muted">参数：${esc(parameters.join('、'))}</div>` : ''}</td><td>${Math.ceil(row.steps.length / 2)}</td><td><code>${esc(signature)}</code><div class="muted">定时任务 ${esc(row.name)} 5${parameters.length ? ` ${esc(parameters.join(' '))}` : ''}</div></td><td><div class="row-actions"><button data-edit-task="${esc(row.name)}">编辑</button><button class="danger" data-delete-task="${esc(row.name)}">删除</button></div></td></tr>` }).join('')}</tbody></table>` : '<div class="empty">尚未创建任务。</div>'
+  document.querySelectorAll('[data-edit-task]').forEach(btn => { btn.onclick = () => editTask(btn.dataset.editTask) })
+  document.querySelectorAll('[data-delete-task]').forEach(btn => { btn.onclick = async () => { if (!confirm(`确定删除任务“${btn.dataset.deleteTask}”吗？`)) return; await post('/api/smart/tasks', { botId: state.editingTaskBotId, action: 'delete', name: btn.dataset.deleteTask }); if (state.editingTaskName.toLowerCase() === btn.dataset.deleteTask.toLowerCase()) resetTaskEditor(); await loadTasks() } })
 }
 
 async function saveTask () {
   $('taskError').textContent = ''
   try {
-    await post('/api/smart/tasks', { botId: $('taskBot').value, name: $('taskName').value, parameters: collectTaskParameters(), steps: collectTaskSteps() })
-    $('taskName').value = ''; renderTaskParameters(); renderTaskEditor()
-    await loadTasks(); toast('任务已保存')
+    const wasEditing = Boolean(state.editingTaskName)
+    await post('/api/smart/tasks', { botId: $('taskBot').value, originalName: state.editingTaskName || undefined, name: $('taskName').value, parameters: collectTaskParameters(), steps: collectTaskSteps() })
+    resetTaskEditor()
+    await loadTasks(); toast(wasEditing ? '任务已更新' : '任务已保存')
   } catch (error) { $('taskError').textContent = error.message; throw error }
 }
 
@@ -1601,8 +1640,9 @@ $('botTemplate').onchange = renderCreateVariables
 $('refreshBots').onclick = () => loadBots(true).catch(error => toast(error.message))
 $('refreshManagedBots').onclick = () => loadManagedBots().catch(error => toast(error.message))
 $('refreshTasks').onclick = () => loadTasks().catch(error => toast(error.message))
-$('taskBot').onchange = () => { state.editingTaskBotId = $('taskBot').value; loadTasks().catch(error => toast(error.message)) }
+$('taskBot').onchange = () => { resetTaskEditor(); state.editingTaskBotId = $('taskBot').value; loadTasks().catch(error => toast(error.message)) }
 $('saveTask').onclick = () => saveTask().catch(error => toast(error.message))
+$('cancelTaskEdit').onclick = resetTaskEditor
 $('addTaskParameter').onclick = addTaskParameter
 $('addTaskStep').onclick = () => {
   const draft = collectTaskDraft()

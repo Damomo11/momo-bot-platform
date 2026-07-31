@@ -36,6 +36,10 @@ const COMMAND_TEXT = Object.freeze({
   takeUsage: '正确格式: 拿出 物品中文名或id',
   takeSuccess: item => `已将 ${item} 拿到主手。`,
   takeMissing: item => `背包中没有 ${item}。`,
+  offhandUsage: '正确格式: 副手',
+  offhandSuccess: item => `已将主手的 ${item} 放到副手。`,
+  offhandEmpty: '主手没有物品。',
+  offhandFailure: '放入副手失败，请稍后重试。',
   dropUsage: '正确格式: 丢弃 物品中文名或id',
   dropSuccess: (item, stacks, items) => `已丢弃背包中的全部 ${item}，共 ${stacks} 组、${items} 个。`,
   dropMissing: item => `背包中没有 ${item}。`,
@@ -406,6 +410,18 @@ async function collectItemToHand (bot, itemId) {
   return { item: item.name || target }
 }
 
+async function moveHeldItemToOffhand (bot) {
+  if (!bot.entity || !bot.inventory || typeof bot.equip !== 'function') throw new Error('机器人尚未进入服务器。')
+  const item = bot.heldItem
+  if (!item) {
+    const error = new Error('主手没有物品。')
+    error.code = 'HAND_EMPTY'
+    throw error
+  }
+  await bot.equip(item, 'off-hand')
+  return { item: item.name || '物品' }
+}
+
 async function discardInventoryItems (bot, itemId) {
   if (!bot.entity || !bot.inventory || typeof bot.tossStack !== 'function') throw new Error('机器人尚未进入服务器。')
   const target = displayItemId(itemId)
@@ -471,6 +487,7 @@ async function executeCustomTask (bot, task, options = {}) {
         else if (step.command === '清空') await clearInventory(bot)
         else if (step.command === '拿出') await collectItemToHand(bot, args[0])
         else if (step.command === '丢弃') await discardInventoryItems(bot, args[0])
+        else if (step.command === '副手') await moveHeldItemToOffhand(bot)
         else if (step.command === '切换') await bot.setQuickBarSlot(Number(args[0]) - 1)
         else if (step.command === '放置') await placePeriodicRightClick(bot, { periodicRightClickX: Number(args[0]), periodicRightClickY: Number(args[1]), periodicRightClickZ: Number(args[2]) })
         else if (step.command === '右键') await rightClickTarget(bot, args)
@@ -504,7 +521,7 @@ function replaceTaskParameters (value, variables) {
 }
 
 function validateCustomTaskCommand (command, args) {
-  if (['上车', '下车', '清空'].includes(command) && args.length) throw new Error(`${command} 命令不需要参数。`)
+  if (['上车', '下车', '清空', '副手'].includes(command) && args.length) throw new Error(`${command} 命令不需要参数。`)
   if (['拿出', '丢弃'].includes(command) && (args.length !== 1 || !normalizeItemId(args[0]) || /\s/.test(args[0]))) throw new Error(`${command}命令需要一个物品中文名或 id。`)
   if (command === '切换' && (args.length !== 1 || !/^[1-9]$/.test(args[0]))) throw new Error('切换命令参数必须为 1-9。')
   if (command === '放置' && !parseCoordinates(args)) throw new Error('放置命令需要三个有效整数坐标。')
@@ -942,7 +959,7 @@ function createSmartCommandHandler (bot, options = {}) {
     if (access.lock.adminLocked && !access.admin && parsed.command !== '状态') return reply(COMMAND_TEXT.locked(access.lock, '超级锁定'), 'locked', { player: access.lock.lockedBy || '未知玩家', label: '超级锁定', reason: access.lock.reason || '无' })
     if (!access.whitelisted) return
 
-    const overridableTaskCommands = new Set(['上车', '下车', '开宝库', '清空', '拿出', '丢弃', '切换', '放置', '右键', '移动', '注视'])
+    const overridableTaskCommands = new Set(['上车', '下车', '开宝库', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '移动', '注视'])
     if (overridableTaskCommands.has(parsed.command)) {
       const customTask = await request('task_get', { name: parsed.command })
       if (customTask?.task) {
@@ -1039,6 +1056,19 @@ function createSmartCommandHandler (bot, options = {}) {
           const reason = error?.message || '未知错误'
           reply(COMMAND_TEXT.dropFailure(item, items, reason), 'dropFailure', { item, items, reason })
         }
+      }
+      return
+    }
+
+    if (parsed.command === '副手') {
+      if (parsed.args.length) return reply(COMMAND_TEXT.offhandUsage, 'offhandUsage')
+      try {
+        const result = await runBotAction(() => moveHeldItemToOffhand(bot))
+        const item = displayItemId(result.item)
+        reply(COMMAND_TEXT.offhandSuccess(item), 'offhandSuccess', { item })
+      } catch (error) {
+        if (error?.code === 'HAND_EMPTY') reply(COMMAND_TEXT.offhandEmpty, 'offhandEmpty')
+        else reply(COMMAND_TEXT.offhandFailure, 'offhandFailure')
       }
       return
     }
@@ -1365,6 +1395,7 @@ module.exports = {
   isOminousBottleItem,
   mapDimensionLabel,
   mountNearestMinecart,
+  moveHeldItemToOffhand,
   normalizeItemId,
   normalizeCommandPrefixes,
   parseSmartCommand,
