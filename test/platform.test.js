@@ -791,21 +791,25 @@ test('smart teleport acceptance permits a locked bot to receive whitelisted play
   assert.deepEqual(chats, ['/tpaccept WhiteOne', '/tpaccept WhiteOne'])
 })
 
-test('player right click mirrors a look, swing, and ordinary entity interaction', async () => {
-  const target = { type: 'player', username: 'WhiteOne', position: { offset: (x, y, z) => ({ x, y, z }) } }
+test('player right click sends the interact-at packet used by the head-sit feature', async () => {
+  const target = { id: 17, type: 'player', username: 'WhiteOne', height: 1.8, position: { offset: (x, y, z) => ({ x, y, z }) } }
   const calls = []
   const bot = {
     entities: { 1: target },
     entity: { position: { distanceTo: () => 3 } },
+    heldItem: { name: 'shulker_box' },
+    setQuickBarSlot: () => { throw new Error('player interaction must not switch the held item') },
     lookAt: async (point, force) => calls.push({ type: 'look', point, force }),
-    swingArm: hand => calls.push({ type: 'swing', hand }),
-    activateEntity: async entity => calls.push({ type: 'interact', entity })
+    _client: { write: (name, packet) => calls.push({ type: 'packet', name, packet }) }
   }
   await rightClickTarget(bot, ['whiteone'])
   assert.deepEqual(calls, [
-    { type: 'look', point: { x: 0, y: 1, z: 0 }, force: true },
-    { type: 'swing', hand: 'right' },
-    { type: 'interact', entity: target }
+    { type: 'look', point: { x: 0, y: 1.1700000000000002, z: 0 }, force: true },
+    {
+      type: 'packet',
+      name: 'use_entity',
+      packet: { target: 17, mouse: 2, x: 0, y: 1.1700000000000002, z: 0, sneaking: false, hand: 0 }
+    }
   ])
   bot.entity.position.distanceTo = () => 5
   await assert.rejects(() => rightClickTarget(bot, ['WhiteOne']), /out of reach/)
@@ -1407,7 +1411,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.14')
+  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.15')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })

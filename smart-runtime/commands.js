@@ -253,16 +253,20 @@ async function activateNearestVault (bot, maxDistance = 6) {
 async function rightClickTarget (bot, args) {
   if (args.length === 1) {
     const entity = Object.values(bot.entities || {}).filter(row => row?.type === 'player' && String(row.username || '').toLowerCase() === String(args[0]).toLowerCase())[0]
-    if (!entity || (typeof bot.activateEntity !== 'function' && typeof bot.activateEntityAt !== 'function')) throw new Error('player missing')
+    if (!entity || !Number.isInteger(entity.id) || typeof bot._client?.write !== 'function') throw new Error('player missing')
     const distance = bot.entity?.position?.distanceTo?.(entity.position)
     if (!Number.isFinite(distance) || distance > 4.5) throw new Error('player out of reach')
-    // Mirror an actual player's ordinary right click: force the server to receive
-    // the look direction first, play the hand animation, then use the generic
-    // entity-interact packet.  Player-riding mods commonly inspect this sequence.
-    if (typeof bot.lookAt === 'function') await bot.lookAt(entity.position.offset(0, 1, 0), true)
-    bot.swingArm?.('right')
-    if (typeof bot.activateEntity === 'function') await bot.activateEntity(entity)
-    else await bot.activateEntityAt(entity, entity.position.offset(0, 1, 0))
+    const hitY = Math.max(0.8, Number(entity.height || 1.8) * 0.65)
+    if (typeof bot.lookAt === 'function') await bot.lookAt(entity.position.offset(0, hitY, 0), true)
+    bot._client.write('use_entity', {
+      target: entity.id,
+      mouse: 2,
+      x: 0,
+      y: hitY,
+      z: 0,
+      sneaking: false,
+      hand: 0
+    })
     return
   }
   const point = parseCoordinates(args)
