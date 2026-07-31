@@ -499,15 +499,16 @@ async function api (req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/settings') {
     requireAdmin(req)
-    return json(res, 200, { ok: true, ...db.getModePrices(), ...db.getRuntimeSettings(), registrationEnabled: db.getRegistrationEnabled() })
+    return json(res, 200, { ok: true, ...db.getModePrices(), ...db.getRuntimeSettings(), registrationEnabled: db.getRegistrationEnabled(), newUserInitialMomoc: db.getNewUserInitialMomoc() })
   }
   if (req.method === 'POST' && url.pathname === '/api/admin/settings') {
     requireAdmin(req)
     const input = await body(req)
     const prices = db.setModePrices(input)
     if (Object.prototype.hasOwnProperty.call(input, 'registrationEnabled')) db.setRegistrationEnabled(Boolean(input.registrationEnabled))
+    if (Object.prototype.hasOwnProperty.call(input, 'newUserInitialMomoc')) db.setNewUserInitialMomoc(input.newUserInitialMomoc)
     const runtime = db.setRuntimeSettings(input)
-    return json(res, 200, { ok: true, ...prices, ...runtime, registrationEnabled: db.getRegistrationEnabled() })
+    return json(res, 200, { ok: true, ...prices, ...runtime, registrationEnabled: db.getRegistrationEnabled(), newUserInitialMomoc: db.getNewUserInitialMomoc() })
   }
   if (req.method === 'POST' && url.pathname === '/api/admin/modules/delete') {
     requireAdmin(req)

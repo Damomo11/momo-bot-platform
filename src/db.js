@@ -261,6 +261,7 @@ class PlatformDb {
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('registration_enabled', '0')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_max_running_bots', '0')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('bot_creation_enabled', '1')").run()
+    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('new_user_initial_momoc', '10')").run()
     this.db.prepare('UPDATE users SET momoc_units = CAST(ROUND(momoc * 60) AS INTEGER) WHERE momoc_units IS NULL').run()
     this.db.prepare('UPDATE momoc_ledger SET delta_units = CAST(ROUND(delta * 60) AS INTEGER) WHERE delta_units IS NULL').run()
     this.db.prepare('UPDATE momoc_ledger SET balance_after_units = CAST(ROUND(balance_after * 60) AS INTEGER) WHERE balance_after_units IS NULL').run()
@@ -380,8 +381,19 @@ class PlatformDb {
     if (!/^[A-Za-z0-9_\-]{3,32}$/.test(name)) throw new Error('用户名需为 3-32 位字母、数字、下划线或连字符。')
     if (String(password || '').length < 8) throw new Error('密码至少 8 位。')
     const id = crypto.randomUUID()
-    this.db.prepare('INSERT INTO users (id, username, password_hash, role, momoc_units, momoc_micros) VALUES (?, ?, ?, ?, 0, 0)').run(id, name, hashPassword(password), role)
+    this.insertNewUser({ id, username: name, passwordHash: hashPassword(password), role })
     return this.getUser(id)
+  }
+
+  insertNewUser ({ id, username, passwordHash, role, authSource = 'local', externalId = null }) {
+    const initialMomoc = this.getNewUserInitialMomoc()
+    const initialMicros = toMomocMicros(initialMomoc, '新用户初始金')
+    this.db.transaction(() => {
+      this.db.prepare('INSERT INTO users (id, username, password_hash, role, auth_source, external_id, momoc, momoc_units, momoc_micros) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, username, passwordHash, role, authSource, externalId, initialMomoc, Math.round(initialMomoc * 60), initialMicros)
+      if (initialMicros > 0) {
+        this.db.prepare("INSERT INTO momoc_ledger (user_id, delta, balance_after, delta_units, balance_after_units, delta_micros, balance_after_micros, kind, note) VALUES (?, ?, ?, ?, ?, ?, ?, 'signup_bonus', ?)").run(id, initialMomoc, initialMomoc, Math.round(initialMomoc * 60), Math.round(initialMomoc * 60), initialMicros, initialMicros, '新用户初始金')
+      }
+    })()
   }
 
   authenticate (username, password) {
@@ -458,7 +470,7 @@ class PlatformDb {
     }
     const role = rootAdmin ? 'admin' : 'user'
     const id = crypto.randomUUID()
-    this.db.prepare("INSERT INTO users (id, username, password_hash, role, auth_source, external_id, momoc_units, momoc_micros) VALUES (?, ?, ?, ?, 'cloud_store', ?, 0, 0)").run(id, name, hashPassword(crypto.randomBytes(32).toString('base64url')), role, identity)
+    this.insertNewUser({ id, username: name, passwordHash: hashPassword(crypto.randomBytes(32).toString('base64url')), role, authSource: 'cloud_store', externalId: identity })
     return this.getUser(id)
   }
 
@@ -719,6 +731,20 @@ class PlatformDb {
 
   getRegistrationEnabled () {
     return this.db.prepare("SELECT value FROM platform_settings WHERE key = 'registration_enabled'").get()?.value !== '0'
+  }
+
+  getNewUserInitialMomoc () {
+    const value = Number(this.db.prepare("SELECT value FROM platform_settings WHERE key = 'new_user_initial_momoc'").get()?.value ?? 10)
+    return Number.isFinite(value) && value >= 0 ? value : 10
+  }
+
+  setNewUserInitialMomoc (value) {
+    const micros = toMomocMicros(value, '新用户初始金')
+    if (micros < 0) throw new Error('新用户初始金不能小于 0。')
+    if (!Number.isSafeInteger(micros)) throw new Error('新用户初始金数值过大。')
+    const normalized = micros / MOMOC_SCALE
+    this.db.prepare("INSERT INTO platform_settings (key, value) VALUES ('new_user_initial_momoc', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(normalized))
+    return this.getNewUserInitialMomoc()
   }
 
   getRuntimeSettings () {

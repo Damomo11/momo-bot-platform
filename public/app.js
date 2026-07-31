@@ -38,7 +38,7 @@ const formatMomoc = value => Number(value || 0).toLocaleString('zh-CN', { maximu
 const balanceText = user => `${formatMomoc(user?.momoc)} momoc${Number(user?.reservedMomoc || 0) > 0 ? ` · 已预留 ${formatMomoc(user.reservedMomoc)}` : ''}`
 const templatePrice = template => `${formatMomoc(template?.priceMomoc)} momoc / ${template?.billingMode === 'once' ? '次' : '1h'}`
 const commandUsage = command => `${state.botSettings?.commandPrefix || '!'}${String(command || '').replace(/^\s*[!@=]+/, '')}`
-const kindLabel = value => ({ bot_usage: '机器人基础运行', bot_minute: '机器人基础运行', bot_hourly: '机器人基础运行', bot_once: '模板按次执行', module_hourly: '功能模块运行', module_once: '功能模块执行', admin_adjust: '管理员调整' })[value] || value
+const kindLabel = value => ({ bot_usage: '机器人基础运行', bot_minute: '机器人基础运行', bot_hourly: '机器人基础运行', bot_once: '模板按次执行', module_hourly: '功能模块运行', module_once: '功能模块执行', admin_adjust: '管理员调整', signup_bonus: '新用户初始金' })[value] || value
 const TASK_COMMANDS = ['上车', '下车', '清空', '拿出', '丢弃', '切换', '放置', '右键', '移动', '注视', '指令']
 const MESSAGE_DEFAULTS = {
   permissionUsage: '正确格式: {command} 玩家名', permissionResult: '玩家 {player} {status}{label}中{remaining}',
@@ -238,6 +238,7 @@ async function loadPlatformSettings () {
     state.modePrices = data
     $('smartHourlyPrice').value = data.smartHourlyPrice
     $('signinOncePrice').value = data.signinOncePrice
+    $('newUserInitialMomoc').value = data.newUserInitialMomoc
     $('maxRunningBots').value = data.maxRunningBots
     $('botCreationEnabled').checked = Boolean(data.botCreationEnabled)
     $('registrationEnabled').checked = Boolean(data.registrationEnabled)
@@ -249,7 +250,7 @@ async function loadPlatformSettings () {
 }
 
 async function saveBasePrice () {
-  const data = await post('/api/admin/settings', { smartHourlyPrice: $('smartHourlyPrice').value, signinOncePrice: $('signinOncePrice').value, maxRunningBots: $('maxRunningBots').value, botCreationEnabled: $('botCreationEnabled').checked, registrationEnabled: $('registrationEnabled').checked })
+  const data = await post('/api/admin/settings', { smartHourlyPrice: $('smartHourlyPrice').value, signinOncePrice: $('signinOncePrice').value, newUserInitialMomoc: $('newUserInitialMomoc').value, maxRunningBots: $('maxRunningBots').value, botCreationEnabled: $('botCreationEnabled').checked, registrationEnabled: $('registrationEnabled').checked })
   state.modePrices = data
   state.registrationEnabled = Boolean(data.registrationEnabled)
   state.botCreationEnabled = Boolean(data.botCreationEnabled)
@@ -401,6 +402,7 @@ function botRuntimeVersionHtml (bot) {
 function renderRuntimeReleasePanel () {
   const panel = $('runtimeReleasePanel')
   if (!panel) return
+  const historyWasOpen = Boolean(panel.querySelector('.release-history')?.open)
   const runtime = state.runtimeUpdates?.smart
   if (!runtime) {
     panel.classList.add('hidden')
@@ -444,6 +446,8 @@ function renderRuntimeReleasePanel () {
       ` : ''}
     </div>
   `
+  const history = panel.querySelector('.release-history')
+  if (history) history.open = historyWasOpen
 }
 
 async function loadBots (forceUpdates = false) {
@@ -917,15 +921,39 @@ async function loadLedger () {
     : '<div class="empty">暂无 momoc 记录。</div>'
 }
 
+function captureUserTableState () {
+  const table = $('usersTable')
+  const active = table.contains(document.activeElement) ? document.activeElement : null
+  return {
+    amounts: new Map(Array.from(table.querySelectorAll('[data-amount]'), input => [input.dataset.amount, input.value])),
+    passwords: new Map(Array.from(table.querySelectorAll('[data-password]'), input => [input.dataset.password, input.value])),
+    active: active?.dataset.amount ? { type: 'amount', id: active.dataset.amount, start: active.selectionStart, end: active.selectionEnd } : active?.dataset.password ? { type: 'password', id: active.dataset.password, start: active.selectionStart, end: active.selectionEnd } : null
+  }
+}
+
+function restoreUserTableState (draft) {
+  for (const input of $('usersTable').querySelectorAll('[data-amount]')) input.value = draft.amounts.get(input.dataset.amount) || ''
+  for (const input of $('usersTable').querySelectorAll('[data-password]')) input.value = draft.passwords.get(input.dataset.password) || ''
+  if (!draft.active) return
+  const attribute = draft.active.type === 'amount' ? 'data-amount' : 'data-password'
+  const input = $('usersTable').querySelector(`[${attribute}="${CSS.escape(draft.active.id)}"]`)
+  if (!input) return
+  input.focus({ preventScroll: true })
+  if (draft.active.start !== null && draft.active.end !== null) input.setSelectionRange(draft.active.start, draft.active.end)
+}
+
 async function loadUsers () {
   const data = await request('/api/admin/users')
+  const draft = captureUserTableState()
   $('userSummary').textContent = `${data.rows.length} 个用户`
   $('usersTable').innerHTML = '<table><thead><tr><th>用户</th><th>角色</th><th>momoc</th><th>余额调整</th><th>登录方式</th></tr></thead><tbody>' + data.rows.map(row => `<tr><td><strong>${esc(row.username)}</strong></td><td>${esc(row.role)}</td><td>${formatMomoc(row.momoc)}${Number(row.reservedMomoc || 0) > 0 ? `<div class="muted">已预留 ${formatMomoc(row.reservedMomoc)}</div>` : ''}</td><td><div class="actions"><input style="width:120px" type="number" step="any" data-amount="${esc(row.id)}" placeholder="正负数量"><button class="primary" data-adjust="${esc(row.id)}">确认</button></div></td><td>${row.authSource === 'cloud_store' ? '<span class="muted">云仓库登录</span>' : `<div class="actions"><input style="width:180px" type="password" data-password="${esc(row.id)}" placeholder="至少 8 位新密码"><button data-reset-password="${esc(row.id)}">重置</button></div>`}</td></tr>`).join('') + '</tbody></table>'
+  restoreUserTableState(draft)
   document.querySelectorAll('[data-adjust]').forEach(btn => {
     btn.onclick = async () => {
       try {
         const input = document.querySelector(`[data-amount="${CSS.escape(btn.dataset.adjust)}"]`)
         await post('/api/admin/momoc', { userId: btn.dataset.adjust, amount: input.value })
+        input.value = ''
         toast('momoc 已调整')
         await loadUsers()
         await refreshBalance()
@@ -939,6 +967,7 @@ async function loadUsers () {
       try {
         const input = document.querySelector(`[data-password="${CSS.escape(btn.dataset.resetPassword)}"]`)
         const data = await post('/api/admin/password', { userId: btn.dataset.resetPassword, password: input.value })
+        input.value = ''
         toast(data.selfReset ? '密码已重置，请使用新密码重新登录' : '用户密码已重置')
         if (data.selfReset) setTimeout(() => location.reload(), 900)
       } catch (error) { toast(error.message) }

@@ -255,7 +255,7 @@ test('profile auth recovery only clears the short-lived Minecraft token', () => 
   }
 })
 
-function fixture () {
+function fixture ({ newUserInitialMomoc = 0 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-platform-'))
   const config = {
     databasePath: path.join(root, 'data.sqlite'),
@@ -264,6 +264,7 @@ function fixture () {
     bootstrapAdminPassword: 'admin-password-123'
   }
   const db = new PlatformDb(config)
+  if (newUserInitialMomoc !== null) db.setNewUserInitialMomoc(newUserInitialMomoc)
   return { db, close: () => { db.close(); fs.rmSync(root, { recursive: true, force: true }) } }
 }
 
@@ -327,6 +328,34 @@ test('users authenticate and sessions resolve', () => {
     assert.equal(f.db.authenticate('player_one', 'password-123').id, user.id)
     const session = f.db.createSession(user.id)
     assert.equal(f.db.getSessionUser(session.token).username, 'player_one')
+  } finally { f.close() }
+})
+
+test('new local and cloud store users receive the configurable initial momoc once', () => {
+  const f = fixture({ newUserInitialMomoc: null })
+  try {
+    assert.equal(f.db.getNewUserInitialMomoc(), 10)
+
+    const local = f.db.createUser('initial_local', 'password-123')
+    assert.equal(local.momoc, 10)
+    assert.deepEqual(f.db.listLedger(local.id).map(row => ({ kind: row.kind, delta: row.delta, balanceAfter: row.balanceAfter })), [
+      { kind: 'signup_bonus', delta: 10, balanceAfter: 10 }
+    ])
+
+    const cloud = f.db.upsertCloudStoreUser('uuid-initial', 'CloudPlayer', 'Damomo1')
+    assert.equal(cloud.momoc, 10)
+    assert.equal(f.db.upsertCloudStoreUser('uuid-initial', 'CloudRenamed', 'Damomo1').momoc, 10)
+    assert.equal(f.db.listLedger(cloud.id).filter(row => row.kind === 'signup_bonus').length, 1)
+
+    assert.equal(f.db.setNewUserInitialMomoc(2.5), 2.5)
+    assert.equal(f.db.createUser('configured_user', 'password-123').momoc, 2.5)
+    assert.throws(() => f.db.setNewUserInitialMomoc(-1), /不能小于 0/)
+    assert.throws(() => f.db.setNewUserInitialMomoc(0.0000001), /最多支持 6 位小数/)
+
+    f.db.setNewUserInitialMomoc(0)
+    const zero = f.db.createUser('zero_initial', 'password-123')
+    assert.equal(zero.momoc, 0)
+    assert.equal(f.db.listLedger(zero.id).length, 0)
   } finally { f.close() }
 })
 
