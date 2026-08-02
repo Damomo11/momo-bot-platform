@@ -33,12 +33,19 @@ class AccountManager {
     if (this.authorizing.has(id)) return account
     if (account.authState === 'authorized' && !force) return account
 
-    const promise = this.runAuthorization(account, force).finally(() => this.authorizing.delete(id))
-    this.authorizing.set(id, promise)
+    const authorization = { cancelled: false }
+    const promise = this.runAuthorization(account, force, authorization).finally(() => {
+      if (this.authorizing.get(id) === authorization) this.authorizing.delete(id)
+      if (authorization.cancelled) {
+        try { this.removeCacheFolder(id) } catch {}
+      }
+    })
+    authorization.promise = promise
+    this.authorizing.set(id, authorization)
     return this.db.getMicrosoftAccount(id)
   }
 
-  async runAuthorization (account, force) {
+  async runAuthorization (account, force, authorization) {
     const cacheFolder = this.cacheFolder(account.id)
     this.secureCacheFolder(cacheFolder)
     this.db.updateMicrosoftAccountAuth(account.id, { authState: 'authorizing', lastError: '', oauthJson: '' })
@@ -49,6 +56,7 @@ class AccountManager {
         deviceType: 'Nintendo',
         forceRefresh: Boolean(force)
       }, code => {
+        if (authorization.cancelled) return
         const oauth = {
           userCode: String(code?.user_code || code?.userCode || ''),
           verificationUri: String(code?.verification_uri || code?.verificationUri || 'https://microsoft.com/link'),
@@ -58,6 +66,7 @@ class AccountManager {
         this.db.updateMicrosoftAccountAuth(account.id, { authState: 'auth_required', oauthJson: JSON.stringify(oauth) })
       })
       const session = await flow.getMinecraftJavaToken({ fetchProfile: true })
+      if (authorization.cancelled) return
       this.db.updateMicrosoftAccountAuth(account.id, {
         authState: 'authorized',
         minecraftName: session?.profile?.name || '',
@@ -65,6 +74,7 @@ class AccountManager {
         oauthJson: ''
       })
     } catch (error) {
+      if (authorization.cancelled) return
       this.db.updateMicrosoftAccountAuth(account.id, {
         authState: 'error',
         lastError: error.message || String(error),
@@ -73,15 +83,20 @@ class AccountManager {
     }
   }
 
+  removeCacheFolder (id) {
+    const folder = path.resolve(this.cacheFolder(id))
+    const root = path.resolve(this.config.authCacheRoot, 'accounts') + path.sep
+    if (folder.startsWith(root)) fs.rmSync(folder, { recursive: true, force: true })
+  }
+
   remove (id, actorUserId = null) {
     const account = this.db.getMicrosoftAccount(id)
     if (!account) throw new Error('微软账号不存在。')
     if (actorUserId && account.userId !== actorUserId) throw new Error('无权操作这个微软账号。')
-    if (this.authorizing.has(id)) throw new Error('账号正在授权，暂时不能删除。')
     this.db.deleteMicrosoftAccount(id)
-    const folder = path.resolve(this.cacheFolder(id))
-    const root = path.resolve(this.config.authCacheRoot, 'accounts') + path.sep
-    if (folder.startsWith(root)) fs.rmSync(folder, { recursive: true, force: true })
+    const authorization = this.authorizing.get(id)
+    if (authorization) authorization.cancelled = true
+    this.removeCacheFolder(id)
     return true
   }
 }
