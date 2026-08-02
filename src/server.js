@@ -167,9 +167,63 @@ function json (res, status, body, headers = {}) {
   res.end(JSON.stringify(body))
 }
 
-function error (res, err) {
-  console.error(err)
+function error (res, err, req = null, url = null) {
+  if (req && url && url.pathname.startsWith('/api/')) logPlatformAudit(req, url, err)
+  else console.error(err)
   json(res, err.status || 400, { ok: false, error: err.message || String(err) })
+}
+
+const auditActions = new Map([
+  ['POST /api/register', '注册账号'], ['POST /api/login', '登录'], ['POST /api/logout', '退出登录'], ['POST /api/password', '修改密码'],
+  ['POST /api/accounts/create', '添加微软账号'], ['POST /api/accounts/auth', '授权微软账号'], ['POST /api/accounts/delete', '删除微软账号'],
+  ['POST /api/smart/permissions', '修改智能 Bot 权限'], ['POST /api/smart/messages', '修改自定义消息'], ['POST /api/smart/tasks', '修改自定义任务'],
+  ['POST /api/smart/automation', '停止智能 Bot 定时项'], ['POST /api/smart/prefixes', '修改命令前缀'], ['POST /api/bots/create', '创建 Bot'],
+  ['POST /api/bots/schedule', '修改 Bot 计划'], ['POST /api/bots/start', '启动 Bot'], ['POST /api/bots/stop', '停止 Bot'],
+  ['POST /api/bots/restart', '重启 Bot'], ['POST /api/bots/delete', '删除 Bot'], ['POST /api/admin/roles', '修改平台管理员'],
+  ['POST /api/admin/momoc', '调整 momoc'], ['POST /api/admin/password', '重置用户密码'], ['POST /api/admin/modules/save', '保存功能模块'],
+  ['POST /api/admin/modules/delete', '删除功能模块'], ['POST /api/admin/settings', '修改平台设置'], ['POST /api/admin/platform-files/save', '保存平台代码']
+])
+
+function auditActor (req) {
+  if (req.platformAuditActor) return req.platformAuditActor
+  const user = currentUser(req)
+  if (user?.username) return user.username
+  const input = req.platformAuditInput || {}
+  if (req.url?.startsWith('/api/login') || req.url?.startsWith('/api/register')) return String(input.username || '未登录')
+  return '未登录'
+}
+
+function auditTarget (req, url) {
+  const input = req.platformAuditInput || {}
+  const parts = []
+  const add = (label, value) => {
+    const text = String(value ?? '').trim().replace(/[\r\n\t]+/g, ' ').slice(0, 80)
+    if (text) parts.push(`${label}=${text}`)
+  }
+  const isBotAction = url.pathname.startsWith('/api/bots/') || url.pathname.startsWith('/api/smart/')
+  const botId = isBotAction ? input.botId || input.id || url.searchParams.get('botId') : ''
+  if (botId) {
+    const bot = db.getBot(botId)
+    add('Bot', bot ? `${bot.label}(${String(botId).slice(0, 8)})` : botId)
+  } else if (url.pathname === '/api/bots/create') add('Bot', input.label)
+  if (url.pathname === '/api/smart/tasks') add('任务', input.name || input.originalName)
+  if (url.pathname === '/api/smart/permissions') add('玩家', input.playerName)
+  if (url.pathname.startsWith('/api/accounts/')) add('账号', input.email || input.id)
+  if (url.pathname === '/api/admin/roles') add('用户', input.username || input.userId)
+  if (url.pathname === '/api/admin/momoc' || url.pathname === '/api/admin/password') add('用户', input.userId)
+  if (url.pathname.includes('/modules')) add('模块', input.name || input.id)
+  if (url.pathname === '/api/admin/platform-files/save') add('文件', input.path)
+  if (input.action) add('动作', input.action)
+  return parts.join(' ') || '-'
+}
+
+function logPlatformAudit (req, url, err = null) {
+  const action = auditActions.get(`${req.method} ${url.pathname}`)
+  if (!action || req.platformAuditLogged) return
+  req.platformAuditLogged = true
+  const reason = err ? ` 原因=${String(err.message || err).replace(/[\r\n\t]+/g, ' ').slice(0, 240)}` : ''
+  console.log(`[平台] 玩家=${auditActor(req)} 操作=${action} 目标=${auditTarget(req, url)} 结果=${err ? '失败' : '成功'}${reason}`)
+  if (err && (Number(err.status || 400) >= 500 || err instanceof TypeError || err instanceof ReferenceError || err instanceof RangeError)) console.error(err)
 }
 
 async function body (req, maxBytes = 1024 * 1024) {
@@ -180,8 +234,10 @@ async function body (req, maxBytes = 1024 * 1024) {
     if (size > maxBytes) throw new Error('请求内容过大。')
     chunks.push(chunk)
   }
-  if (!chunks.length) return {}
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  if (!chunks.length) return (req.platformAuditInput = {})
+  const input = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  req.platformAuditInput = input && typeof input === 'object' ? input : {}
+  return input
 }
 
 function installTemplateProject (input) {
@@ -231,6 +287,7 @@ function currentUser (req) {
 function requireUser (req) {
   const user = currentUser(req)
   if (!user) { const err = new Error('请先登录。'); err.status = 401; throw err }
+  req.platformAuditActor = user.username
   return user
 }
 
@@ -281,6 +338,7 @@ async function api (req, res, url) {
     return json(res, 200, { ok: true, user }, { 'set-cookie': sessionCookie(session.token) })
   }
   if (req.method === 'POST' && url.pathname === '/api/logout') {
+    req.platformAuditActor = currentUser(req)?.username || '未登录'
     db.deleteSession(cookies(req.headers.cookie).bp_sid)
     return json(res, 200, { ok: true }, { 'set-cookie': expiredSessionCookie() })
   }
@@ -499,7 +557,7 @@ async function api (req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/settings') {
     requireAdmin(req)
-    return json(res, 200, { ok: true, ...db.getModePrices(), ...db.getRuntimeSettings(), registrationEnabled: db.getRegistrationEnabled(), newUserInitialMomoc: db.getNewUserInitialMomoc() })
+    return json(res, 200, { ok: true, ...db.getModePrices(), ...db.getRuntimeSettings(), ...db.getSmartTopUpSettings(), registrationEnabled: db.getRegistrationEnabled(), newUserInitialMomoc: db.getNewUserInitialMomoc() })
   }
   if (req.method === 'POST' && url.pathname === '/api/admin/settings') {
     requireAdmin(req)
@@ -507,8 +565,10 @@ async function api (req, res, url) {
     const prices = db.setModePrices(input)
     if (Object.prototype.hasOwnProperty.call(input, 'registrationEnabled')) db.setRegistrationEnabled(Boolean(input.registrationEnabled))
     if (Object.prototype.hasOwnProperty.call(input, 'newUserInitialMomoc')) db.setNewUserInitialMomoc(input.newUserInitialMomoc)
+    const topUp = db.setSmartTopUpSettings({ recipient: input.recipient, commandTemplate: input.commandTemplate })
+    bots.syncSmartTopUpSettings()
     const runtime = db.setRuntimeSettings(input)
-    return json(res, 200, { ok: true, ...prices, ...runtime, registrationEnabled: db.getRegistrationEnabled(), newUserInitialMomoc: db.getNewUserInitialMomoc() })
+    return json(res, 200, { ok: true, ...prices, ...runtime, ...topUp, registrationEnabled: db.getRegistrationEnabled(), newUserInitialMomoc: db.getNewUserInitialMomoc() })
   }
   if (req.method === 'POST' && url.pathname === '/api/admin/modules/delete') {
     requireAdmin(req)
@@ -580,9 +640,13 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost')
   try {
     if (req.method === 'GET' && url.pathname === '/auth/cloud-store') return cloudStoreLogin(res, url)
-    if (url.pathname.startsWith('/api/')) return await api(req, res, url)
+    if (url.pathname.startsWith('/api/')) {
+      await api(req, res, url)
+      logPlatformAudit(req, url)
+      return
+    }
     if (!staticFile(res, url.pathname)) { res.writeHead(404); res.end('Not found') }
-  } catch (err) { error(res, err) }
+  } catch (err) { error(res, err, req, url) }
 })
 
 async function startServer () {

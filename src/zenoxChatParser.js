@@ -25,8 +25,21 @@ function installZenoxChatParser (bot) {
   const seen = new Map()
   const teleportSeen = new Map()
   const peekSeen = new Map()
+  const paymentSeen = new Map()
   const teleportRequestPattern = /^\[TSL\]\s*([A-Za-z0-9_]{3,16})\s*\u8bf7\u6c42(?:(\u4f60\u4f20\u9001\u5230\u4ed6\u7684\u4f4d\u7f6e)|(\u4f20\u9001\u5230\u4f60\u7684\u4f4d\u7f6e))\u3002?\s*\(60\s*\u79d2\u5185\u6709\u6548\)\s*\[\u63a5\u53d7\]\s*\[\u62d2\u7edd\]\s*$/
   const peekRequestPattern = /^✨\s*([A-Za-z0-9_]{3,16})\s+想要和你贴贴，输入\s*\/peek accept\s*接受，或\s*\/peek deny\s*拒绝\s*$/
+  const insufficientBalancePattern = /^\[TSLLLLL\]\s*你的余额少于\s+(50\.00)\s+C\s*$/
+  let paymentRecipient = 'Damomo1'
+  const settingsListener = message => {
+    if (message?.type === 'smart_top_up_settings') paymentRecipient = String(message.settings?.recipient || 'Damomo1')
+  }
+  const topUpSettingsListener = settings => { paymentRecipient = String(settings?.recipient || 'Damomo1') }
+  process.on('message', settingsListener)
+  bot.on('botPlatformTopUpSettings', topUpSettingsListener)
+  bot.once('end', () => {
+    process.removeListener('message', settingsListener)
+    bot.removeListener('botPlatformTopUpSettings', topUpSettingsListener)
+  })
   const isSelf = username => String(username || '').toLowerCase() === String(bot.username || '').toLowerCase()
   const usernameFromUuid = uuid => {
     const normalized = String(uuid || '').toLowerCase()
@@ -110,9 +123,26 @@ function installZenoxChatParser (bot) {
     bot.emit('botPlatformPeekRequest', { username: match[1], source })
     return true
   }
+  const emitPaymentMessage = (message, source) => {
+    const text = String(message || '').trim()
+    const escapedRecipient = paymentRecipient.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const success = text.match(new RegExp(`^\\[TSLLLLL\\]\\s*你已支付\\s+${escapedRecipient}\\s+(\\d+\\.\\d{2})\\s+C\\s*$`))
+    const insufficient = text.match(insufficientBalancePattern)
+    if (!success && !insufficient) return false
+    const kind = success ? 'success' : 'insufficient'
+    const amount = success?.[1] || insufficient[1]
+    const key = `${kind}|${amount}`
+    const now = Date.now()
+    if (now - (paymentSeen.get(key) || 0) < 1500) return true
+    paymentSeen.set(key, now)
+    for (const [entry, time] of paymentSeen) if (now - time > 10000) paymentSeen.delete(entry)
+    bot.emit('botPlatformPaymentMessage', { kind, amount, source })
+    return true
+  }
   bot.on('chat', (username, message) => emit(username, message, 'public', 'chat'))
   bot.on('whisper', (username, message) => emit(username, message, 'private', 'whisper'))
   bot.on('messagestr', (message, position, originalMessage, sender) => {
+    if (position === 'system' && emitPaymentMessage(message, 'messagestr')) return
     if (emitPeekRequest(message, 'messagestr')) return
     if (emitTeleportRequest(message, 'messagestr')) return
     const privateMessage = parsePrivate(message)
@@ -124,6 +154,7 @@ function installZenoxChatParser (bot) {
   bot._client?.on('system_chat', packet => {
     if (packet.isActionBar) return
     const text = componentToText(packet.content)
+    if (emitPaymentMessage(text, 'system_chat')) return
     if (emitPeekRequest(text, 'system_chat')) return
     if (emitTeleportRequest(text, 'system_chat')) return
     const privateMessage = parsePrivate(text)

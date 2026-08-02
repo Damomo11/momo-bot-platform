@@ -30,6 +30,7 @@ class BotManager {
     this.schedules = new Map()
     this.profileAuthRecoveryAt = new Map()
     this.logs = new Map()
+    this.pendingTopUps = new Map()
   }
 
   appendLog (id, level, message) {
@@ -380,6 +381,17 @@ class BotManager {
     }
   }
 
+  syncSmartTopUpSettings () {
+    const settings = this.db.getSmartTopUpSettings()
+    this.pendingTopUps.clear()
+    for (const [botId, state] of this.processes) {
+      const bot = this.db.getBot(botId)
+      if (bot?.mode !== 'smart') continue
+      try { state.child.send?.({ type: 'smart_top_up_settings', settings }) } catch (error) { console.warn(`[bot:${botId}] smart top-up settings hot update failed: ${error.message || error}`) }
+    }
+    return settings
+  }
+
   handleSmartRequest (id, state, message) {
     const requestId = String(message.requestId || '')
     if (!requestId) return
@@ -394,7 +406,41 @@ class BotManager {
   executeSmartRequest (botId, action, payload) {
     const bot = this.db.getBot(botId)
     if (!bot || bot.mode !== 'smart') throw new Error('智能 Bot 不存在。')
-    if (action === 'settings') return this.db.getSmartBotSettings(bot.id)
+    if (action === 'settings') return { ...this.db.getSmartBotSettings(bot.id), topUp: this.db.getSmartTopUpSettings() }
+    if (action === 'owner_balance') {
+      const actor = this.db.getSmartAccess(bot.userId, String(payload.username || ''))
+      if (actor.blacklisted || !actor.admin) return { allowed: false }
+      const user = this.db.getUser(bot.userId)
+      if (!user) throw new Error('用户不存在。')
+      return { allowed: true, balance: user.momoc, availableBalance: user.availableMomoc }
+    }
+    if (action === 'top_up_prepare') {
+      const actor = this.db.getSmartAccess(bot.userId, String(payload.username || ''))
+      if (actor.blacklisted || !actor.admin) return { allowed: false }
+      const amount = String(payload.amount || '')
+      if (!/^\d+(?:\.\d{1,2})?$/.test(amount)) throw new Error('充值金额必须是正数，最多两位小数。')
+      const cents = Math.round(Number(amount) * 100)
+      if (!Number.isSafeInteger(cents) || cents < 1 || cents > 100000000) throw new Error('充值金额必须在 0.01-1000000.00 之间。')
+      const pending = this.pendingTopUps.get(botId)
+      if (pending && Date.now() - pending.createdAt < 60000) throw new Error('上一笔充值仍在等待服务器确认。')
+      const normalized = (cents / 100).toFixed(2)
+      this.pendingTopUps.set(botId, { cents, amount: normalized, sender: String(payload.username || '').replace(/^#/, ''), createdAt: Date.now() })
+      return { allowed: true, amount: normalized }
+    }
+    if (action === 'top_up_cancel') {
+      this.pendingTopUps.delete(botId)
+      return { canceled: true }
+    }
+    if (action === 'top_up_confirm') {
+      const pending = this.pendingTopUps.get(botId)
+      const match = String(payload.amount || '').match(/^(\d+)\.(\d{2})$/)
+      const cents = match ? Number(match[1]) * 100 + Number(match[2]) : 0
+      if (!pending || Date.now() - pending.createdAt >= 60000 || cents !== pending.cents) return { confirmed: false }
+      this.pendingTopUps.delete(botId)
+      const recipient = this.db.getSmartTopUpSettings().recipient
+      const balance = this.db.adjustMomoc(bot.userId, pending.cents / 100, 'tsl_top_up', `TSL 支付给 ${recipient} ${pending.amount} C`, botId)
+      return { confirmed: true, amount: pending.amount, balance, sender: pending.sender }
+    }
     if (action === 'runtime_version') {
       const runtime = readRuntimeUpdates(this.config.root, 'smart')
       return { version: runtime.version, release: runtime.latestRelease, releases: runtime.releases }
@@ -665,6 +711,7 @@ class BotManager {
     this.appendLog(id, exitedState.stopping || exitedState.restartPending ? 'info' : 'error', `Process exited: code=${code} signal=${signal || '-'}.`)
     this.clearStateTimers(exitedState)
     this.processes.delete(id)
+    this.pendingTopUps.delete(id)
     const bot = this.db.getBot(id)
     if (!bot) {
       if (this.accountLocks.get(exitedState.accountId) === id) this.accountLocks.delete(exitedState.accountId)

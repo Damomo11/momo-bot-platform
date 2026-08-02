@@ -262,6 +262,8 @@ class PlatformDb {
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_max_running_bots', '0')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('bot_creation_enabled', '1')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('new_user_initial_momoc', '10')").run()
+    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_top_up_recipient', 'Damomo1')").run()
+    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_top_up_command', '/pay {recipient} {amount}')").run()
     this.db.prepare('UPDATE users SET momoc_units = CAST(ROUND(momoc * 60) AS INTEGER) WHERE momoc_units IS NULL').run()
     this.db.prepare('UPDATE momoc_ledger SET delta_units = CAST(ROUND(delta * 60) AS INTEGER) WHERE delta_units IS NULL').run()
     this.db.prepare('UPDATE momoc_ledger SET balance_after_units = CAST(ROUND(balance_after * 60) AS INTEGER) WHERE balance_after_units IS NULL').run()
@@ -747,6 +749,27 @@ class PlatformDb {
     return this.getNewUserInitialMomoc()
   }
 
+  getSmartTopUpSettings () {
+    const value = key => this.db.prepare('SELECT value FROM platform_settings WHERE key = ?').get(key)?.value
+    return {
+      recipient: String(value('smart_top_up_recipient') || 'Damomo1'),
+      commandTemplate: String(value('smart_top_up_command') || '/pay {recipient} {amount}')
+    }
+  }
+
+  setSmartTopUpSettings (input = {}) {
+    const current = this.getSmartTopUpSettings()
+    const recipient = String(input.recipient ?? current.recipient).trim()
+    const commandTemplate = String(input.commandTemplate ?? current.commandTemplate).trim()
+    if (!/^[A-Za-z0-9_]{3,16}$/.test(recipient)) throw new Error('充值收款玩家名格式无效。')
+    if (!commandTemplate || commandTemplate.length > 256 || /[\r\n]/.test(commandTemplate)) throw new Error('充值转账命令模板无效。')
+    if (!commandTemplate.includes('{recipient}') || !commandTemplate.includes('{amount}')) throw new Error('充值转账命令模板必须包含 {recipient} 和 {amount}。')
+    const save = this.db.prepare('INSERT INTO platform_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+    save.run('smart_top_up_recipient', recipient)
+    save.run('smart_top_up_command', commandTemplate)
+    return this.getSmartTopUpSettings()
+  }
+
   getRuntimeSettings () {
     const value = key => this.db.prepare('SELECT value FROM platform_settings WHERE key = ?').get(key)?.value
     const maxRunningBots = Number.parseInt(value('smart_max_running_bots') || '0', 10)
@@ -987,7 +1010,7 @@ class PlatformDb {
 
   setSmartUserMessages (userId, overrides = {}) {
     if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) throw new Error('自定义消息格式无效。')
-    const allowed = new Set(['permissionUsage', 'permissionResult', 'openBoxUsage', 'openBoxSuccess', 'openBoxFailure', 'nearUsage', 'nearSuccess', 'nearEmpty', 'nearFailure', 'mountAlready', 'mountMissing', 'mountSuccess', 'mountFailure', 'dismountMissing', 'dismountSuccess', 'dismountFailure', 'vaultSuccess', 'vaultMissing', 'vaultFailure', 'clearEmpty', 'clearSuccess', 'clearFailure', 'takeUsage', 'takeSuccess', 'takeMissing', 'offhandUsage', 'offhandSuccess', 'offhandEmpty', 'offhandFailure', 'dropUsage', 'dropSuccess', 'dropMissing', 'dropFailure', 'switchUsage', 'switchSuccess', 'ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff', 'periodicRightClickUsage', 'periodicRightClickEnabled', 'periodicRightClickDisabled', 'periodicRightClickStatusOff', 'periodicRightClickStatusOn', 'rightClickUsage', 'rightClickSuccess', 'rightClickFailure', 'attackUsage', 'attackSuccess', 'attackMiss', 'attackFailure', 'moveUsage', 'moveSuccess', 'moveFailure', 'lookUsage', 'lookSuccess', 'lookFailure', 'placeUsage', 'placeSuccess', 'placeFailure', 'taskUsage', 'taskScheduled', 'taskStopped', 'scheduleStatus', 'locked', 'lockUsage', 'alreadyLocked', 'lockSuccess', 'notLocked', 'adminUnlockRequired', 'unlockSuccess', 'forwardUsage', 'forwardInvalid', 'forwardNested', 'forwardDangerous', 'forwardHome', 'restartLocked', 'restarting', 'permissionAdded', 'permissionExists', 'permissionRemoved', 'permissionMissing', 'temporaryUsage', 'temporaryAdded', 'adminLockUsage', 'alreadyAdminLocked', 'adminLockSuccess', 'notAdminLocked', 'adminUnlockSuccess'])
+    const allowed = new Set(['permissionUsage', 'permissionResult', 'openBoxUsage', 'openBoxSuccess', 'openBoxFailure', 'nearUsage', 'nearSuccess', 'nearEmpty', 'nearFailure', 'mountAlready', 'mountMissing', 'mountSuccess', 'mountFailure', 'dismountMissing', 'dismountSuccess', 'dismountFailure', 'vaultSuccess', 'vaultMissing', 'vaultFailure', 'clearEmpty', 'clearSuccess', 'clearFailure', 'takeUsage', 'takeSuccess', 'takeMissing', 'offhandUsage', 'offhandSuccess', 'offhandEmpty', 'offhandFailure', 'dropUsage', 'dropSuccess', 'dropMissing', 'dropFailure', 'switchUsage', 'switchSuccess', 'ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff', 'periodicRightClickUsage', 'periodicRightClickEnabled', 'periodicRightClickDisabled', 'periodicRightClickStatusOff', 'periodicRightClickStatusOn', 'rightClickUsage', 'rightClickSuccess', 'rightClickFailure', 'attackUsage', 'attackSuccess', 'attackMiss', 'attackFailure', 'balanceResult', 'topUpUsage', 'topUpPending', 'topUpBusy', 'topUpFailure', 'topUpSuccess', 'moveUsage', 'moveSuccess', 'moveFailure', 'lookUsage', 'lookSuccess', 'lookFailure', 'placeUsage', 'placeSuccess', 'placeFailure', 'taskUsage', 'taskScheduled', 'taskStopped', 'scheduleStatus', 'locked', 'lockUsage', 'alreadyLocked', 'lockSuccess', 'notLocked', 'adminUnlockRequired', 'unlockSuccess', 'forwardUsage', 'forwardInvalid', 'forwardNested', 'forwardDangerous', 'forwardHome', 'restartLocked', 'restarting', 'permissionAdded', 'permissionExists', 'permissionRemoved', 'permissionMissing', 'temporaryUsage', 'temporaryAdded', 'adminLockUsage', 'alreadyAdminLocked', 'adminLockSuccess', 'notAdminLocked', 'adminUnlockSuccess'])
     const normalized = {}
     for (const [key, value] of Object.entries(overrides)) {
       if (!allowed.has(key)) throw new Error(`不支持的消息项: ${key}`)

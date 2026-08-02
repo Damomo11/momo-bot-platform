@@ -63,6 +63,13 @@ const COMMAND_TEXT = Object.freeze({
   attackSuccess: '已攻击准星指向的目标。',
   attackMiss: '准星方向没有可攻击目标，已挥动主手。',
   attackFailure: '攻击失败，请确认机器人已进入服务器。',
+  balanceResult: balance => `Bot 所有者当前拥有 ${balance} momoc。`,
+  topUpUsage: '正确格式: 充值 金额，例如 充值 50。',
+  topUpPending: amount => `正在支付 ${amount} C，等待服务器确认。`,
+  topUpBusy: '上一笔充值仍在等待服务器确认。',
+  topUpFailure: '充值指令发送失败，请稍后重试。',
+  topUpSuccess: (amount, balance) => `充值成功，已增加 ${amount} momoc，当前余额 ${balance} momoc。`,
+  tslInsufficient: amount => `tsl余额不足${amount}`,
   moveUsage: '正确格式: 移动 x y z [停止距离]，或 移动 玩家名 [停止距离]，或 移动 东|西|南|北 格数 [停止距离]',
   moveSuccess: '已移动到目标附近。',
   moveFailure: '移动失败，请确认目标可达。',
@@ -127,9 +134,13 @@ function isVersionNewer (candidate, current) {
   return false
 }
 
-function parseSmartCommand (message, prefixes = []) {
+function parseSmartCommand (message, prefixes = [], options = {}) {
   const text = String(message || '').replace(/喵[~～]/g, '').trim()
   if (!text) return null
+  if (options.allowWithoutPrefix) {
+    const parts = text.split(/\s+/)
+    return { prefix: '', command: parts[0], args: parts.slice(1), body: text }
+  }
   const lower = text.toLowerCase()
   const prefix = normalizeCommandPrefixes(prefixes).find(value => lower.startsWith(value.toLowerCase()))
   if (!prefix) return null
@@ -898,7 +909,7 @@ function createSmartCommandHandler (bot, options = {}) {
       if (!isVersionNewer(latest?.version, SMART_BOT_VERSION)) return
       const summary = latest?.release?.summary || latest?.release?.title || ''
       const note = summary ? ` 更新内容: ${summary}` : ''
-      bot.chat(`/msg ${username} bot已有新版本，重启后自动更新新版本。${note}`.slice(0, 256))
+      bot.chat(`/msg ${username} bot已有新版本，可在游戏内使用“重启”命令，重启后自动更新。${note}`.slice(0, 256))
       versionNotifiedPlayers.add(key)
     } catch (error) {
       platform.log?.(`检查智能 Bot 版本失败: ${error?.message || error}`)
@@ -908,7 +919,7 @@ function createSmartCommandHandler (bot, options = {}) {
   return async event => {
     if (!event?.username || String(event.username).toLowerCase() === String(bot.username || '').toLowerCase()) return
     const prefixes = getCommandPrefixes()
-    const parsed = parseSmartCommand(event.message, prefixes)
+    const parsed = parseSmartCommand(event.message, prefixes, { allowWithoutPrefix: event.channel === 'private' })
     if (!parsed) return
 
     const username = String(event.username).replace(/^#/, '')
@@ -981,6 +992,40 @@ function createSmartCommandHandler (bot, options = {}) {
 
     if (access.lock.adminLocked && !access.admin && parsed.command !== '状态') return reply(COMMAND_TEXT.locked(access.lock, '超级锁定'), 'locked', { player: access.lock.lockedBy || '未知玩家', label: '超级锁定', reason: access.lock.reason || '无' })
     if (!access.whitelisted) return
+
+    if (parsed.command === '余额') {
+      if (!access.admin) return
+      if (parsed.args.length) return
+      const result = await request('owner_balance', { username })
+      if (!result.allowed) return
+      const balance = formatMomoc(result.balance)
+      reply(COMMAND_TEXT.balanceResult(balance), 'balanceResult', { balance })
+      return
+    }
+
+    if (parsed.command === '充值') {
+      if (!access.admin) return
+      if (parsed.args.length !== 1 || !/^\d+(?:\.\d{1,2})?$/.test(parsed.args[0]) || Number(parsed.args[0]) <= 0) return reply(COMMAND_TEXT.topUpUsage, 'topUpUsage')
+      let prepared
+      try {
+        prepared = await request('top_up_prepare', { username, amount: parsed.args[0] })
+        if (!prepared.allowed) return
+      } catch (error) {
+        return reply(/等待服务器确认/.test(String(error?.message || '')) ? COMMAND_TEXT.topUpBusy : COMMAND_TEXT.topUpFailure, /等待服务器确认/.test(String(error?.message || '')) ? 'topUpBusy' : 'topUpFailure')
+      }
+      try {
+        const settings = options.getTopUpSettings?.() || {}
+        const recipient = String(settings.recipient || 'Damomo1')
+        const commandTemplate = String(settings.commandTemplate || '/pay {recipient} {amount}')
+        const command = commandTemplate.replace(/\{recipient\}/g, recipient).replace(/\{amount\}/g, prepared.amount)
+        await runBotAction(() => bot.chat(command))
+        reply(COMMAND_TEXT.topUpPending(prepared.amount), 'topUpPending', { amount: prepared.amount })
+      } catch {
+        await request('top_up_cancel', {}).catch(() => {})
+        reply(COMMAND_TEXT.topUpFailure, 'topUpFailure')
+      }
+      return
+    }
 
     const overridableTaskCommands = new Set(['上车', '下车', '开宝库', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '攻击', '移动', '注视'])
     if (overridableTaskCommands.has(parsed.command)) {
@@ -1310,7 +1355,10 @@ function createTeleportRequestHandler (bot, options = {}) {
     if (!/^[A-Za-z0-9_]{3,16}$/.test(username) || username.toLowerCase() === String(bot.username || '').toLowerCase()) return
 
     const access = await platform.request('access', { username })
-    if (access.blacklisted || !access.whitelisted || (access.lock?.locked && event?.kind !== 'to_bot')) return
+    if (access.blacklisted || !access.whitelisted) return
+    if (event?.kind === 'to_bot') {
+      if (access.lock?.adminLocked && !access.admin) return
+    } else if (access.lock?.locked || access.lock?.adminLocked) return
     await runBotAction(() => bot.chat(`/tpaccept ${username}`))
   }
 }
@@ -1331,6 +1379,10 @@ function createPeekRequestHandler (bot, options = {}) {
   }
 }
 
+function formatMomoc (value) {
+  return Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 6 })
+}
+
 function installSmartCommands (bot, options = {}) {
   const platform = options.platform || global.botPlatform
   const runBotAction = options.runBotAction || createBotActionQueue()
@@ -1338,10 +1390,16 @@ function installSmartCommands (bot, options = {}) {
   const periodicRightClickScheduler = options.periodicRightClickScheduler || createPeriodicRightClickScheduler(bot, { ...options, platform, runBotAction })
   let commandPrefix = String(options.commandPrefix ?? '')
   let messageOverrides = {}
+  let topUpSettings = { recipient: 'Damomo1', commandTemplate: '/pay {recipient} {amount}' }
   const settingsListener = message => {
     if (message?.type === 'smart_settings') {
       commandPrefix = String(message.settings?.commandPrefix || '')
       messageOverrides = message.settings?.messageOverrides || {}
+      topUpSettings = message.settings?.topUp || topUpSettings
+    }
+    if (message?.type === 'smart_top_up_settings') {
+      topUpSettings = message.settings || topUpSettings
+      bot.emit('botPlatformTopUpSettings', topUpSettings)
     }
     if (message?.type === 'smart_automation') {
       ominousScheduler.applySettings(message.automation || {})
@@ -1352,6 +1410,8 @@ function installSmartCommands (bot, options = {}) {
   platform?.request?.('settings', {}).then(settings => {
     commandPrefix = String(settings?.commandPrefix || '')
     messageOverrides = settings?.messageOverrides || {}
+    topUpSettings = settings?.topUp || topUpSettings
+    bot.emit('botPlatformTopUpSettings', topUpSettings)
   }).catch(error => console.error('[smart-settings]', error?.stack || error))
 
   const handle = createSmartCommandHandler(bot, {
@@ -1361,7 +1421,8 @@ function installSmartCommands (bot, options = {}) {
     applyOminousSettings: settings => ominousScheduler.applySettings(settings),
     applyPeriodicRightClickSettings: settings => periodicRightClickScheduler.applySettings(settings),
     getCommandPrefixes: () => [commandPrefix, bot.username],
-    getMessageOverrides: () => messageOverrides
+    getMessageOverrides: () => messageOverrides,
+    getTopUpSettings: () => topUpSettings
   })
   const handleTeleportRequest = createTeleportRequestHandler(bot, { ...options, platform, runBotAction })
   const handlePeekRequest = createPeekRequestHandler(bot, { ...options, platform, runBotAction })
@@ -1384,6 +1445,21 @@ function installSmartCommands (bot, options = {}) {
     handlePeekRequest(event).catch(error => console.error('[smart-peek]', error?.stack || error))
   }
   bot.on('botPlatformPeekRequest', peekListener)
+  const paymentListener = event => {
+    if (event?.kind === 'insufficient') {
+      platform.request('top_up_cancel', {}).catch(() => {})
+      bot.chat(COMMAND_TEXT.tslInsufficient(String(event.amount || '')))
+      return
+    }
+    platform.request('top_up_confirm', { amount: event?.amount }).then(result => {
+      if (!result?.confirmed) return
+      const sender = String(result.sender || '')
+      const template = Object.prototype.hasOwnProperty.call(messageOverrides, 'topUpSuccess') ? messageOverrides.topUpSuccess : COMMAND_TEXT.topUpSuccess(result.amount, formatMomoc(result.balance))
+      const text = String(template || '').replace(/\{(sender|amount|balance)\}/g, (match, name) => ({ sender, amount: result.amount, balance: formatMomoc(result.balance) })[name])
+      if (text) bot.chat(text.slice(0, 256))
+    }).catch(error => console.error('[smart-top-up]', error?.stack || error))
+  }
+  bot.on('botPlatformPaymentMessage', paymentListener)
   const startup = platform.request('volatile_schedules_reset', {}).catch(error => {
     console.error('[smart-volatile-schedules-reset]', error?.stack || error)
   })
@@ -1421,6 +1497,7 @@ function installSmartCommands (bot, options = {}) {
     bot.removeListener('botPlatformMessage', listener)
     bot.removeListener('botPlatformTeleportRequest', teleportListener)
     bot.removeListener('botPlatformPeekRequest', peekListener)
+    bot.removeListener('botPlatformPaymentMessage', paymentListener)
     process.removeListener('message', settingsListener)
     ominousScheduler.stop()
     periodicRightClickScheduler.stop()
