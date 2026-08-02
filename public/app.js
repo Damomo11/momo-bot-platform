@@ -41,7 +41,7 @@ const balanceText = user => `${formatMomoc(user?.momoc)} momoc${Number(user?.res
 const templatePrice = template => `${formatMomoc(template?.priceMomoc)} momoc / ${template?.billingMode === 'once' ? '次' : '1h'}`
 const commandUsage = command => `${state.botSettings?.commandPrefix || '!'}${String(command || '').replace(/^\s*[!@=]+/, '')}`
 const kindLabel = value => ({ bot_usage: '机器人基础运行', bot_minute: '机器人基础运行', bot_hourly: '机器人基础运行', bot_once: '模板按次执行', module_hourly: '功能模块运行', module_once: '功能模块执行', admin_adjust: '管理员调整', signup_bonus: '新用户初始金' })[value] || value
-const TASK_COMMANDS = ['上车', '下车', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '移动', '注视', '指令']
+const TASK_COMMANDS = ['上车', '下车', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '攻击', '移动', '注视', '指令']
 const MESSAGE_DEFAULTS = {
   permissionUsage: '正确格式: {command} 玩家名', permissionResult: '玩家 {player} {status}{label}中{remaining}',
   openBoxUsage: '正确格式: 开盒 玩家名', openBoxSuccess: '开盒成功！玩家 {player} 的坐标为 ({x},{z}) {dimension}', openBoxFailure: '开盒失败！未找到该玩家或地图服务暂时不可用。',
@@ -53,7 +53,7 @@ const MESSAGE_DEFAULTS = {
   switchUsage: '正确格式: 切换 1-9', switchSuccess: '快捷栏已切换到第 {slot} 格。',
   ominousUsage: '正确格式: 定时灾厄之瓶 开|关', ominousEnabled: '定时灾厄之瓶已开启，将立即饮用一瓶；成功后每 31 分钟执行一次。', ominousDisabled: '定时灾厄之瓶已关闭。', ominousStatusOn: '定时灾厄之瓶: 开，下次执行: {nextTime}', ominousStatusOff: '定时灾厄之瓶: 关。',
   periodicRightClickUsage: '正确格式: 定时放置 x y z ngt，例如 定时放置 100 64 200 20。', periodicRightClickEnabled: '定时放置已开启: ({x},{y},{z})，每 {ticks} 游戏刻执行。', periodicRightClickDisabled: '定时放置已关闭。', periodicRightClickStatusOff: '定时放置: 关。', periodicRightClickStatusOn: '定时放置: 开，坐标 ({x},{y},{z})，间隔 {ticks} 游戏刻。',
-  rightClickUsage: '正确格式: 右键 玩家名，或 右键 x y z。', rightClickSuccess: '右键交互成功。', rightClickFailure: '右键交互失败，请确认目标存在且在交互距离内。', moveUsage: '正确格式: 移动 x y z [停止距离]，或 移动 玩家名 [停止距离]，或 移动 东|西|南|北 格数 [停止距离]', moveSuccess: '已移动到目标附近。', moveFailure: '移动失败，请确认目标可达。', lookUsage: '正确格式: 注视 玩家名', lookSuccess: '已调整视角。', lookFailure: '注视失败，请确认目标存在。', placeUsage: '正确格式: 放置 x y z。', placeSuccess: '放置成功。', placeFailure: '{reason}',
+  rightClickUsage: '正确格式: 右键 玩家名，或 右键 x y z。', rightClickSuccess: '右键交互成功。', rightClickFailure: '右键交互失败，请确认目标存在且在交互距离内。', attackUsage: '正确格式: 攻击', attackSuccess: '已攻击准星指向的目标。', attackMiss: '准星方向没有可攻击目标，已挥动主手。', attackFailure: '攻击失败，请确认机器人已进入服务器。', moveUsage: '正确格式: 移动 x y z [停止距离]，或 移动 玩家名 [停止距离]，或 移动 东|西|南|北 格数 [停止距离]', moveSuccess: '已移动到目标附近。', moveFailure: '移动失败，请确认目标可达。', lookUsage: '正确格式: 注视 玩家名', lookSuccess: '已调整视角。', lookFailure: '注视失败，请确认目标存在。', placeUsage: '正确格式: 放置 x y z。', placeSuccess: '放置成功。', placeFailure: '{reason}',
   taskUsage: '正确格式: 定时任务 任务名 5 [参数...]；关闭时使用 定时任务 任务名 关。', taskScheduled: '定时任务 {task} 已开启，每 {ticks} 游戏刻执行一次。', taskStopped: '定时任务 {task} 已关闭。', scheduleStatus: '定时：{schedules}',
   locked: '机器人已被 {player} {label}，备注: {reason}', lockUsage: '正确格式: 锁定 备注', alreadyLocked: '机器人已被锁定，请勿重复锁定。', lockSuccess: '锁定成功，由于发消息会取消 afk，请寻找安全地方挂机。', notLocked: '机器人没有被锁定。', adminUnlockRequired: '机器人处于超级锁定，请由超管使用“超级解锁”。', unlockSuccess: '机器人已解锁。',
   forwardUsage: '正确格式: 指令 <服务器指令>', forwardInvalid: '指令内容无效或过长。', forwardNested: '不能嵌套机器人命令前缀。', forwardDangerous: '这条高风险指令已禁用。', forwardHome: 'home 命令已禁用。',
@@ -68,6 +68,10 @@ MESSAGE_LABELS.offhandUsage = '副手格式'
 MESSAGE_LABELS.offhandSuccess = '放入副手成功'
 MESSAGE_LABELS.offhandEmpty = '主手为空'
 MESSAGE_LABELS.offhandFailure = '放入副手失败'
+MESSAGE_LABELS.attackUsage = '攻击格式'
+MESSAGE_LABELS.attackSuccess = '攻击命中'
+MESSAGE_LABELS.attackMiss = '攻击未命中'
+MESSAGE_LABELS.attackFailure = '攻击失败'
 
 const HIDDEN_MESSAGE_KEYS = new Set(['periodicRightClickUsage', 'periodicRightClickEnabled', 'periodicRightClickDisabled', 'periodicRightClickStatusOn', 'periodicRightClickStatusOff'])
 
@@ -85,6 +89,7 @@ const MESSAGE_GROUPS = [
   { command: '切换', note: '快捷栏切换反馈', keys: ['switchUsage', 'switchSuccess'] },
   { command: '定时灾厄之瓶', note: '定时饮用与状态反馈', keys: ['ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff'] },
   { command: '右键', note: '实体或方块交互反馈', keys: ['rightClickUsage', 'rightClickSuccess', 'rightClickFailure'] },
+  { command: '攻击', note: '准星方向单次攻击反馈', keys: ['attackUsage', 'attackSuccess', 'attackMiss', 'attackFailure'] },
   { command: '移动', note: '移动与寻路反馈', keys: ['moveUsage', 'moveSuccess', 'moveFailure'] },
   { command: '注视', note: '视角调整反馈', keys: ['lookUsage', 'lookSuccess', 'lookFailure'] },
   { command: '放置', note: '单次放置反馈', keys: ['placeUsage', 'placeSuccess', 'placeFailure'] },
@@ -583,7 +588,7 @@ function openBotLogDialog (id) {
   const render = () => {
     const bot = findBot(id)
     if (!bot) return modal.classList.add('hidden')
-    $('botLogTitle').textContent = `${bot.label} - 最近日志`
+    $('botLogTitle').textContent = `${bot.label} - 最近 100 条日志`
     const rows = $('botLogRows')
     rows.replaceChildren()
     const logs = Array.isArray(bot.logs) ? bot.logs : []
@@ -689,7 +694,7 @@ async function saveSmartCommandPrefix () {
 }
 
 function taskArgumentHint (command) {
-  return { 上车: '无需参数', 下车: '无需参数', 清空: '无需参数', 拿出: '石头 / minecraft:stone / stone', 丢弃: '石头 / minecraft:stone / stone', 副手: '无需参数', 切换: '1-9', 放置: 'x y z', 右键: '玩家名 或 x y z', 移动: 'x y z [停止距离] / 玩家名 / 东 5', 注视: '玩家名', 指令: '服务器指令' }[command] || ''
+  return { 上车: '无需参数', 下车: '无需参数', 清空: '无需参数', 拿出: '石头 / minecraft:stone / stone', 丢弃: '石头 / minecraft:stone / stone', 副手: '无需参数', 切换: '1-9', 放置: 'x y z', 右键: '玩家名 或 x y z', 攻击: '无需参数', 移动: 'x y z [停止距离] / 玩家名 / 东 5', 注视: '玩家名', 指令: '服务器指令' }[command] || ''
 }
 
 function renderTaskParameters (parameters = []) {
@@ -737,7 +742,7 @@ function addTaskParameter () {
 function renderTaskEditor (actions = [{ command: '放置', args: '' }], waits = []) {
   $('taskSteps').innerHTML = actions.map((action, index) => {
     const commandOptions = TASK_COMMANDS.map(command => `<option value="${command}"${command === action.command ? ' selected' : ''}>${command}</option>`).join('')
-    const actionRow = `<div class="task-action-row" data-task-action><span class="step-number">${index + 1}</span><label>平台命令<select data-task-command>${commandOptions}</select></label><label class="task-args">参数<input data-task-args value="${esc(action.args || '')}" placeholder="${esc(taskArgumentHint(action.command))}"${['上车', '下车', '清空', '副手'].includes(action.command) ? ' disabled' : ''}></label><button type="button" class="danger task-remove" data-remove-task-step aria-label="删除第 ${index + 1} 个命令">删除</button></div>`
+    const actionRow = `<div class="task-action-row" data-task-action><span class="step-number">${index + 1}</span><label>平台命令<select data-task-command>${commandOptions}</select></label><label class="task-args">参数<input data-task-args value="${esc(action.args || '')}" placeholder="${esc(taskArgumentHint(action.command))}"${['上车', '下车', '清空', '副手', '攻击'].includes(action.command) ? ' disabled' : ''}></label><button type="button" class="danger task-remove" data-remove-task-step aria-label="删除第 ${index + 1} 个命令">删除</button></div>`
     if (index === actions.length - 1) return actionRow
     const wait = Number(waits[index] || 5)
     return `${actionRow}<div class="task-wait-row"><span>然后等待</span><input data-task-wait type="number" min="1" max="28800" step="1" value="${Number.isInteger(wait) ? wait : 5}" aria-label="第 ${index + 1} 和 ${index + 2} 个命令之间的等待时间"><span>gt 再执行下一条</span></div>`
@@ -750,7 +755,7 @@ function bindTaskEditor () {
     select.onchange = () => {
       const input = select.closest('[data-task-action]').querySelector('[data-task-args]')
       input.placeholder = taskArgumentHint(select.value)
-      input.disabled = ['上车', '下车', '清空', '副手'].includes(select.value)
+      input.disabled = ['上车', '下车', '清空', '副手', '攻击'].includes(select.value)
       if (input.disabled) input.value = ''
     }
   })
@@ -840,7 +845,7 @@ async function loadMessages () {
   const data = await request('/api/smart/messages')
   const values = { ...MESSAGE_DEFAULTS, ...(data.overrides || {}) }
   const field = key => {
-    const placeholders = [...MESSAGE_DEFAULTS[key].matchAll(/\{[a-zA-Z][a-zA-Z0-9]*\}/g)].map(match => match[0]).join(' ')
+    const placeholders = [...new Set(['{sender}', ...[...MESSAGE_DEFAULTS[key].matchAll(/\{[a-zA-Z][a-zA-Z0-9]*\}/g)].map(match => match[0])])].join(' ')
     const changed = Object.prototype.hasOwnProperty.call(data.overrides || {}, key)
     return `<label class="message-field"><span><strong>${esc(MESSAGE_LABELS[key] || key)}</strong><small>${esc(key)}${placeholders ? ` · 可用 ${esc(placeholders)}` : ''}</small></span><div class="message-input-actions"><input data-message-key="${esc(key)}" value="${esc(values[key])}" maxlength="256"><button type="button" data-reset-message="${esc(key)}"${changed ? '' : ' disabled'}>重置</button></div></label>`
   }

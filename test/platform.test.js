@@ -18,7 +18,7 @@ const { verifyCloudStoreToken } = require('../src/cloudStoreSso')
 const { LoginAttemptLimiter, clientIp } = require('../src/security')
 const { invalidateMinecraftAccessTokenCache, isMinecraftProfileAuthError } = require('../src/authCache')
 const { upgradeObjectState } = require('../src/supervisorHotReload')
-const { activateNearestVault, bindTaskArguments, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, isVersionNewer, mountNearestMinecart, normalizeItemId, parsePeriodicRightClickArgs, parseSmartCommand, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
+const { activateNearestVault, attackAtCursor, bindTaskArguments, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, isVersionNewer, mountNearestMinecart, normalizeItemId, parsePeriodicRightClickArgs, parseSmartCommand, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
 
 test('login attempts are blocked by IP after repeated failures', () => {
   const limiter = new LoginAttemptLimiter({ maxFailures: 3, windowMs: 1000, blockMs: 2000 })
@@ -1015,12 +1015,14 @@ test('custom task accepts all commands exposed by the task editor', () => {
         { type: 'wait', ticks: 1 },
         { type: 'command', command: '副手', args: [] },
         { type: 'wait', ticks: 1 },
+        { type: 'command', command: '攻击', args: [] },
+        { type: 'wait', ticks: 1 },
         { type: 'command', command: '移动', args: ['东', '5'] },
         { type: 'wait', ticks: 1 },
         { type: 'command', command: '注视', args: ['{玩家}'] }
       ]
     })
-    assert.deepEqual(saved.steps.map(step => step.type === 'command' ? step.command : step.type), ['拿出', 'wait', '丢弃', 'wait', '副手', 'wait', '移动', 'wait', '注视'])
+    assert.deepEqual(saved.steps.map(step => step.type === 'command' ? step.command : step.type), ['拿出', 'wait', '丢弃', 'wait', '副手', 'wait', '攻击', 'wait', '移动', 'wait', '注视'])
   } finally {
     f.close()
   }
@@ -1042,6 +1044,71 @@ test('custom task moves the held item to the off-hand', async () => {
 
   assert.deepEqual(result.failures, [])
   assert.deepEqual(equips, [{ item: heldItem, destination: 'off-hand' }])
+})
+
+test('custom task attacks the entity under the crosshair and a miss swings once', async () => {
+  const target = { id: 23, type: 'mob', name: 'zombie' }
+  const calls = []
+  let cursorTarget = target
+  const bot = {
+    entity: {},
+    entityAtCursor: distance => { calls.push({ type: 'cursor', distance }); return cursorTarget },
+    attack: attacked => calls.push({ type: 'attack', target: attacked }),
+    swingArm: hand => calls.push({ type: 'swing', hand })
+  }
+
+  const result = await executeCustomTask(bot, {
+    name: '挥剑',
+    steps: [{ type: 'command', command: '攻击', args: [] }]
+  })
+  assert.deepEqual(result.failures, [])
+  assert.deepEqual(calls, [{ type: 'cursor', distance: 3.5 }, { type: 'attack', target }])
+
+  cursorTarget = null
+  calls.length = 0
+  assert.deepEqual(await attackAtCursor(bot), { status: 'miss', target: null })
+  assert.deepEqual(calls, [{ type: 'cursor', distance: 3.5 }, { type: 'swing', hand: 'right' }])
+})
+
+test('smart attack command performs one native crosshair attack', async () => {
+  const target = { id: 31, type: 'player', username: 'Target' }
+  const chats = []
+  const attacks = []
+  const swings = []
+  let cursorTarget = target
+  const bot = {
+    username: 'PlatformBot',
+    entity: {},
+    chat: message => chats.push(message),
+    entityAtCursor: distance => { assert.equal(distance, 3.5); return cursorTarget },
+    attack: entity => attacks.push(entity),
+    swingArm: hand => swings.push(hand)
+  }
+  const handler = createSmartCommandHandler(bot, {
+    commandPrefixes: ['PlatformBot'],
+    getMessageOverrides: () => ({ attackSuccess: '/msg {sender} 已攻击准星目标' }),
+    platform: {
+      request: async action => {
+        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
+        if (action === 'task_get') return { task: null }
+        throw new Error(`unexpected action ${action}`)
+      }
+    },
+    scheduleRestart: () => {}
+  })
+
+  await handler({ username: 'White', message: 'PlatformBot攻击 多余参数' })
+  assert.equal(chats.pop(), '正确格式: 攻击')
+  assert.deepEqual(attacks, [])
+
+  await handler({ username: '#White', message: 'PlatformBot攻击' })
+  assert.deepEqual(attacks, [target])
+  assert.equal(chats.pop(), '/msg White 已攻击准星目标')
+
+  cursorTarget = null
+  await handler({ username: 'White', message: 'PlatformBot攻击' })
+  assert.deepEqual(swings, ['right'])
+  assert.equal(chats.pop(), '准星方向没有可攻击目标，已挥动主手。')
 })
 
 test('editing a custom task updates and renames it without overwriting another task', () => {
@@ -1411,7 +1478,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.15')
+  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.16')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })

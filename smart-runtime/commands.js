@@ -59,6 +59,10 @@ const COMMAND_TEXT = Object.freeze({
   rightClickUsage: '正确格式: 右键 玩家名，或 右键 x y z。',
   rightClickSuccess: '右键交互成功。',
   rightClickFailure: '右键交互失败，请确认目标存在且在交互距离内。',
+  attackUsage: '正确格式: 攻击',
+  attackSuccess: '已攻击准星指向的目标。',
+  attackMiss: '准星方向没有可攻击目标，已挥动主手。',
+  attackFailure: '攻击失败，请确认机器人已进入服务器。',
   moveUsage: '正确格式: 移动 x y z [停止距离]，或 移动 玩家名 [停止距离]，或 移动 东|西|南|北 格数 [停止距离]',
   moveSuccess: '已移动到目标附近。',
   moveFailure: '移动失败，请确认目标可达。',
@@ -273,6 +277,19 @@ async function rightClickTarget (bot, args) {
   const block = point && bot.blockAt?.(new Vec3(point.x, point.y, point.z))
   if (!block || block.name === 'air' || typeof bot.activateBlock !== 'function') throw new Error('block missing')
   await bot.activateBlock(block)
+}
+
+async function attackAtCursor (bot, maxDistance = 3.5) {
+  if (!bot.entity || typeof bot.entityAtCursor !== 'function') throw new Error('机器人尚未进入服务器。')
+  const target = bot.entityAtCursor(maxDistance)
+  if (!target) {
+    if (typeof bot.swingArm !== 'function') throw new Error('机器人无法挥动主手。')
+    bot.swingArm('right')
+    return { status: 'miss', target: null }
+  }
+  if (typeof bot.attack !== 'function') throw new Error('机器人无法攻击目标。')
+  await bot.attack(target)
+  return { status: 'attacked', target }
 }
 
 function parseCoordinates (args) {
@@ -495,6 +512,7 @@ async function executeCustomTask (bot, task, options = {}) {
         else if (step.command === '切换') await bot.setQuickBarSlot(Number(args[0]) - 1)
         else if (step.command === '放置') await placePeriodicRightClick(bot, { periodicRightClickX: Number(args[0]), periodicRightClickY: Number(args[1]), periodicRightClickZ: Number(args[2]) })
         else if (step.command === '右键') await rightClickTarget(bot, args)
+        else if (step.command === '攻击') await attackAtCursor(bot)
         else if (step.command === '移动') {
           const plan = resolveMovePlan(bot, args)
           if (!plan) throw new Error('移动命令参数无效。')
@@ -525,7 +543,7 @@ function replaceTaskParameters (value, variables) {
 }
 
 function validateCustomTaskCommand (command, args) {
-  if (['上车', '下车', '清空', '副手'].includes(command) && args.length) throw new Error(`${command} 命令不需要参数。`)
+  if (['上车', '下车', '清空', '副手', '攻击'].includes(command) && args.length) throw new Error(`${command} 命令不需要参数。`)
   if (['拿出', '丢弃'].includes(command) && (args.length !== 1 || !normalizeItemId(args[0]) || /\s/.test(args[0]))) throw new Error(`${command}命令需要一个物品中文名或 id。`)
   if (command === '切换' && (args.length !== 1 || !/^[1-9]$/.test(args[0]))) throw new Error('切换命令参数必须为 1-9。')
   if (command === '放置' && !parseCoordinates(args)) throw new Error('放置命令需要三个有效整数坐标。')
@@ -871,16 +889,6 @@ function createSmartCommandHandler (bot, options = {}) {
 
   if (!platform?.request) throw new Error(COMMAND_TEXT.platformUnavailable)
 
-  const replyText = (message, key, variables = {}) => {
-    const overrides = options.getMessageOverrides?.() || {}
-    let value = Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : message
-    return String(value ?? '').replace(/\{([a-zA-Z][a-zA-Z0-9]*)\}/g, (match, name) => Object.prototype.hasOwnProperty.call(variables, name) ? String(variables[name]) : match)
-  }
-  const reply = (message, key, variables = {}) => {
-    const value = replyText(message, key, variables)
-    if (value !== '') bot.chat(value.slice(0, 256))
-    return value
-  }
   const request = (action, payload) => platform.request(action, payload)
   const notifyNewVersion = async username => {
     const key = String(username || '').toLowerCase()
@@ -904,6 +912,17 @@ function createSmartCommandHandler (bot, options = {}) {
     if (!parsed) return
 
     const username = String(event.username).replace(/^#/, '')
+    const replyText = (message, key, variables = {}) => {
+      const overrides = options.getMessageOverrides?.() || {}
+      const template = Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : message
+      const replyVariables = { ...variables, sender: username }
+      return String(template ?? '').replace(/\{([a-zA-Z][a-zA-Z0-9]*)\}/g, (match, name) => Object.prototype.hasOwnProperty.call(replyVariables, name) ? String(replyVariables[name]) : match)
+    }
+    const reply = (message, key, variables = {}) => {
+      const value = replyText(message, key, variables)
+      if (value !== '') bot.chat(value.slice(0, 256))
+      return value
+    }
     platform.log?.(`命令匹配 · ${username}: ${String(event.message || '').slice(0, 240)}`)
     const access = await request('access', { username })
     if (access.blacklisted) return
@@ -963,7 +982,7 @@ function createSmartCommandHandler (bot, options = {}) {
     if (access.lock.adminLocked && !access.admin && parsed.command !== '状态') return reply(COMMAND_TEXT.locked(access.lock, '超级锁定'), 'locked', { player: access.lock.lockedBy || '未知玩家', label: '超级锁定', reason: access.lock.reason || '无' })
     if (!access.whitelisted) return
 
-    const overridableTaskCommands = new Set(['上车', '下车', '开宝库', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '移动', '注视'])
+    const overridableTaskCommands = new Set(['上车', '下车', '开宝库', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '攻击', '移动', '注视'])
     if (overridableTaskCommands.has(parsed.command)) {
       const customTask = await request('task_get', { name: parsed.command })
       if (customTask?.task) {
@@ -1139,6 +1158,17 @@ function createSmartCommandHandler (bot, options = {}) {
       return
     }
 
+    if (parsed.command === '攻击') {
+      if (parsed.args.length) return reply(COMMAND_TEXT.attackUsage, 'attackUsage')
+      try {
+        const result = await runBotAction(() => attackAtCursor(bot))
+        reply(result.status === 'attacked' ? COMMAND_TEXT.attackSuccess : COMMAND_TEXT.attackMiss, result.status === 'attacked' ? 'attackSuccess' : 'attackMiss')
+      } catch {
+        reply(COMMAND_TEXT.attackFailure, 'attackFailure')
+      }
+      return
+    }
+
     if (parsed.command === '定时任务') {
       if (parsed.args.length === 2 && parsed.args[1] === '关') {
         const result = await request('task_schedule_set', { username, name: parsed.args[0], intervalTicks: null })
@@ -1285,6 +1315,22 @@ function createTeleportRequestHandler (bot, options = {}) {
   }
 }
 
+function createPeekRequestHandler (bot, options = {}) {
+  const platform = options.platform || global.botPlatform
+  const runBotAction = options.runBotAction || (task => task())
+
+  if (!platform?.request) throw new Error(COMMAND_TEXT.platformUnavailable)
+
+  return async event => {
+    const username = String(event?.username || '').replace(/^#/, '')
+    if (!/^[A-Za-z0-9_]{3,16}$/.test(username) || username.toLowerCase() === String(bot.username || '').toLowerCase()) return
+
+    const access = await platform.request('access', { username })
+    if (access.blacklisted || !access.whitelisted) return
+    await runBotAction(() => bot.chat('/peek accept'))
+  }
+}
+
 function installSmartCommands (bot, options = {}) {
   const platform = options.platform || global.botPlatform
   const runBotAction = options.runBotAction || createBotActionQueue()
@@ -1318,6 +1364,7 @@ function installSmartCommands (bot, options = {}) {
     getMessageOverrides: () => messageOverrides
   })
   const handleTeleportRequest = createTeleportRequestHandler(bot, { ...options, platform, runBotAction })
+  const handlePeekRequest = createPeekRequestHandler(bot, { ...options, platform, runBotAction })
   const playerQueues = new Map()
   const listener = event => {
     const key = String(event?.username || '').toLowerCase()
@@ -1333,6 +1380,10 @@ function installSmartCommands (bot, options = {}) {
     handleTeleportRequest(event).catch(error => console.error('[smart-teleport]', error?.stack || error))
   }
   bot.on('botPlatformTeleportRequest', teleportListener)
+  const peekListener = event => {
+    handlePeekRequest(event).catch(error => console.error('[smart-peek]', error?.stack || error))
+  }
+  bot.on('botPlatformPeekRequest', peekListener)
   const startup = platform.request('volatile_schedules_reset', {}).catch(error => {
     console.error('[smart-volatile-schedules-reset]', error?.stack || error)
   })
@@ -1369,6 +1420,7 @@ function installSmartCommands (bot, options = {}) {
   return () => {
     bot.removeListener('botPlatformMessage', listener)
     bot.removeListener('botPlatformTeleportRequest', teleportListener)
+    bot.removeListener('botPlatformPeekRequest', peekListener)
     process.removeListener('message', settingsListener)
     ominousScheduler.stop()
     periodicRightClickScheduler.stop()
@@ -1379,12 +1431,14 @@ function installSmartCommands (bot, options = {}) {
 module.exports = {
   COMMAND_TEXT,
   activateNearestVault,
+  attackAtCursor,
   clearInventory,
   clearStaleVehicleReference,
   createBotActionQueue,
   createOminousBottleScheduler,
   createPeriodicRightClickScheduler,
   createPlayerMapClient,
+  createPeekRequestHandler,
   createSmartCommandHandler,
   createTeleportRequestHandler,
   discardInventoryItems,

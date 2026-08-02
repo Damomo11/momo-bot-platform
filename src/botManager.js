@@ -42,12 +42,9 @@ class BotManager {
       .replace(/([?&](?:access_token|refresh_token|code)=)[^&\s]+/gi, '$1[redacted]')
       .trim()
     for (const line of text.split(/\r?\n/).filter(Boolean).slice(0, 20)) {
-      // Older running smart-runtime copies may still print every server chat line.
-      // Those messages are unrelated noise; matched commands are reported through IPC instead.
-      if (String(level || '').toLowerCase() === 'stdout' && /^\[message:[^\]]+\]/i.test(line)) continue
       entries.push({ at: Date.now(), level: String(level || 'info'), message: line.slice(0, 2000) })
     }
-    if (entries.length > 50) entries.splice(0, entries.length - 50)
+    if (entries.length > 100) entries.splice(0, entries.length - 100)
     this.logs.set(botId, entries)
   }
 
@@ -377,6 +374,9 @@ class BotManager {
     if (message?.type === 'log') {
       this.appendLog(id, 'runtime', message.message)
       console.log(`[template:${id}] ${message.message}`)
+    }
+    if (message?.type === 'server_message') {
+      this.appendLog(id, 'server', message.message)
     }
   }
 

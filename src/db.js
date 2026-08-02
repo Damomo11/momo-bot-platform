@@ -987,7 +987,7 @@ class PlatformDb {
 
   setSmartUserMessages (userId, overrides = {}) {
     if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) throw new Error('自定义消息格式无效。')
-    const allowed = new Set(['permissionUsage', 'permissionResult', 'openBoxUsage', 'openBoxSuccess', 'openBoxFailure', 'nearUsage', 'nearSuccess', 'nearEmpty', 'nearFailure', 'mountAlready', 'mountMissing', 'mountSuccess', 'mountFailure', 'dismountMissing', 'dismountSuccess', 'dismountFailure', 'vaultSuccess', 'vaultMissing', 'vaultFailure', 'clearEmpty', 'clearSuccess', 'clearFailure', 'takeUsage', 'takeSuccess', 'takeMissing', 'offhandUsage', 'offhandSuccess', 'offhandEmpty', 'offhandFailure', 'dropUsage', 'dropSuccess', 'dropMissing', 'dropFailure', 'switchUsage', 'switchSuccess', 'ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff', 'periodicRightClickUsage', 'periodicRightClickEnabled', 'periodicRightClickDisabled', 'periodicRightClickStatusOff', 'periodicRightClickStatusOn', 'rightClickUsage', 'rightClickSuccess', 'rightClickFailure', 'moveUsage', 'moveSuccess', 'moveFailure', 'lookUsage', 'lookSuccess', 'lookFailure', 'placeUsage', 'placeSuccess', 'placeFailure', 'taskUsage', 'taskScheduled', 'taskStopped', 'scheduleStatus', 'locked', 'lockUsage', 'alreadyLocked', 'lockSuccess', 'notLocked', 'adminUnlockRequired', 'unlockSuccess', 'forwardUsage', 'forwardInvalid', 'forwardNested', 'forwardDangerous', 'forwardHome', 'restartLocked', 'restarting', 'permissionAdded', 'permissionExists', 'permissionRemoved', 'permissionMissing', 'temporaryUsage', 'temporaryAdded', 'adminLockUsage', 'alreadyAdminLocked', 'adminLockSuccess', 'notAdminLocked', 'adminUnlockSuccess'])
+    const allowed = new Set(['permissionUsage', 'permissionResult', 'openBoxUsage', 'openBoxSuccess', 'openBoxFailure', 'nearUsage', 'nearSuccess', 'nearEmpty', 'nearFailure', 'mountAlready', 'mountMissing', 'mountSuccess', 'mountFailure', 'dismountMissing', 'dismountSuccess', 'dismountFailure', 'vaultSuccess', 'vaultMissing', 'vaultFailure', 'clearEmpty', 'clearSuccess', 'clearFailure', 'takeUsage', 'takeSuccess', 'takeMissing', 'offhandUsage', 'offhandSuccess', 'offhandEmpty', 'offhandFailure', 'dropUsage', 'dropSuccess', 'dropMissing', 'dropFailure', 'switchUsage', 'switchSuccess', 'ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff', 'periodicRightClickUsage', 'periodicRightClickEnabled', 'periodicRightClickDisabled', 'periodicRightClickStatusOff', 'periodicRightClickStatusOn', 'rightClickUsage', 'rightClickSuccess', 'rightClickFailure', 'attackUsage', 'attackSuccess', 'attackMiss', 'attackFailure', 'moveUsage', 'moveSuccess', 'moveFailure', 'lookUsage', 'lookSuccess', 'lookFailure', 'placeUsage', 'placeSuccess', 'placeFailure', 'taskUsage', 'taskScheduled', 'taskStopped', 'scheduleStatus', 'locked', 'lockUsage', 'alreadyLocked', 'lockSuccess', 'notLocked', 'adminUnlockRequired', 'unlockSuccess', 'forwardUsage', 'forwardInvalid', 'forwardNested', 'forwardDangerous', 'forwardHome', 'restartLocked', 'restarting', 'permissionAdded', 'permissionExists', 'permissionRemoved', 'permissionMissing', 'temporaryUsage', 'temporaryAdded', 'adminLockUsage', 'alreadyAdminLocked', 'adminLockSuccess', 'notAdminLocked', 'adminUnlockSuccess'])
     const normalized = {}
     for (const [key, value] of Object.entries(overrides)) {
       if (!allowed.has(key)) throw new Error(`不支持的消息项: ${key}`)
@@ -1057,7 +1057,7 @@ class PlatformDb {
     if (parameters.some(value => !/^[\p{L}_][\p{L}\p{N}_]{0,15}$/u.test(value))) throw new Error('参数名必须为 1-16 个字母、数字或下划线，且不能以数字开头。')
     if (new Set(parameters).size !== parameters.length) throw new Error('任务参数名不能重复。')
     if (!Array.isArray(steps) || !steps.length || steps.length > 100) throw new Error('任务必须包含 1-100 个步骤。')
-    const allowedCommands = new Set(['上车', '下车', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '移动', '注视', '指令'])
+    const allowedCommands = new Set(['上车', '下车', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '攻击', '移动', '注视', '指令'])
     const normalizedSteps = steps.map((step, index) => {
       if (!step || typeof step !== 'object') throw new Error(`第 ${index + 1} 步无效。`)
       if (step.type === 'wait') {
@@ -1077,7 +1077,7 @@ class PlatformDb {
       const isStopDistanceOrTemplate = value => value == null || /^(\d+|\d+\.\d+|\.\d+)$/.test(value) || hasTemplate(value)
       const isNameOrTemplate = value => String(value || '').length <= 64 || hasTemplate(value)
       if (!allowedCommands.has(command)) throw new Error(`第 ${index + 1} 步不是可用的平台命令。`)
-      if (['上车', '下车', '清空', '副手'].includes(command) && args.length) throw new Error(`${command} 命令不需要参数。`)
+      if (['上车', '下车', '清空', '副手', '攻击'].includes(command) && args.length) throw new Error(`${command} 命令不需要参数。`)
       if (['拿出', '丢弃'].includes(command) && (args.length !== 1 || (!/^[\p{L}\p{N}_.:/-]+$/u.test(args[0]) && !hasTemplate(args[0])))) throw new Error(`${command}命令需要一个物品中文名、id 或参数占位符。`)
       if (command === '切换' && (args.length !== 1 || (!/^[1-9]$/.test(args[0]) && !hasTemplate(args[0])))) throw new Error('切换命令参数必须为 1-9 或参数占位符。')
       if (command === '放置' && (args.length !== 3 || !args.every(isIntegerOrTemplate))) throw new Error('放置命令需要三个整数坐标或参数占位符。')

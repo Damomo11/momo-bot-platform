@@ -24,7 +24,9 @@ function normalizeServerChatText (message) {
 function installZenoxChatParser (bot) {
   const seen = new Map()
   const teleportSeen = new Map()
+  const peekSeen = new Map()
   const teleportRequestPattern = /^\[TSL\]\s*([A-Za-z0-9_]{3,16})\s*\u8bf7\u6c42(?:(\u4f60\u4f20\u9001\u5230\u4ed6\u7684\u4f4d\u7f6e)|(\u4f20\u9001\u5230\u4f60\u7684\u4f4d\u7f6e))\u3002?\s*\(60\s*\u79d2\u5185\u6709\u6548\)\s*\[\u63a5\u53d7\]\s*\[\u62d2\u7edd\]\s*$/
+  const peekRequestPattern = /^✨\s*([A-Za-z0-9_]{3,16})\s+想要和你贴贴，输入\s*\/peek accept\s*接受，或\s*\/peek deny\s*拒绝\s*$/
   const isSelf = username => String(username || '').toLowerCase() === String(bot.username || '').toLowerCase()
   const usernameFromUuid = uuid => {
     const normalized = String(uuid || '').toLowerCase()
@@ -97,9 +99,21 @@ function installZenoxChatParser (bot) {
     bot.emit('botPlatformTeleportRequest', { username: match[1], kind, source })
     return true
   }
+  const emitPeekRequest = (message, source) => {
+    const match = String(message || '').trim().match(peekRequestPattern)
+    if (!match || isSelf(match[1])) return false
+    const key = match[1].toLowerCase()
+    const now = Date.now()
+    if (now - (peekSeen.get(key) || 0) < 1500) return true
+    peekSeen.set(key, now)
+    for (const [entry, time] of peekSeen) if (now - time > 10000) peekSeen.delete(entry)
+    bot.emit('botPlatformPeekRequest', { username: match[1], source })
+    return true
+  }
   bot.on('chat', (username, message) => emit(username, message, 'public', 'chat'))
   bot.on('whisper', (username, message) => emit(username, message, 'private', 'whisper'))
   bot.on('messagestr', (message, position, originalMessage, sender) => {
+    if (emitPeekRequest(message, 'messagestr')) return
     if (emitTeleportRequest(message, 'messagestr')) return
     const privateMessage = parsePrivate(message)
     if (privateMessage) return emit(privateMessage.username, privateMessage.message, 'private', 'messagestr')
@@ -110,6 +124,7 @@ function installZenoxChatParser (bot) {
   bot._client?.on('system_chat', packet => {
     if (packet.isActionBar) return
     const text = componentToText(packet.content)
+    if (emitPeekRequest(text, 'system_chat')) return
     if (emitTeleportRequest(text, 'system_chat')) return
     const privateMessage = parsePrivate(text)
     if (privateMessage) return emit(privateMessage.username, privateMessage.message, 'private', 'system_chat')

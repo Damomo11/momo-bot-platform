@@ -227,6 +227,10 @@ Module._load = function (request, parent, isMain) {
 
     installResourcePackHandling(bot)
     installZenoxChatParser(bot)
+    bot.on('messagestr', message => {
+      const text = String(message || '').trim()
+      if (text) send('server_message', { message: text.slice(0, 2000) })
+    })
     const moduleHost = createModuleHost(bot)
     let initialModules = []
     try { initialModules = JSON.parse(process.env.BOT_PLATFORM_MODULES || '[]') } catch {}

@@ -111,6 +111,7 @@
             <div class="command-row"><code>定时灾厄之瓶 开|关</code><span>开启时立即饮用一瓶，成功后每 31 分钟执行；不带参数可查状态</span></div>
             <div class="command-row"><code>右键 玩家名</code><span>右键交互指定实体玩家</span></div>
             <div class="command-row"><code>右键 x y z</code><span>与指定坐标的方块交互</span></div>
+            <div class="command-row"><code>攻击</code><span>朝准星方向攻击一次；剑的横扫伤害由服务器按原版条件判定</span></div>
             <div class="command-row"><code>放置 x y z</code><span>把主手方块放到指定坐标</span></div>
             <div class="command-row"><code>移动 x y z [距离]</code><span>向指定坐标移动，默认距离目标 0.3 格时停止</span></div>
             <div class="command-row"><code>移动 玩家名</code><span>走到可见玩家附近；找不到玩家时失败</span></div>
@@ -157,6 +158,7 @@
 
       <section id="messagesView" class="view hidden">
         <div class="toolbar"><div><h1>消息文本</h1><p>设置作用于你账号下的全部智能 Bot；输入框留空时不发送该消息</p></div><button id="refreshMessages">刷新</button></div>
+        <div class="help-note"><div class="help-rule"><strong>消息发起人</strong><span>所有消息都可使用 <code>{sender}</code>，例如 <code>/msg {sender} 操作完成</code> 会私信回复本次命令的发起玩家。</span></div></div>
         <section class="panel create-panel compact-editor"><div id="messageFields" class="message-field-list"></div><p id="messageError" class="error" role="alert"></p><div class="panel-actions"><button id="resetMessages" type="button">恢复默认值</button><button id="saveMessages" class="solid">保存并热更新</button></div></section>
       </section>
 
