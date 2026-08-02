@@ -83,9 +83,10 @@
       </section>
 
       <section id="helpView" class="view hidden">
-        <div class="toolbar"><div><h1>智能 Bot 命令</h1><p>每条命令前都要加自定义前缀或 Bot 游戏名</p></div></div>
+        <div class="toolbar"><div><h1>智能 Bot 命令</h1><p>公开聊天使用前缀，私聊 Bot 可直接发送命令</p></div></div>
+        <div class="help-note"><div class="help-rule"><strong>私聊免前缀</strong><span>私聊 Bot 时无需添加命令前缀，例如 <code>/msg Bot名字 指令 1</code>；公开聊天仍需使用自定义前缀或 Bot 游戏名。</span></div><div class="help-rule"><strong>自动接受请求</strong><span>白名单玩家的 /tpa 会随时接受；超级锁定时只有超管的 /tpa 会接受。/tpahere 在普通锁定或超级锁定期间不接受。/peek 不受任何锁定影响。</span></div></div>
         <div class="help-note"><div class="help-rule"><strong>重启提示</strong><span>除“定时灾厄之瓶”外，自定义任务的定时状态都会在 Bot 程序重启后丢失，需要重新开启。</span></div></div>
-        <div class="help-note"><div class="help-rule"><strong>使用规则</strong><span>命令前加自己设置的前缀，或直接使用 Bot 游戏名。</span></div><div class="help-examples"><code>@near Steve</code><code>==上车</code><code>NanKinz2查白 Alex</code></div></div>
+        <div class="help-note"><div class="help-rule"><strong>公开聊天</strong><span>公开发送命令时需加自己设置的前缀，或直接使用 Bot 游戏名。</span></div><div class="help-examples"><code>@near Steve</code><code>==上车</code><code>NanKinz2查白 Alex</code></div></div>
 
         <section class="command-group command-public">
           <div class="command-group-head"><div><span>普通用户</span><h2>查询命令</h2></div><p>除黑名单玩家外均可使用</p></div>
@@ -111,6 +112,7 @@
             <div class="command-row"><code>定时灾厄之瓶 开|关</code><span>开启时立即饮用一瓶，成功后每 31 分钟执行；不带参数可查状态</span></div>
             <div class="command-row"><code>右键 玩家名</code><span>右键交互指定实体玩家</span></div>
             <div class="command-row"><code>右键 x y z</code><span>与指定坐标的方块交互</span></div>
+            <div class="command-row"><code>攻击</code><span>朝准星方向攻击一次；剑的横扫伤害由服务器按原版条件判定</span></div>
             <div class="command-row"><code>放置 x y z</code><span>把主手方块放到指定坐标</span></div>
             <div class="command-row"><code>移动 x y z [距离]</code><span>向指定坐标移动，默认距离目标 0.3 格时停止</span></div>
             <div class="command-row"><code>移动 玩家名</code><span>走到可见玩家附近；找不到玩家时失败</span></div>
@@ -128,6 +130,8 @@
         <section class="command-group command-admin">
           <div class="command-group-head"><div><span>超管用户</span><h2>权限与维护</h2></div><p>同时拥有普通用户和白名单用户的全部命令</p></div>
           <div class="command-list">
+            <div class="command-row"><code>余额</code><span>查看 Bot 所有者当前拥有的 momoc</span></div>
+            <div class="command-row"><code>充值 金额</code><span>向管理员配置的收款玩家支付同额 C；服务器确认后按 1:1 增加所有者 momoc</span></div>
             <div class="command-row"><code>加白|去白 玩家名</code><span>添加或移除永久白名单</span></div>
             <div class="command-row"><code>加黑|去黑 玩家名</code><span>添加或移除永久黑名单</span></div>
             <div class="command-row"><code>临时加白 玩家名 分钟</code><span>添加限时白名单</span></div>
@@ -157,6 +161,7 @@
 
       <section id="messagesView" class="view hidden">
         <div class="toolbar"><div><h1>消息文本</h1><p>设置作用于你账号下的全部智能 Bot；输入框留空时不发送该消息</p></div><button id="refreshMessages">刷新</button></div>
+        <div class="help-note"><div class="help-rule"><strong>消息发起人</strong><span>所有消息都可使用 <code>{sender}</code>，例如 <code>/msg {sender} 操作完成</code> 会私信回复本次命令的发起玩家。</span></div></div>
         <section class="panel create-panel compact-editor"><div id="messageFields" class="message-field-list"></div><p id="messageError" class="error" role="alert"></p><div class="panel-actions"><button id="resetMessages" type="button">恢复默认值</button><button id="saveMessages" class="solid">保存并热更新</button></div></section>
       </section>
 
@@ -264,7 +269,7 @@
         </div>
       </section>
 
-      <section id="codeView" class="view hidden"><div class="toolbar"><div><h1>Bot 代码</h1><p>智能 Bot 与签到 Bot 两套固定代码</p></div><button id="refreshPlatformFiles">刷新</button></div><section class="panel create-panel"><div class="section-head"><h2>平台设置</h2></div><div class="form-grid"><label>智能 Bot（momoc / 1h）<input id="smartHourlyPrice" type="number" min="0" step="0.000001"></label><label>签到 Bot（momoc / 次）<input id="signinOncePrice" type="number" min="0" step="0.000001"></label><label>新用户初始金（momoc）<input id="newUserInitialMomoc" type="number" min="0" step="0.000001"></label><label>智能 Bot 最大同时运行数（0 = 不限制）<input id="maxRunningBots" type="number" min="0" max="100000" step="1"></label><label class="variable-check"><input id="botCreationEnabled" type="checkbox"> 允许创建新 Bot</label><label class="variable-check"><input id="registrationEnabled" type="checkbox"> 允许本地用户名密码注册</label></div><p class="muted">初始金仅在用户首次创建时发放，不影响已有用户。保存平台代码不会重启或断开当前挂机 Bot；新代码从下一次启动的 Bot 起生效。</p><div class="panel-actions"><button id="saveModePrices" class="primary">保存设置</button></div></section><div class="template-workspace panel"><div id="platformFileList" class="file-tree"></div><div class="code-editor"><div class="editor-head"><code id="platformFilePath">选择文件</code><button id="savePlatformFile" class="solid" disabled>保存文件</button></div><textarea id="platformFileContent" spellcheck="false" disabled></textarea></div></div></section>
+      <section id="codeView" class="view hidden"><div class="toolbar"><div><h1>Bot 代码</h1><p>智能 Bot 与签到 Bot 两套固定代码</p></div><button id="refreshPlatformFiles">刷新</button></div><section class="panel create-panel"><div class="section-head"><h2>平台设置</h2></div><div class="form-grid"><label>智能 Bot（momoc / 1h）<input id="smartHourlyPrice" type="number" min="0" step="0.000001"></label><label>签到 Bot（momoc / 次）<input id="signinOncePrice" type="number" min="0" step="0.000001"></label><label>新用户初始金（momoc）<input id="newUserInitialMomoc" type="number" min="0" step="0.000001"></label><label>充值收款玩家<input id="topUpRecipient" maxlength="16" autocomplete="off"></label><label>充值转账命令模板<input id="topUpCommandTemplate" maxlength="256" autocomplete="off"></label><label>智能 Bot 最大同时运行数（0 = 不限制）<input id="maxRunningBots" type="number" min="0" max="100000" step="1"></label><label class="variable-check"><input id="botCreationEnabled" type="checkbox"> 允许创建新 Bot</label><label class="variable-check"><input id="registrationEnabled" type="checkbox"> 允许本地用户名密码注册</label></div><p class="muted">充值命令模板必须包含 {recipient} 和 {amount}，保存后会热更新运行中的智能 Bot。初始金仅在用户首次创建时发放，不影响已有用户。</p><div class="panel-actions"><button id="saveModePrices" class="primary">保存设置</button></div></section><div class="template-workspace panel"><div id="platformFileList" class="file-tree"></div><div class="code-editor"><div class="editor-head"><code id="platformFilePath">选择文件</code><button id="savePlatformFile" class="solid" disabled>保存文件</button></div><textarea id="platformFileContent" spellcheck="false" disabled></textarea></div></div></section>
     </main>
   </div>
 
