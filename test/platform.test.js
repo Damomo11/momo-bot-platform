@@ -1023,6 +1023,45 @@ test('custom task parameters are validated, persisted, and saved with scheduled 
   }
 })
 
+test('Bot owners can save forwarded commands in custom tasks', () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('forward_task_owner', 'password-123')
+    const bot = f.db.createBot(user.id, { mode: 'smart', label: 'Smart', microsoftEmail: 'forward-task@example.com', serverHost: 'localhost' })
+    const saved = f.db.setSmartBotTask(bot.id, {
+      name: '转发指令',
+      parameters: ['命令'],
+      steps: [
+        { type: 'command', command: '指令', args: ['/msg', 'Target', 'hello'] },
+        { type: 'wait', ticks: 1 },
+        { type: 'command', command: '指令', args: ['/pay', 'Target', '1'] },
+        { type: 'wait', ticks: 1 },
+        { type: 'command', command: '指令', args: ['/gmp'] },
+        { type: 'wait', ticks: 1 },
+        { type: 'command', command: '指令', args: ['/sethome', 'base'] },
+        { type: 'wait', ticks: 1 },
+        { type: 'command', command: '指令', args: ['{命令}', 'Target', '1'] }
+      ]
+    })
+
+    assert.deepEqual(saved.steps.filter(step => step.type === 'command').map(step => step.args[0]), ['/msg', '/pay', '/gmp', '/sethome', '{命令}'])
+    assert.throws(() => f.db.setSmartBotTask(bot.id, {
+      name: '空指令',
+      steps: [{ type: 'command', command: '指令', args: [] }]
+    }), /指令内容无效/)
+    assert.throws(() => f.db.setSmartBotTask(bot.id, {
+      name: '超长指令',
+      steps: [{ type: 'command', command: '指令', args: ['x'.repeat(257)] }]
+    }), /指令内容无效/)
+    assert.throws(() => f.db.setSmartBotTask(bot.id, {
+      name: '换行指令',
+      steps: [{ type: 'command', command: '指令', args: ['say hello\n/pay Target 1'] }]
+    }), /指令内容无效/)
+  } finally {
+    f.close()
+  }
+})
+
 test('custom task accepts all commands exposed by the task editor', () => {
   const f = fixture()
   try {
@@ -1229,15 +1268,31 @@ test('custom task parameters interpolate inside every command argument', async (
   assert.equal(chats.pop(), 'say 大家好 欢迎回来')
 })
 
-test('custom task parameters cannot bypass blocked forwarded commands', async () => {
+test('custom tasks execute owner-authored forwarded commands after parameter interpolation', async () => {
   const chats = []
-  const result = await executeCustomTask({ chat: message => chats.push(message) }, {
-    name: '动态指令',
-    parameters: ['命令'],
-    steps: [{ type: 'command', command: '指令', args: ['{命令}', 'Target', '1'] }]
-  }, { args: ['pay'], logger: { warn: () => {} } })
-  assert.equal(result.failures.length, 1)
-  assert.deepEqual(chats, [])
+  const bot = { chat: message => chats.push(message) }
+  const commands = ['pay', 'msg', 'gmp', 'home', 'sethome']
+
+  for (const command of commands) {
+    const result = await executeCustomTask(bot, {
+      name: '动态指令',
+      parameters: ['命令'],
+      steps: [{ type: 'command', command: '指令', args: ['/{命令}', 'Target', '1'] }]
+    }, { args: [command] })
+    assert.deepEqual(result.failures, [])
+  }
+
+  assert.deepEqual(chats, commands.map(command => `/${command} Target 1`))
+
+  for (const args of [[], ['x'.repeat(257)], ['say hello\n/pay Target 1']]) {
+    const result = await executeCustomTask(bot, {
+      name: '无效指令',
+      steps: [{ type: 'command', command: '指令', args }]
+    }, { logger: { warn: () => {} } })
+    assert.equal(result.failures.length, 1)
+  }
+
+  assert.equal(chats.length, commands.length)
 })
 
 test('custom task continues with later commands after one command fails', async () => {
@@ -1501,7 +1556,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.16')
+  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.18')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })

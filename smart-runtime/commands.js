@@ -563,8 +563,7 @@ function validateCustomTaskCommand (command, args) {
   if (command === '注视' && (args.length !== 1 || !args[0].length)) throw new Error('注视命令需要一个玩家名。')
   if (command === '指令') {
     const text = args.join(' ')
-    const root = text.split(/\s+/, 1)[0].replace(/^\//, '').toLowerCase()
-    if (!text || text.length > 256 || /[\r\n]/.test(text) || ['gmp', 'pay', 'msg'].includes(root) || root.includes('home')) throw new Error('指令内容无效或属于禁用命令。')
+    if (!text || text.length > 256 || /[\r\n]/.test(text)) throw new Error('指令内容无效。')
   }
 }
 
