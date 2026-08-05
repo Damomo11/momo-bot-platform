@@ -136,6 +136,7 @@ function statusLabel (value) {
     logging_in: '服务器登录中',
     resource_pack: '处理服务器资源包',
     protocol_fallback: '固定版本重连',
+    circuit_open: '服务器连接熔断',
     completed: '执行成功',
     online: '在线',
     reconnecting: '等待自动重连',

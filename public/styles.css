@@ -192,7 +192,7 @@ td { font-size: 14px; }
 td strong { color: #fff; }
 .status { display: inline-flex; align-items: center; min-height: 26px; border: 1px solid var(--line-strong); border-radius: 5px; padding: 2px 8px; font-size: 12px; }
 .status.online { color: #7dde88; border-color: #38773f; }
-.status.auth_required, .status.resource_pack, .status.protocol_fallback { color: var(--gold); border-color: #71582e; }
+.status.auth_required, .status.resource_pack, .status.protocol_fallback, .status.circuit_open { color: var(--gold); border-color: #71582e; }
 .status.authorized { color: #7dde88; border-color: #38773f; }
 .status.error { color: #ff9b9b; border-color: #743d3d; }
 .oauth { margin-top: 4px; border: 1px solid #4a3921; border-radius: 6px; background: #201a12; padding: 8px; }
