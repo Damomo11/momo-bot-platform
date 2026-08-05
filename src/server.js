@@ -566,7 +566,7 @@ async function api (req, res, url) {
     if (Object.prototype.hasOwnProperty.call(input, 'registrationEnabled')) db.setRegistrationEnabled(Boolean(input.registrationEnabled))
     if (Object.prototype.hasOwnProperty.call(input, 'newUserInitialMomoc')) db.setNewUserInitialMomoc(input.newUserInitialMomoc)
     const topUp = db.setSmartTopUpSettings({ recipient: input.recipient, commandTemplate: input.commandTemplate })
-    bots.syncSmartTopUpSettings()
+    await bots.syncSmartTopUpSettings()
     const runtime = db.setRuntimeSettings(input)
     return json(res, 200, { ok: true, ...prices, ...runtime, ...topUp, registrationEnabled: db.getRegistrationEnabled(), newUserInitialMomoc: db.getNewUserInitialMomoc() })
   }

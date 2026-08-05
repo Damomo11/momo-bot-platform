@@ -5,6 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 const PlatformDb = require('../src/db')
 const BotManager = require('../src/botManager')
+const BotSupervisorClient = require('../src/botSupervisorClient')
 const AccountManager = require('../src/accountManager')
 const { environmentForValues, normalizeDefinitions, validateValues } = require('../src/templateVariables')
 const { EventEmitter } = require('node:events')
@@ -63,6 +64,31 @@ test('supervisor hot reload preserves live state and adds new manager fields', (
   assert.deepEqual([...manager.processes.keys()], ['bot-1'])
   assert.deepEqual([...manager.newState], ['default'])
   assert.equal(manager.newMethod(), 'new')
+})
+
+test('smart top-up settings sync crosses the supervisor boundary and updates running smart bots', async () => {
+  const client = Object.create(BotSupervisorClient.prototype)
+  let command
+  client.command = async (action, payload) => {
+    command = { action, payload }
+    return true
+  }
+  await client.syncSmartTopUpSettings()
+  assert.deepEqual(command, { action: 'sync_smart_settings', payload: { id: '__all_top_up_settings__' } })
+
+  const settings = { recipient: 'Receiver', commandTemplate: '/pay {recipient} {amount}' }
+  const messages = []
+  const manager = new BotManager({
+    getSmartTopUpSettings: () => settings,
+    getBot: id => ({ id, mode: id === 'smart' ? 'smart' : 'signin' })
+  }, {})
+  manager.pendingTopUps.set('smart', { amount: '1.00' })
+  manager.processes.set('smart', { child: { send: message => messages.push(message) } })
+  manager.processes.set('signin', { child: { send: message => messages.push(message) } })
+
+  assert.equal(manager.syncSmartSettings('__all_top_up_settings__'), settings)
+  assert.equal(manager.pendingTopUps.size, 0)
+  assert.deepEqual(messages, [{ type: 'smart_top_up_settings', settings }])
 })
 
 test('bot list reports the running runtime version and a newer available version', () => {

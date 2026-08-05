@@ -151,6 +151,7 @@ class BotSupervisorClient {
   remove (id, actorUserId = null) { return this.command('remove', { id, actorUserId }) }
   setSchedule (id, enabled, expression, actorUserId = null) { return this.command('set_schedule', { id, enabled, expression, actorUserId }) }
   syncSmartSettings (id) { return this.command('sync_smart_settings', { id }) }
+  syncSmartTopUpSettings () { return this.command('sync_smart_settings', { id: '__all_top_up_settings__' }) }
   syncSmartAutomation (id) { return this.command('sync_smart_automation', { id }) }
   syncModules (id) { return this.command('sync_modules', { id }) }
 }

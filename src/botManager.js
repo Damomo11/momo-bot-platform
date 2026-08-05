@@ -264,6 +264,7 @@ class BotManager {
   }
 
   syncSmartSettings (botId) {
+    if (botId === '__all_top_up_settings__') return this.syncSmartTopUpSettings()
     const settings = this.db.getSmartBotSettings(botId)
     const state = this.processes.get(botId)
     if (state) {
