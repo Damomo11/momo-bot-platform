@@ -7,6 +7,8 @@ class AccountManager {
     this.db = db
     this.config = config
     this.authorizing = new Map()
+    this.authorizationStartedAt = new Map()
+    this.authorizationCooldownMs = Number(config.accountAuthorizationCooldownMs ?? 30000)
   }
 
   cacheFolder (id) {
@@ -32,8 +34,15 @@ class AccountManager {
     if (actorUserId && account.userId !== actorUserId) throw new Error('无权操作这个微软账号。')
     if (this.authorizing.has(id)) return account
     if (account.authState === 'authorized' && !force) return account
+    const remainingMs = this.authorizationCooldownMs - (Date.now() - Number(this.authorizationStartedAt.get(id) || 0))
+    if (remainingMs > 0) {
+      const error = new Error(`授权请求过于频繁，请 ${Math.ceil(remainingMs / 1000)} 秒后重试。`)
+      error.status = 429
+      throw error
+    }
 
     const authorization = { cancelled: false }
+    this.authorizationStartedAt.set(id, Date.now())
     const promise = this.runAuthorization(account, force, authorization).finally(() => {
       if (this.authorizing.get(id) === authorization) this.authorizing.delete(id)
       if (authorization.cancelled) {
@@ -96,6 +105,7 @@ class AccountManager {
     this.db.deleteMicrosoftAccount(id)
     const authorization = this.authorizing.get(id)
     if (authorization) authorization.cancelled = true
+    this.authorizationStartedAt.delete(id)
     this.removeCacheFolder(id)
     return true
   }

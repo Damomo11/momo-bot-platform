@@ -9,6 +9,8 @@ const state = {
   baseHourlyPrice: 0,
   botSettings: { commandPrefix: '!', whitelist: [] },
   accounts: [],
+  accountAuthorizationPending: new Set(),
+  accountCreationPending: false,
   bots: [],
   managedBots: [],
   editingBotId: '',
@@ -353,24 +355,40 @@ function accountStatusLabel (value) {
   return { pending: '未授权', authorizing: '检查授权', auth_required: '等待 OAuth', authorized: '已授权', error: '授权失败' }[value] || value
 }
 
+function accountAuthorizationActive (account) {
+  return state.accountAuthorizationPending.has(account.id) || account.authState === 'authorizing' || (account.authState === 'auth_required' && Boolean(account.oauth))
+}
+
 async function loadAccounts () {
   await loadAccountsData()
   $('accountSummary').textContent = `${state.accounts.length} 个账号 · ${state.accounts.filter(row => row.authState === 'authorized').length} 个已授权`
-  $('accountsTable').innerHTML = state.accounts.length
+      $('accountsTable').innerHTML = state.accounts.length
     ? '<table><thead><tr><th>Microsoft 账号</th><th>Minecraft</th><th>状态</th><th>OAuth2</th><th>机器人</th><th>操作</th></tr></thead><tbody>' + state.accounts.map(account => {
         const oauth = account.oauth
           ? `<div class="oauth"><a href="${esc(account.oauth.verificationUri)}" target="_blank" rel="noreferrer">打开 Microsoft 登录</a><br><code>${esc(account.oauth.userCode)}</code></div>`
           : '-'
-        return `<tr><td><strong>${esc(account.email)}</strong></td><td>${esc(account.minecraftName || '-')}</td><td><span class="status ${esc(account.authState)}">${esc(accountStatusLabel(account.authState))}</span><div class="muted">${esc(account.lastError || '')}</div></td><td>${oauth}</td><td>${account.botCount}</td><td><div class="actions"><button class="primary" data-account-auth="${esc(account.id)}">${account.authState === 'authorized' ? '重新授权' : '授权'}</button><button class="danger" data-account-delete="${esc(account.id)}">删除</button></div></td></tr>`
+        const authorizationActive = accountAuthorizationActive(account)
+        const authorizationLabel = account.authState === 'auth_required' && account.oauth ? '等待登录' : authorizationActive ? '授权处理中...' : account.authState === 'authorized' ? '重新授权' : '授权'
+        return `<tr><td><strong>${esc(account.email)}</strong></td><td>${esc(account.minecraftName || '-')}</td><td><span class="status ${esc(account.authState)}">${esc(accountStatusLabel(account.authState))}</span><div class="muted">${esc(account.lastError || '')}</div></td><td>${oauth}</td><td>${account.botCount}</td><td><div class="actions"><button class="primary" data-account-auth="${esc(account.id)}"${authorizationActive ? ' disabled aria-busy="true"' : ''}>${authorizationLabel}</button><button class="danger" data-account-delete="${esc(account.id)}"${authorizationActive ? ' disabled' : ''}>删除</button></div></td></tr>`
       }).join('') + '</tbody></table>'
     : '<div class="empty">还没有微软账号。</div>'
   document.querySelectorAll('[data-account-auth]').forEach(btn => {
     btn.onclick = async () => {
+      const id = btn.dataset.accountAuth
+      if (state.accountAuthorizationPending.has(id) || btn.disabled) return
+      state.accountAuthorizationPending.add(id)
+      btn.disabled = true
+      btn.setAttribute('aria-busy', 'true')
+      btn.textContent = '授权处理中...'
       try {
-        const account = state.accounts.find(row => row.id === btn.dataset.accountAuth)
-        await post('/api/accounts/auth', { id: btn.dataset.accountAuth, force: account?.authState === 'authorized' })
+        const account = state.accounts.find(row => row.id === id)
+        await post('/api/accounts/auth', { id, force: account?.authState === 'authorized' })
         await loadAccounts()
       } catch (error) { toast(error.message) }
+      finally {
+        state.accountAuthorizationPending.delete(id)
+        await loadAccounts().catch(() => {})
+      }
     }
   })
   document.querySelectorAll('[data-account-delete]').forEach(btn => {
@@ -382,14 +400,31 @@ async function loadAccounts () {
 }
 
 async function createAccount () {
+  if (state.accountCreationPending) return
+  const button = $('createAccount')
+  let accountId = ''
+  state.accountCreationPending = true
+  button.disabled = true
+  button.setAttribute('aria-busy', 'true')
+  button.textContent = '添加中...'
   try {
     const data = await post('/api/accounts/create', { email: $('accountEmail').value })
+    accountId = data.account.id
     $('accountEmail').value = ''
-    await post('/api/accounts/auth', { id: data.account.id })
+    state.accountAuthorizationPending.add(accountId)
+    button.textContent = '发起授权...'
+    await post('/api/accounts/auth', { id: accountId })
     toast('账号已添加，请完成 Microsoft OAuth2')
     await loadAccounts()
   } catch (error) {
     toast(error.message)
+  } finally {
+    state.accountCreationPending = false
+    button.disabled = false
+    button.removeAttribute('aria-busy')
+    button.textContent = '添加并授权'
+    if (accountId) state.accountAuthorizationPending.delete(accountId)
+    await loadAccounts().catch(() => {})
   }
 }
 

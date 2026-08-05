@@ -5,6 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 const PlatformDb = require('../src/db')
 const BotManager = require('../src/botManager')
+const AccountManager = require('../src/accountManager')
 const { environmentForValues, normalizeDefinitions, validateValues } = require('../src/templateVariables')
 const { EventEmitter } = require('node:events')
 const crypto = require('node:crypto')
@@ -498,6 +499,28 @@ test('users can own multiple Microsoft accounts and bots reference an account', 
     assert.equal(bot.accountId, first.id)
     assert.equal(bot.microsoftEmail, 'first@example.com')
   } finally { f.close() }
+})
+
+test('Microsoft authorization deduplicates active requests and rate limits immediate retries', async () => {
+  const account = { id: 'account-1', userId: 'user-1', authState: 'pending' }
+  const db = {
+    getMicrosoftAccount: () => ({ ...account }),
+    updateMicrosoftAccountAuth: (id, fields) => Object.assign(account, fields)
+  }
+  const manager = new AccountManager(db, { authCacheRoot: '.', accountAuthorizationCooldownMs: 30000 })
+  let runs = 0
+  let finish
+  manager.runAuthorization = async () => {
+    runs += 1
+    await new Promise(resolve => { finish = resolve })
+  }
+
+  manager.authorize(account.id, account.userId)
+  manager.authorize(account.id, account.userId)
+  assert.equal(runs, 1)
+  finish()
+  await manager.authorizing.get(account.id).promise
+  assert.throws(() => manager.authorize(account.id, account.userId), error => error.status === 429 && /请求过于频繁/.test(error.message))
 })
 
 test('one Microsoft account cannot run two core bot processes at once', async () => {
