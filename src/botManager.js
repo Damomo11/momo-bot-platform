@@ -6,6 +6,9 @@ const { environmentForValues } = require('./templateVariables')
 const { invalidateMinecraftAccessTokenCache } = require('./authCache')
 const { readRuntimeUpdates } = require('./runtimeUpdates')
 
+const accountReconnectDelaysMs = [60_000, 120_000, 300_000, 600_000, 1_200_000, 1_800_000]
+const serverCircuitDelaysMs = [120_000, 300_000, 600_000, 1_200_000, 1_800_000]
+
 function isReleaseNewer (candidate, current) {
   const parse = value => {
     const match = String(value || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/i)
@@ -31,6 +34,10 @@ class BotManager {
     this.profileAuthRecoveryAt = new Map()
     this.logs = new Map()
     this.pendingTopUps = new Map()
+    this.accountReconnects = new Map()
+    this.serverFailureWindows = new Map()
+    this.serverCircuits = new Map()
+    this.reconnectTimers = new Map()
   }
 
   appendLog (id, level, message) {
@@ -106,11 +113,217 @@ class BotManager {
     return [isZenox ? '1.21.11' : configured]
   }
 
+  now () {
+    return typeof this.config.now === 'function' ? Number(this.config.now()) : Date.now()
+  }
+
+  reconnectDelays () {
+    if (Array.isArray(this.config.reconnectDelaysMs) && this.config.reconnectDelaysMs.length) return this.config.reconnectDelaysMs.map(Number)
+    if (Number.isFinite(Number(this.config.reconnectDelayMs))) return [Math.max(0, Number(this.config.reconnectDelayMs))]
+    return accountReconnectDelaysMs
+  }
+
+  circuitDelays () {
+    return Array.isArray(this.config.serverCircuitDelaysMs) && this.config.serverCircuitDelaysMs.length
+      ? this.config.serverCircuitDelaysMs.map(Number)
+      : serverCircuitDelaysMs
+  }
+
+  serverKey (bot) {
+    return `${String(bot?.serverHost || '').trim().toLowerCase()}:${Number(bot?.serverPort || 25565)}`
+  }
+
+  retryJitter (key, failureCount) {
+    const ratio = Math.min(0.5, Math.max(0, Number(this.config.reconnectJitterRatio ?? 0.2)))
+    if (!ratio) return 1
+    let hash = 2166136261
+    for (const character of `${key}:${failureCount}`) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619)
+    const unit = (hash >>> 0) / 0xffffffff
+    return 1 - ratio + unit * ratio * 2
+  }
+
+  recordAccountReconnectFailure (bot) {
+    const now = this.now()
+    const accountId = String(bot.accountId || bot.id)
+    const current = this.accountReconnects.get(accountId) || { failures: 0, nextRetryAt: 0 }
+    const failures = current.failures + 1
+    const delays = this.reconnectDelays()
+    const baseDelay = Math.max(0, delays[Math.min(failures - 1, delays.length - 1)] || 0)
+    const delayMs = Math.round(baseDelay * this.retryJitter(accountId, failures))
+    const next = { failures, lastFailureAt: now, nextRetryAt: now + delayMs }
+    this.accountReconnects.set(accountId, next)
+    return { ...next, delayMs }
+  }
+
+  recordServerConnectionFailure (bot, botId) {
+    const now = this.now()
+    const key = this.serverKey(bot)
+    const windowMs = Math.max(1, Number(this.config.serverFailureWindowMs ?? 60_000))
+    const threshold = Math.max(2, Number(this.config.serverCircuitThreshold ?? 3))
+    const recent = this.serverFailureWindows.get(key) || new Map()
+    for (const [accountId, failedAt] of recent) {
+      if (now - failedAt > windowMs) recent.delete(accountId)
+    }
+    recent.set(String(bot.accountId || bot.id), now)
+    this.serverFailureWindows.set(key, recent)
+
+    let circuit = this.serverCircuits.get(key)
+    if (circuit?.probeBotId === botId) {
+      const delays = this.circuitDelays()
+      circuit.probeIndex = Math.min(circuit.probeIndex + 1, delays.length - 1)
+      circuit.probeBotId = null
+      circuit.nextProbeAt = now + Math.max(1, delays[circuit.probeIndex])
+      this.deferCircuitReconnects(key, circuit)
+    } else if (!circuit && recent.size >= threshold) {
+      const delays = this.circuitDelays()
+      circuit = { openedAt: now, probeIndex: 0, probeBotId: null, nextProbeAt: now + Math.max(1, delays[0]) }
+      this.serverCircuits.set(key, circuit)
+      this.deferCircuitReconnects(key, circuit)
+      console.warn(`[server:${key}] connection circuit opened after ${recent.size} accounts failed`)
+    }
+    return circuit || null
+  }
+
+  deferCircuitReconnects (serverKey, circuit) {
+    const now = this.now()
+    const waiting = [...this.reconnectTimers.entries()]
+    for (const [botId, scheduled] of waiting) {
+      const waitingBot = this.db.getBot(botId)
+      if (!waitingBot || this.serverKey(waitingBot) !== serverKey) continue
+      const dueAt = Math.max(scheduled.dueAt, circuit.nextProbeAt)
+      this.db.updateBotRuntime(botId, { runtimeState: 'circuit_open', lastError: `服务器连接已熔断，${this.reconnectWaitText(dueAt - now)}后检查恢复状态。` })
+      this.scheduleReconnectAt(botId, scheduled.pricing, dueAt)
+    }
+  }
+
+  releaseCircuitProbe (id) {
+    const bot = this.db.getBot(id)
+    const circuit = bot && this.serverCircuits.get(this.serverKey(bot))
+    if (!circuit || circuit.probeBotId !== id) return
+    circuit.probeBotId = null
+    circuit.nextProbeAt = this.now()
+    this.deferCircuitReconnects(this.serverKey(bot), circuit)
+  }
+
+  reconnectWaitText (milliseconds) {
+    const seconds = Math.max(1, Math.ceil(milliseconds / 1000))
+    return seconds < 120 ? `${seconds} 秒` : `${Math.ceil(seconds / 60)} 分钟`
+  }
+
+  cancelReconnect (id) {
+    const scheduled = this.reconnectTimers.get(id)
+    if (scheduled) clearTimeout(scheduled.timer)
+    this.reconnectTimers.delete(id)
+  }
+
+  scheduleReconnectAt (id, pricing, dueAt) {
+    this.cancelReconnect(id)
+    const delayMs = Math.max(0, dueAt - this.now())
+    const timer = setTimeout(() => {
+      this.reconnectTimers.delete(id)
+      this.runScheduledReconnect(id, pricing)
+    }, delayMs)
+    timer.unref()
+    this.reconnectTimers.set(id, { timer, dueAt, pricing })
+  }
+
+  scheduleAutomaticReconnect (id, exitedState, reason, includeServerFailure = true) {
+    const bot = this.db.getBot(id)
+    if (!bot || bot.desiredState !== 'running') return false
+    const retry = this.recordAccountReconnectFailure(bot)
+    const circuit = includeServerFailure ? this.recordServerConnectionFailure(bot, id) : this.serverCircuits.get(this.serverKey(bot))
+    const now = this.now()
+    const dueAt = Math.max(retry.nextRetryAt, circuit?.nextProbeAt || 0)
+    const waitMs = Math.max(0, dueAt - now)
+    const circuitOpen = Boolean(circuit)
+    this.db.updateBotRuntime(id, {
+      runtimeState: circuitOpen ? 'circuit_open' : 'reconnecting',
+      startedAt: null,
+      oauthJson: '',
+      lastError: `${reason}；连续失败 ${retry.failures} 次，${circuitOpen ? '服务器连接已熔断，最早' : ''}${this.reconnectWaitText(waitMs)}后重试。`
+    })
+    this.scheduleReconnectAt(id, {
+      billingMode: exitedState.billingMode,
+      priceMomoc: exitedState.priceMomoc,
+      protocolIndex: exitedState.protocolIndex
+    }, dueAt)
+    return true
+  }
+
+  runScheduledReconnect (id, pricing) {
+    const bot = this.db.getBot(id)
+    if (!bot || bot.desiredState !== 'running' || this.processes.has(id)) return
+    const now = this.now()
+    const account = this.accountReconnects.get(String(bot.accountId || bot.id))
+    if (account?.nextRetryAt > now) return this.scheduleReconnectAt(id, pricing, account.nextRetryAt)
+
+    const circuit = this.serverCircuits.get(this.serverKey(bot))
+    if (circuit) {
+      if (circuit.nextProbeAt > now || (circuit.probeBotId && circuit.probeBotId !== id)) {
+        const dueAt = Math.max(circuit.nextProbeAt, now + 10_000)
+        this.db.updateBotRuntime(id, { runtimeState: 'circuit_open', lastError: `服务器连接已熔断，${this.reconnectWaitText(dueAt - now)}后检查恢复状态。` })
+        return this.scheduleReconnectAt(id, pricing, dueAt)
+      }
+      circuit.probeBotId = id
+      circuit.nextProbeAt = now + Math.max(1, Number(this.config.serverProbeStableMs ?? 120_000))
+    }
+
+    try {
+      this.launchAttempt(bot, pricing.protocolIndex, pricing)
+    } catch (error) {
+      if (circuit?.probeBotId === id) {
+        circuit.probeBotId = null
+        const delays = this.circuitDelays()
+        circuit.probeIndex = Math.min(circuit.probeIndex + 1, delays.length - 1)
+        circuit.nextProbeAt = now + Math.max(1, delays[circuit.probeIndex])
+        this.deferCircuitReconnects(this.serverKey(bot), circuit)
+      }
+      this.releaseOnceReservation(id, pricing)
+      if (this.accountLocks.get(bot.accountId) === id) this.accountLocks.delete(bot.accountId)
+      this.setError(id, error)
+    }
+  }
+
+  armStableConnection (id, state) {
+    const bot = this.db.getBot(id)
+    if (!bot) return
+    const accountStableMs = Math.max(1, Number(this.config.accountReconnectStableMs ?? 300_000))
+    state.accountStableTimer = setTimeout(() => {
+      if (this.processes.get(id) === state && state.reachedOnline) this.accountReconnects.delete(String(bot.accountId || bot.id))
+    }, accountStableMs)
+    state.accountStableTimer.unref()
+
+    const key = this.serverKey(bot)
+    const circuit = this.serverCircuits.get(key)
+    if (circuit?.probeBotId !== id) return
+    const probeStableMs = Math.max(1, Number(this.config.serverProbeStableMs ?? 120_000))
+    state.circuitStableTimer = setTimeout(() => {
+      if (this.processes.get(id) !== state || !state.reachedOnline || this.serverCircuits.get(key)?.probeBotId !== id) return
+      this.serverCircuits.delete(key)
+      this.serverFailureWindows.delete(key)
+      console.log(`[server:${key}] connection circuit closed after a stable probe`)
+      const waiting = [...this.reconnectTimers.entries()].filter(([botId]) => this.serverKey(this.db.getBot(botId)) === key)
+      waiting.forEach(([botId, scheduled], index) => {
+        const waitingBot = this.db.getBot(botId)
+        const account = waitingBot && this.accountReconnects.get(String(waitingBot.accountId || waitingBot.id))
+        const dueAt = Math.max(this.now() + index * 5_000, account?.nextRetryAt || 0)
+        this.db.updateBotRuntime(botId, { runtimeState: 'reconnecting', lastError: `服务器连接已恢复，${this.reconnectWaitText(dueAt - this.now())}后重试。` })
+        this.scheduleReconnectAt(botId, scheduled.pricing, dueAt)
+      })
+    }, probeStableMs)
+    state.circuitStableTimer.unref()
+  }
+
   async start (id, actorUserId = null) {
     const bot = this.db.getBot(id)
     if (!bot) throw new Error('机器人不存在。')
     if (actorUserId && bot.userId !== actorUserId) throw new Error('无权操作这个机器人。')
     if (this.processes.has(id)) return this.publicBot(bot)
+    const now = this.now()
+    const accountReconnect = this.accountReconnects.get(String(bot.accountId || bot.id))
+    if (accountReconnect?.nextRetryAt > now) throw new Error(`这个微软账号连接失败次数过多，请在 ${this.reconnectWaitText(accountReconnect.nextRetryAt - now)}后重试。`)
+    const circuit = this.serverCircuits.get(this.serverKey(bot))
+    if (circuit) throw new Error(`目标服务器连接已熔断，请在 ${this.reconnectWaitText(Math.max(0, circuit.nextProbeAt - now))}后等待平台自动探测。`)
     if (bot.accountAuthState !== 'authorized') throw new Error('这个微软账号尚未完成 OAuth2 授权。')
     const accountOwner = this.accountLocks.get(bot.accountId)
     if (accountOwner && accountOwner !== id) throw new Error('这个微软账号已有其他模板正在运行。')
@@ -129,6 +342,7 @@ class BotManager {
       this.onceReservations.set(id, price)
     }
     this.accountLocks.set(bot.accountId, id)
+    this.cancelReconnect(id)
 
     this.db.updateBotRuntime(id, {
       desiredState: 'running',
@@ -200,7 +414,11 @@ class BotManager {
       retryPending: false,
       profileAuthRecoveryPending: false,
       disconnectPending: false,
-      reachedOnline: false
+      reachedOnline: false,
+      failureKind: '',
+      lastConnectionError: '',
+      accountStableTimer: null,
+      circuitStableTimer: null
     }
     this.processes.set(bot.id, state)
     console.log(`[bot:${bot.id}] connecting with Minecraft ${activeVersion || 'auto'}`)
@@ -308,10 +526,12 @@ class BotManager {
       return
     }
     if (message?.type === 'protocol_failure') {
+      state.failureKind = 'server'
       this.requestConnectionRetry(id, String(message.error || '登录前协议解析失败'))
       return
     }
     if (message?.type === 'profile_auth_failure') {
+      state.failureKind = 'auth'
       this.requestProfileAuthRecovery(id, String(message.error || 'Minecraft profile authentication failed'))
       return
     }
@@ -356,11 +576,13 @@ class BotManager {
         clearTimeout(state.authTimer)
         state.authTimer = null
       }
+      if (message.state === 'stopped' && message.reason && !state.lastConnectionError) state.lastConnectionError = String(message.reason)
       const fields = { runtimeState: message.state, oauthJson: '' }
       if (message.minecraftName) fields.minecraftName = message.minecraftName
       if (message.state === 'online') {
         state.reachedOnline = true
         this.clearConnectionTimers(state)
+        this.armStableConnection(id, state)
         fields.startedAt = Date.now()
         fields.lastError = ''
         if (state.billingMode === 'hourly') this.startBilling(id)
@@ -370,6 +592,7 @@ class BotManager {
       return
     }
     if (message?.type === 'error' && !state.retryPending && !state.fallbackPending) {
+      state.lastConnectionError = String(message.error || 'unknown error')
       this.appendLog(id, 'error', message.error || 'unknown error')
       this.db.updateBotRuntime(id, { lastError: String(message.error || 'unknown error') })
     }
@@ -559,13 +782,12 @@ class BotManager {
     const bot = state && this.db.getBot(id)
     if (!state || !bot || bot.desiredState !== 'running' || state.stopping || state.restartPending || state.disconnectPending || state.retryPending || state.fallbackPending || state.profileAuthRecoveryPending || state.reachedOnline) return Boolean(state?.retryPending || state?.fallbackPending)
     state.retryPending = true
+    state.lastConnectionError = String(reason || '连接服务器失败')
     this.clearConnectionTimers(state)
-    const reconnectDelayMs = Math.max(0, Number(this.config.reconnectDelayMs ?? 10000))
-    const reconnectSeconds = Math.ceil(reconnectDelayMs / 1000)
     const version = state.activeVersion || '自动检测'
     this.db.updateBotRuntime(id, {
       runtimeState: 'reconnecting',
-      lastError: `${reason}；${reconnectSeconds} 秒后继续使用 Minecraft ${version} 自动重连。`,
+      lastError: `${reason}；正在为 Minecraft ${version} 安排安全重连。`,
       oauthJson: ''
     })
     this.appendLog(id, 'error', `${reason} Retrying Minecraft ${version}.`)
@@ -592,6 +814,8 @@ class BotManager {
     const state = this.processes.get(id)
     if (!state || state.retryPending || state.fallbackPending || state.profileAuthRecoveryPending || state.reachedOnline) return false
     state.profileAuthRecoveryPending = true
+    state.failureKind = 'auth'
+    state.lastConnectionError = String(reason || 'Minecraft 登录凭据验证失败')
     this.clearConnectionTimers(state)
     const now = Date.now()
     const lastRecoveryAt = Number(this.profileAuthRecoveryAt.get(state.accountId) || 0)
@@ -662,9 +886,13 @@ class BotManager {
     const bot = this.db.getBot(id)
     if (!bot) throw new Error('机器人不存在。')
     if (actorUserId && bot.userId !== actorUserId) throw new Error('无权操作这个机器人。')
+    this.cancelReconnect(id)
+    this.releaseCircuitProbe(id)
     this.db.updateBotRuntime(id, { desiredState: 'stopped', runtimeState: 'stopping', oauthJson: '' })
     const state = this.processes.get(id)
     if (!state) {
+      this.releaseOnceReservation(id)
+      if (this.accountLocks.get(bot.accountId) === id) this.accountLocks.delete(bot.accountId)
       this.db.updateBotRuntime(id, { runtimeState: 'stopped', startedAt: null })
       return this.publicBot(this.db.getBot(id))
     }
@@ -703,8 +931,12 @@ class BotManager {
     this.clearConnectionTimers(state)
     if (state.billingTimer) clearInterval(state.billingTimer)
     if (state.killTimer) clearTimeout(state.killTimer)
+    if (state.accountStableTimer) clearTimeout(state.accountStableTimer)
+    if (state.circuitStableTimer) clearTimeout(state.circuitStableTimer)
     state.billingTimer = null
     state.killTimer = null
+    state.accountStableTimer = null
+    state.circuitStableTimer = null
   }
 
   handleExit (id, exitedState, code, signal) {
@@ -735,22 +967,14 @@ class BotManager {
     }
 
     if ((exitedState.retryPending || exitedState.fallbackPending) && bot.desiredState === 'running') {
-      const reconnectDelayMs = Math.max(0, Number(this.config.reconnectDelayMs ?? 10000))
-      this.db.updateBotRuntime(id, { runtimeState: 'reconnecting', startedAt: null, oauthJson: '' })
-      setTimeout(() => {
-        const current = this.db.getBot(id)
-        if (!current || current.desiredState !== 'running' || this.processes.has(id)) return
-        try { this.launchAttempt(current, 0, { billingMode: exitedState.billingMode, priceMomoc: exitedState.priceMomoc }) } catch (error) { this.releaseOnceReservation(id, exitedState); if (this.accountLocks.get(exitedState.accountId) === id) this.accountLocks.delete(exitedState.accountId); this.setError(id, error) }
-      }, reconnectDelayMs).unref()
+      const reason = exitedState.lastConnectionError || bot.lastError || '连接服务器失败'
+      this.scheduleAutomaticReconnect(id, exitedState, reason, exitedState.failureKind !== 'auth')
       return
     }
 
     if (exitedState.profileAuthRecoveryPending && bot.desiredState === 'running') {
-      setTimeout(() => {
-        const current = this.db.getBot(id)
-        if (!current || current.desiredState !== 'running' || this.processes.has(id)) return
-        try { this.launchAttempt(current, exitedState.protocolIndex, { billingMode: exitedState.billingMode, priceMomoc: exitedState.priceMomoc }) } catch (error) { this.releaseOnceReservation(id, exitedState); if (this.accountLocks.get(exitedState.accountId) === id) this.accountLocks.delete(exitedState.accountId); this.setError(id, error) }
-      }, 1000).unref()
+      const reason = exitedState.lastConnectionError || bot.lastError || 'Minecraft 登录凭据验证失败'
+      this.scheduleAutomaticReconnect(id, exitedState, reason, false)
       return
     }
 
@@ -763,15 +987,8 @@ class BotManager {
 
     this.db.updateBotRuntime(id, { runtimeState: 'stopped', startedAt: null, oauthJson: '' })
     if (bot.desiredState === 'running' && !exitedState.stopping) {
-      const reconnectDelayMs = Math.max(0, Number(this.config.reconnectDelayMs ?? 10000))
-      const reconnectSeconds = Math.ceil(reconnectDelayMs / 1000)
-      const reason = String(bot.lastError || `进程退出 code=${code} signal=${signal || ''}`).replace(/；?\d+ 秒后自动重连。?$/, '')
-      this.db.updateBotRuntime(id, { runtimeState: 'reconnecting', lastError: `${reason}；${reconnectSeconds} 秒后自动重连。` })
-      setTimeout(() => {
-        const current = this.db.getBot(id)
-        if (!current || current.desiredState !== 'running' || this.processes.has(id)) return
-        try { this.launchAttempt(current, exitedState.protocolIndex, { billingMode: exitedState.billingMode, priceMomoc: exitedState.priceMomoc }) } catch (error) { if (this.accountLocks.get(exitedState.accountId) === id) this.accountLocks.delete(exitedState.accountId); this.setError(id, error) }
-      }, reconnectDelayMs).unref()
+      const reason = exitedState.lastConnectionError || bot.lastError || `进程退出 code=${code} signal=${signal || ''}`
+      this.scheduleAutomaticReconnect(id, exitedState, reason, exitedState.failureKind !== 'auth' && (exitedState.disconnectPending || exitedState.failureKind === 'server'))
       return
     }
     if (this.accountLocks.get(exitedState.accountId) === id) this.accountLocks.delete(exitedState.accountId)
@@ -781,7 +998,12 @@ class BotManager {
     const bot = this.db.getBot(id)
     if (!bot) throw new Error('机器人不存在。')
     if (actorUserId && bot.userId !== actorUserId) throw new Error('无权操作这个机器人。')
+    this.cancelReconnect(id)
     if (this.processes.has(id)) await this.stop(id, actorUserId)
+    else {
+      this.releaseOnceReservation(id)
+      if (this.accountLocks.get(bot.accountId) === id) this.accountLocks.delete(bot.accountId)
+    }
     this.removeSchedule(id)
     this.db.deleteBot(id)
     this.logs.delete(id)
@@ -836,6 +1058,8 @@ class BotManager {
   }
 
   shutdown () {
+    for (const { timer } of this.reconnectTimers.values()) clearTimeout(timer)
+    this.reconnectTimers.clear()
     for (const task of this.schedules.values()) task.destroy()
     this.schedules.clear()
     for (const [id] of this.processes) this.stop(id).catch(() => {})

@@ -209,7 +209,7 @@ test('connection timeout retries the same version without stopping the bot', asy
   assert.equal(manager.requestConnectionRetry(bot.id, '120 秒内仍未进入服务器'), true)
   assert.equal(bot.desiredState, 'running')
   assert.equal(bot.runtimeState, 'reconnecting')
-  assert.match(bot.lastError, /继续使用 Minecraft 1\.21\.11 自动重连/)
+  assert.match(bot.lastError, /安排安全重连/)
   assert.deepEqual(signals, ['SIGTERM'])
 
   manager.handleExit(bot.id, state, 0, 'SIGTERM')
@@ -257,9 +257,58 @@ test('a stopped Minecraft connection terminates its runtime and automatically re
   assert.deepEqual(signals, ['SIGTERM'])
   manager.handleExit(bot.id, state, 0, 'SIGTERM')
   assert.equal(bot.runtimeState, 'reconnecting')
-  assert.match(bot.lastError, /Kicked: connection problem；1 秒后自动重连/)
+  assert.match(bot.lastError, /连续失败 1 次，1 秒后重试/)
   await new Promise(resolve => setTimeout(resolve, 30))
   assert.equal(launched.id, bot.id)
+})
+
+test('reconnect protection backs off accounts and opens one server probe after distinct failures', () => {
+  let now = 1_000_000
+  const bots = new Map([
+    ['bot-1', { id: 'bot-1', accountId: 'account-1', serverHost: 'mc.example.test', serverPort: 25565, desiredState: 'running' }],
+    ['bot-2', { id: 'bot-2', accountId: 'account-2', serverHost: 'MC.EXAMPLE.TEST', serverPort: 25565, desiredState: 'running' }],
+    ['bot-3', { id: 'bot-3', accountId: 'account-3', serverHost: 'mc.example.test', serverPort: 25565, desiredState: 'running' }],
+    ['bot-4', { id: 'bot-4', accountId: 'account-4', serverHost: 'other.example.test', serverPort: 25565, desiredState: 'running' }]
+  ])
+  const updates = new Map()
+  const manager = new BotManager({
+    getBot: id => bots.get(id),
+    updateBotRuntime: (id, fields) => updates.set(id, fields)
+  }, {
+    now: () => now,
+    reconnectDelaysMs: [60_000, 120_000, 300_000],
+    reconnectJitterRatio: 0,
+    serverFailureWindowMs: 60_000,
+    serverCircuitThreshold: 3,
+    serverCircuitDelaysMs: [120_000, 300_000],
+    serverProbeStableMs: 120_000
+  })
+
+  assert.equal(manager.recordAccountReconnectFailure(bots.get('bot-1')).delayMs, 60_000)
+  assert.equal(manager.recordAccountReconnectFailure(bots.get('bot-1')).delayMs, 120_000)
+  assert.equal(manager.recordAccountReconnectFailure(bots.get('bot-1')).delayMs, 300_000)
+
+  assert.equal(manager.recordServerConnectionFailure(bots.get('bot-1'), 'bot-1'), null)
+  assert.equal(manager.recordServerConnectionFailure(bots.get('bot-1'), 'bot-1'), null)
+  assert.equal(manager.recordServerConnectionFailure(bots.get('bot-2'), 'bot-2'), null)
+  const circuit = manager.recordServerConnectionFailure(bots.get('bot-3'), 'bot-3')
+  assert.equal(circuit.nextProbeAt, now + 120_000)
+  assert.equal(manager.serverCircuits.size, 1)
+
+  now = circuit.nextProbeAt
+  const launched = []
+  manager.launchAttempt = bot => launched.push(bot.id)
+  manager.runScheduledReconnect('bot-2', { protocolIndex: 0, billingMode: 'hourly', priceMomoc: 0.03 })
+  manager.runScheduledReconnect('bot-3', { protocolIndex: 0, billingMode: 'hourly', priceMomoc: 0.03 })
+  assert.deepEqual(launched, ['bot-2'])
+  assert.equal(circuit.probeBotId, 'bot-2')
+  assert.equal(updates.get('bot-3').runtimeState, 'circuit_open')
+  manager.cancelReconnect('bot-3')
+
+  manager.recordServerConnectionFailure(bots.get('bot-2'), 'bot-2')
+  assert.equal(circuit.probeBotId, null)
+  assert.equal(circuit.nextProbeAt, now + 300_000)
+  assert.equal(manager.recordServerConnectionFailure(bots.get('bot-4'), 'bot-4'), null)
 })
 
 test('profile auth recovery only clears the short-lived Minecraft token', () => {
