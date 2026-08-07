@@ -671,6 +671,7 @@ class BotManager {
     }
     if (action === 'ominous_schedule_get') return this.db.getSmartBotAutomation(botId)
     if (action === 'ominous_schedule_complete') return this.db.completeSmartBotOminousBottle(botId)
+    if (action === 'fishing_schedule_get') return this.db.getSmartBotAutomation(botId)
     if (action === 'periodic_right_click_get') return this.db.getSmartBotAutomation(botId)
     if (action === 'periodic_right_click_complete') return this.db.completeSmartBotPeriodicRightClick(botId)
     if (action === 'task_get') return { task: this.db.getSmartBotTask(botId, payload.name) }
@@ -711,6 +712,11 @@ class BotManager {
     if (action === 'ominous_schedule_set') {
       if (!actor.whitelisted || lock.adminLocked) return { allowed: false, silent: true }
       return { allowed: true, settings: this.db.setSmartBotOminousBottle(botId, Boolean(payload.enabled)) }
+    }
+
+    if (action === 'fishing_schedule_set') {
+      if (!actor.whitelisted || lock.adminLocked) return { allowed: false, silent: true }
+      return { allowed: true, settings: this.db.setSmartBotFishing(botId, Boolean(payload.enabled), payload.intervalTicks) }
     }
 
     if (action === 'periodic_right_click_set') {

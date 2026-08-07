@@ -56,6 +56,7 @@ const MESSAGE_DEFAULTS = {
   ominousUsage: '正确格式: 定时灾厄之瓶 开|关', ominousEnabled: '定时灾厄之瓶已开启，将立即饮用一瓶；成功后每 31 分钟执行一次。', ominousDisabled: '定时灾厄之瓶已关闭。', ominousStatusOn: '定时灾厄之瓶: 开，下次执行: {nextTime}', ominousStatusOff: '定时灾厄之瓶: 关。',
   periodicRightClickUsage: '正确格式: 定时放置 x y z ngt，例如 定时放置 100 64 200 20。', periodicRightClickEnabled: '定时放置已开启: ({x},{y},{z})，每 {ticks} 游戏刻执行。', periodicRightClickDisabled: '定时放置已关闭。', periodicRightClickStatusOff: '定时放置: 关。', periodicRightClickStatusOn: '定时放置: 开，坐标 ({x},{y},{z})，间隔 {ticks} 游戏刻。',
   rightClickUsage: '正确格式: 右键 玩家名，或 右键 x y z。', rightClickSuccess: '右键交互成功。', rightClickFailure: '右键交互失败，请确认目标存在且在交互距离内。', attackUsage: '正确格式: 攻击', attackSuccess: '已攻击准星指向的目标。', attackMiss: '准星方向没有可攻击目标，已挥动主手。', attackFailure: '攻击失败，请确认机器人已进入服务器。', balanceResult: 'Bot 所有者当前拥有 {balance} momoc。', topUpUsage: '正确格式: 充值 金额，例如 充值 50。', topUpPending: '正在支付 {amount} C，等待服务器确认。', topUpBusy: '上一笔充值仍在等待服务器确认。', topUpFailure: '充值指令发送失败，请稍后重试。', topUpSuccess: '充值成功，已增加 {amount} momoc，当前余额 {balance} momoc。', moveUsage: '正确格式: 移动 x y z [停止距离]，或 移动 玩家名 [停止距离]，或 移动 东|西|南|北 格数 [停止距离]', moveSuccess: '已移动到目标附近。', moveFailure: '移动失败，请确认目标可达。', lookUsage: '正确格式: 注视 玩家名', lookSuccess: '已调整视角。', lookFailure: '注视失败，请确认目标存在。', placeUsage: '正确格式: 放置 x y z。', placeSuccess: '放置成功。', placeFailure: '{reason}',
+  fishingUsage: '正确格式: 钓鱼 开 [间隔gt]，或 钓鱼 关；默认间隔 10gt。', fishingEnabled: '自动钓鱼已开启；主手持钓鱼竿时会朝准星方向抛竿，收竿后 {ticks}gt 重抛。', fishingDisabled: '自动钓鱼已关闭。',
   taskUsage: '正确格式: 定时任务 任务名 5 [参数...]；关闭时使用 定时任务 任务名 关。', taskScheduled: '定时任务 {task} 已开启，每 {ticks} 游戏刻执行一次。', taskStopped: '定时任务 {task} 已关闭。', scheduleStatus: '定时：{schedules}',
   locked: '机器人已被 {player} {label}，备注: {reason}', lockUsage: '正确格式: 锁定 备注', alreadyLocked: '机器人已被锁定，请勿重复锁定。', lockSuccess: '锁定成功，由于发消息会取消 afk，请寻找安全地方挂机。', notLocked: '机器人没有被锁定。', adminUnlockRequired: '机器人处于超级锁定，请由超管使用“超级解锁”。', unlockSuccess: '机器人已解锁。',
   forwardUsage: '正确格式: 指令 <服务器指令>', forwardInvalid: '指令内容无效或过长。', forwardNested: '不能嵌套机器人命令前缀。', forwardDangerous: '这条高风险指令已禁用。', forwardHome: 'home 命令已禁用。',
@@ -74,6 +75,9 @@ MESSAGE_LABELS.attackUsage = '攻击格式'
 MESSAGE_LABELS.attackSuccess = '攻击命中'
 MESSAGE_LABELS.attackMiss = '攻击未命中'
 MESSAGE_LABELS.attackFailure = '攻击失败'
+MESSAGE_LABELS.fishingUsage = '钓鱼格式'
+MESSAGE_LABELS.fishingEnabled = '自动钓鱼开启'
+MESSAGE_LABELS.fishingDisabled = '自动钓鱼关闭'
 MESSAGE_LABELS.balanceResult = '余额查询结果'
 MESSAGE_LABELS.topUpUsage = '充值格式'
 MESSAGE_LABELS.topUpPending = '充值等待确认'
@@ -98,6 +102,7 @@ const MESSAGE_GROUPS = [
   { command: '定时灾厄之瓶', note: '定时饮用与状态反馈', keys: ['ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff'] },
   { command: '右键', note: '实体或方块交互反馈', keys: ['rightClickUsage', 'rightClickSuccess', 'rightClickFailure'] },
   { command: '攻击', note: '准星方向单次攻击反馈', keys: ['attackUsage', 'attackSuccess', 'attackMiss', 'attackFailure'] },
+  { command: '钓鱼', note: '自动抛竿与重抛反馈', keys: ['fishingUsage', 'fishingEnabled', 'fishingDisabled'] },
   { command: '余额 / 充值', note: '所有者余额与 TSL 充值反馈', keys: ['balanceResult', 'topUpUsage', 'topUpPending', 'topUpBusy', 'topUpFailure', 'topUpSuccess'] },
   { command: '移动', note: '移动与寻路反馈', keys: ['moveUsage', 'moveSuccess', 'moveFailure'] },
   { command: '注视', note: '视角调整反馈', keys: ['lookUsage', 'lookSuccess', 'lookFailure'] },
@@ -435,6 +440,7 @@ function smartScheduleHtml (bot) {
   const automation = schedules.automation || {}
   const rows = []
   if (automation.ominousBottleEnabled) rows.push({ label: '定时灾厄之瓶', action: 'stop_ominous' })
+  if (automation.fishingEnabled) rows.push({ label: `自动钓鱼 · ${automation.fishingIntervalTicks || 10}gt`, action: 'stop_fishing' })
   for (const task of schedules.tasks || []) rows.push({ label: `定时任务 ${task.name} · ${task.intervalTicks}gt`, action: 'stop_task', name: task.name })
   if (!rows.length) return '<div class="smart-schedules"><span class="muted">当前无定时任务</span></div>'
   return `<div class="smart-schedules">${rows.map(row => `<div class="smart-schedule-row"><span>${esc(row.label)}</span><button type="button" class="danger" data-stop-smart-schedule="${esc(row.action)}" data-smart-schedule-bot="${esc(bot.id)}"${row.name ? ` data-smart-schedule-name="${esc(row.name)}"` : ''}>停止</button></div>`).join('')}</div>`

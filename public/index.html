@@ -85,7 +85,7 @@
       <section id="helpView" class="view hidden">
         <div class="toolbar"><div><h1>智能 Bot 命令</h1><p>公开聊天使用前缀，私聊 Bot 可直接发送命令</p></div></div>
         <div class="help-note"><div class="help-rule"><strong>私聊免前缀</strong><span>私聊 Bot 时无需添加命令前缀，例如 <code>/msg Bot名字 指令 1</code>；公开聊天仍需使用自定义前缀或 Bot 游戏名。</span></div><div class="help-rule"><strong>自动接受请求</strong><span>白名单玩家的 /tpa 会随时接受；超级锁定时只有超管的 /tpa 会接受。/tpahere 在普通锁定或超级锁定期间不接受。/peek 不受任何锁定影响。</span></div></div>
-        <div class="help-note"><div class="help-rule"><strong>重启提示</strong><span>除“定时灾厄之瓶”外，自定义任务的定时状态都会在 Bot 程序重启后丢失，需要重新开启。</span></div></div>
+        <div class="help-note"><div class="help-rule"><strong>重启提示</strong><span>“自动钓鱼”和“定时灾厄之瓶”状态会在 Bot 重启后恢复；自定义任务的定时状态会丢失，需要重新开启。</span></div></div>
         <div class="help-note"><div class="help-rule"><strong>公开聊天</strong><span>公开发送命令时需加自己设置的前缀，或直接使用 Bot 游戏名。</span></div><div class="help-examples"><code>@near Steve</code><code>==上车</code><code>NanKinz2查白 Alex</code></div></div>
 
         <section class="command-group command-public">
@@ -113,6 +113,7 @@
             <div class="command-row"><code>右键 玩家名</code><span>右键交互指定实体玩家</span></div>
             <div class="command-row"><code>右键 x y z</code><span>与指定坐标的方块交互</span></div>
             <div class="command-row"><code>攻击</code><span>朝准星方向攻击一次；剑的横扫伤害由服务器按原版条件判定</span></div>
+            <div class="command-row"><code>钓鱼 开 [间隔gt] | 钓鱼 关</code><span>手持钓鱼竿时自动抛竿和收竿；重抛间隔默认 10gt，可用“钓鱼 开 20”修改</span></div>
             <div class="command-row"><code>放置 x y z</code><span>把主手方块放到指定坐标</span></div>
             <div class="command-row"><code>移动 x y z [距离]</code><span>向指定坐标移动，默认距离目标 0.3 格时停止</span></div>
             <div class="command-row"><code>移动 玩家名</code><span>走到可见玩家附近；找不到玩家时失败</span></div>

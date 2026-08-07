@@ -6,6 +6,7 @@ const ITEM_NAME_ALIASES = require('./item-name-aliases.json')
 const PLAYER_MAP_URL = 'https://map.zenoxs.cn/tiles/settings.json'
 const OMINOUS_BOTTLE_INTERVAL_MS = 31 * 60 * 1000
 const OMINOUS_BOTTLE_RETRY_MS = 60 * 1000
+const FISHING_DEFAULT_INTERVAL_TICKS = 10
 
 // All in-game reply text lives here so wording can be changed without touching command logic.
 const COMMAND_TEXT = Object.freeze({
@@ -63,6 +64,9 @@ const COMMAND_TEXT = Object.freeze({
   attackSuccess: '已攻击准星指向的目标。',
   attackMiss: '准星方向没有可攻击目标，已挥动主手。',
   attackFailure: '攻击失败，请确认机器人已进入服务器。',
+  fishingUsage: '正确格式: 钓鱼 开 [间隔gt]，或 钓鱼 关；默认间隔 10gt。',
+  fishingEnabled: ticks => `自动钓鱼已开启；主手持钓鱼竿时会朝准星方向抛竿，收竿后 ${ticks}gt 重抛。`,
+  fishingDisabled: '自动钓鱼已关闭。',
   balanceResult: balance => `Bot 所有者当前拥有 ${balance} momoc。`,
   topUpUsage: '正确格式: 充值 金额，例如 充值 50。',
   topUpPending: amount => `正在支付 ${amount} C，等待服务器确认。`,
@@ -494,10 +498,130 @@ async function lookAtPlayer (bot, username) {
   return { username: entity.username || username }
 }
 
+function isFishingRodHeld (bot) {
+  return normalizeItemId(bot?.heldItem?.name || bot?.heldItem?.displayName) === 'minecraft:fishing_rod'
+}
+
+async function fishAtCursor (bot) {
+  if (!bot?.entity || typeof bot.fish !== 'function') throw new Error('机器人尚未进入服务器。')
+  if (!isFishingRodHeld(bot)) throw new Error('机器人主手没有钓鱼竿。')
+  await bot.fish()
+  return { caught: true }
+}
+
+function createFishingController (bot, options = {}) {
+  const platform = options.platform || global.botPlatform
+  const runBotAction = options.runBotAction || (task => task())
+  const fish = options.fishAtCursor || options.fish || fishAtCursor
+  const setTimer = options.setTimer || setTimeout
+  const clearTimer = options.clearTimer || clearTimeout
+  const logger = options.logger || console
+  let timer = null
+  let enabled = false
+  let stopped = false
+  let running = false
+  let lineActive = false
+  let intervalTicks = FISHING_DEFAULT_INTERVAL_TICKS
+  let lastWarning = ''
+  let lastWarningAt = 0
+
+  function cancelTimer () {
+    if (timer) clearTimer(timer)
+    timer = null
+  }
+
+  function warn (error) {
+    const message = String(error?.message || error)
+    const now = Date.now()
+    if (message === lastWarning && now - lastWarningAt < 60000) return
+    lastWarning = message
+    lastWarningAt = now
+    logger.warn?.(`[smart-fishing] ${message}`)
+  }
+
+  function arm (milliseconds = intervalTicks * 50) {
+    cancelTimer()
+    if (stopped || !enabled) return
+    timer = setTimer(run, Math.max(0, milliseconds))
+    timer?.unref?.()
+  }
+
+  async function run () {
+    timer = null
+    if (stopped || !enabled || running) return
+    if (!isFishingRodHeld(bot)) {
+      arm()
+      return
+    }
+    running = true
+    try {
+      await runBotAction(async () => {
+        if (stopped || !enabled || !isFishingRodHeld(bot)) return
+        lineActive = true
+        try {
+          await fish(bot)
+        } finally {
+          lineActive = false
+        }
+      })
+    } catch (error) {
+      if (enabled && !stopped) warn(error)
+    } finally {
+      running = false
+      if (enabled && !stopped) arm()
+    }
+  }
+
+  function setEnabled (next) {
+    const value = Boolean(next)
+    if (value === enabled) return { enabled }
+    enabled = value
+    if (enabled) {
+      arm(0)
+    } else {
+      cancelTimer()
+      if (lineActive && isFishingRodHeld(bot) && typeof bot.activateItem === 'function') {
+        try { bot.activateItem() } catch {}
+      }
+    }
+    return { enabled }
+  }
+
+  function applySettings (next) {
+    const requestedIntervalTicks = Number(next?.fishingIntervalTicks)
+    const nextIntervalTicks = Number.isInteger(requestedIntervalTicks) && requestedIntervalTicks >= 1 && requestedIntervalTicks <= 1728000
+      ? requestedIntervalTicks
+      : FISHING_DEFAULT_INTERVAL_TICKS
+    const intervalChanged = nextIntervalTicks !== intervalTicks
+    const wasEnabled = enabled
+    intervalTicks = nextIntervalTicks
+    setEnabled(Boolean(next?.fishingEnabled))
+    if (enabled && wasEnabled && intervalChanged && !running) arm()
+    return { fishingEnabled: enabled, fishingIntervalTicks: intervalTicks }
+  }
+
+  async function start () {
+    if (!platform?.request) return applySettings({ fishingEnabled: false })
+    return applySettings(await platform.request('fishing_schedule_get', {}))
+  }
+
+  function stop () {
+    stopped = true
+    enabled = false
+    cancelTimer()
+    if (lineActive && isFishingRodHeld(bot) && typeof bot.activateItem === 'function') {
+      try { bot.activateItem() } catch {}
+    }
+  }
+
+  return { applySettings, getState: () => ({ enabled, intervalTicks, running: lineActive }), runNow: run, setEnabled, start, stop }
+}
+
 function formatScheduleStatus (status = {}) {
   const automation = status.automation || {}
   const entries = []
   if (automation.ominousBottleEnabled) entries.push('灾厄之瓶')
+  if (automation.fishingEnabled) entries.push(`自动钓鱼(${automation.fishingIntervalTicks || FISHING_DEFAULT_INTERVAL_TICKS}gt)`)
   for (const task of status.tasks || []) entries.push(`定时任务 ${task.name}(${task.intervalTicks}gt)`)
   return entries.join('；') || '无'
 }
@@ -891,6 +1015,7 @@ function createSmartCommandHandler (bot, options = {}) {
   const runBotAction = options.runBotAction || (task => task())
   const applyOminousSettings = options.applyOminousSettings || (() => {})
   const applyPeriodicRightClickSettings = options.applyPeriodicRightClickSettings || (() => {})
+  const applyFishingSettings = options.applyFishingSettings || (() => ({ fishingEnabled: false }))
   const scheduleRestart = options.scheduleRestart || (callback => {
     const timer = setTimeout(callback, 600)
     timer.unref?.()
@@ -1213,6 +1338,22 @@ function createSmartCommandHandler (bot, options = {}) {
       return
     }
 
+    if (parsed.command === '钓鱼') {
+      const opening = parsed.args[0] === '开'
+      const intervalText = String(parsed.args[1] || FISHING_DEFAULT_INTERVAL_TICKS)
+      const intervalTicks = opening ? Number(intervalText) : null
+      const validOpening = opening && parsed.args.length <= 2 && /^\d+$/.test(intervalText) && Number.isInteger(intervalTicks) && intervalTicks >= 1 && intervalTicks <= 1728000
+      const validClosing = parsed.args[0] === '关' && parsed.args.length === 1
+      if (!validOpening && !validClosing) return reply(COMMAND_TEXT.fishingUsage, 'fishingUsage')
+      const result = await request('fishing_schedule_set', { username, enabled: opening, intervalTicks })
+      if (!result.allowed) return
+      const settings = applyFishingSettings(result.settings)
+      const enabled = Boolean(settings?.fishingEnabled)
+      const ticks = Number(settings?.fishingIntervalTicks || FISHING_DEFAULT_INTERVAL_TICKS)
+      reply(enabled ? COMMAND_TEXT.fishingEnabled(ticks) : COMMAND_TEXT.fishingDisabled, enabled ? 'fishingEnabled' : 'fishingDisabled', { ticks })
+      return
+    }
+
     if (parsed.command === '定时任务') {
       if (parsed.args.length === 2 && parsed.args[1] === '关') {
         const result = await request('task_schedule_set', { username, name: parsed.args[0], intervalTicks: null })
@@ -1387,6 +1528,7 @@ function installSmartCommands (bot, options = {}) {
   const runBotAction = options.runBotAction || createBotActionQueue()
   const ominousScheduler = options.ominousScheduler || createOminousBottleScheduler(bot, { ...options, platform, runBotAction })
   const periodicRightClickScheduler = options.periodicRightClickScheduler || createPeriodicRightClickScheduler(bot, { ...options, platform, runBotAction })
+  const fishingController = options.fishingController || createFishingController(bot, { ...options, runBotAction })
   let commandPrefix = String(options.commandPrefix ?? '')
   let messageOverrides = {}
   let topUpSettings = { recipient: 'Damomo1', commandTemplate: '/pay {recipient} {amount}' }
@@ -1403,6 +1545,7 @@ function installSmartCommands (bot, options = {}) {
     if (message?.type === 'smart_automation') {
       ominousScheduler.applySettings(message.automation || {})
       periodicRightClickScheduler.applySettings(message.automation || {})
+      fishingController.applySettings(message.automation || {})
     }
   }
   process.on('message', settingsListener)
@@ -1419,6 +1562,7 @@ function installSmartCommands (bot, options = {}) {
     runBotAction,
     applyOminousSettings: settings => ominousScheduler.applySettings(settings),
     applyPeriodicRightClickSettings: settings => periodicRightClickScheduler.applySettings(settings),
+    applyFishingSettings: settings => fishingController.applySettings(settings),
     getCommandPrefixes: () => [commandPrefix, bot.username],
     getMessageOverrides: () => messageOverrides,
     getTopUpSettings: () => topUpSettings
@@ -1464,6 +1608,7 @@ function installSmartCommands (bot, options = {}) {
   })
   startup.then(() => ominousScheduler.start()).catch(error => console.error('[smart-ominous]', error?.stack || error))
   startup.then(() => periodicRightClickScheduler.start()).catch(error => console.error('[smart-periodic-right-click]', error?.stack || error))
+  startup.then(() => fishingController.start()).catch(error => console.error('[smart-fishing]', error?.stack || error))
   const runningScheduledTasks = new Set()
   const taskRetryAfter = new Map()
   let schedulerRetryAfter = 0
@@ -1500,6 +1645,7 @@ function installSmartCommands (bot, options = {}) {
     process.removeListener('message', settingsListener)
     ominousScheduler.stop()
     periodicRightClickScheduler.stop()
+    fishingController.stop()
     clearInterval(taskTimer)
   }
 }
@@ -1511,6 +1657,7 @@ module.exports = {
   clearInventory,
   clearStaleVehicleReference,
   createBotActionQueue,
+  createFishingController,
   createOminousBottleScheduler,
   createPeriodicRightClickScheduler,
   createPlayerMapClient,
@@ -1523,10 +1670,12 @@ module.exports = {
   bindTaskArguments,
   executeCustomTask,
   findPlayerPosition,
+  fishAtCursor,
   installSmartCommands,
   hasValidVehicleAttachment,
   isVersionNewer,
   isOminousBottleItem,
+  isFishingRodHeld,
   mapDimensionLabel,
   mountNearestMinecart,
   moveHeldItemToOffhand,
