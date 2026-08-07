@@ -686,6 +686,20 @@ class BotManager {
     if (action === 'access') return { ...actor, lock }
     if (actor.blacklisted) return { allowed: false, silent: true }
 
+    if (action === 'runtime_restart_prepare') {
+      if (!actor.admin) return { allowed: false, silent: true }
+      if (lock.locked) return { allowed: false, locked: true }
+      const state = this.processes.get(botId)
+      if (!state) throw new Error('机器人当前没有运行。')
+      if (!state.restartPending) {
+        state.restartPending = true
+        this.clearStateTimers(state)
+        this.db.updateBotRuntime(botId, { desiredState: 'running', runtimeState: 'restarting', lastError: '', oauthJson: '' })
+        this.appendLog(botId, 'info', `In-game admin ${actor.playerName || username} requested a runtime update restart.`)
+      }
+      return { allowed: true }
+    }
+
     if (action === 'permission_query') {
       const role = String(payload.role || '')
       const permission = this.db.getSmartPermission(bot.userId, payload.target, role)
@@ -947,17 +961,29 @@ class BotManager {
 
   handleExit (id, exitedState, code, signal) {
     if (this.processes.get(id) !== exitedState) return
-    this.appendLog(id, exitedState.stopping || exitedState.restartPending ? 'info' : 'error', `Process exited: code=${code} signal=${signal || '-'}.`)
+    const bot = this.db.getBot(id)
+    // Older runtime versions exited cleanly without declaring an in-game restart.
+    const legacyCleanRestart = Boolean(
+      bot?.mode === 'smart' &&
+      code === 0 &&
+      !signal &&
+      !exitedState.stopping &&
+      !exitedState.disconnectPending &&
+      !exitedState.retryPending &&
+      !exitedState.fallbackPending &&
+      !exitedState.profileAuthRecoveryPending
+    )
+    const plannedRestart = Boolean(exitedState.restartPending || legacyCleanRestart)
+    this.appendLog(id, exitedState.stopping || plannedRestart ? 'info' : 'error', `Process exited: code=${code} signal=${signal || '-'}.`)
     this.clearStateTimers(exitedState)
     this.processes.delete(id)
     this.pendingTopUps.delete(id)
-    const bot = this.db.getBot(id)
     if (!bot) {
       if (this.accountLocks.get(exitedState.accountId) === id) this.accountLocks.delete(exitedState.accountId)
       return
     }
 
-    if (exitedState.restartPending && bot.desiredState === 'running') {
+    if (plannedRestart && bot.desiredState === 'running') {
       this.db.updateBotRuntime(id, { runtimeState: 'restarting', startedAt: null, oauthJson: '', lastError: '' })
       setTimeout(() => {
         const current = this.db.getBot(id)

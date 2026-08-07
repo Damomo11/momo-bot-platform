@@ -1032,6 +1032,83 @@ test('automatic fishing state persists across database and Bot restarts', () => 
   }
 })
 
+test('in-game restart preparation bypasses reconnect backoff and relaunches promptly', async () => {
+  const bot = { id: 'bot-ingame-restart', userId: 'user-1', accountId: 'account-1', mode: 'smart', desiredState: 'running', runtimeState: 'online', lastError: 'old error', oauthJson: '' }
+  const db = {
+    getBot: () => ({ ...bot }),
+    getSmartAccess: (userId, username) => ({ admin: username === 'RootPlayer', blacklisted: false, playerName: username }),
+    getSmartBotLock: () => ({ locked: false, adminLocked: false }),
+    updateBotRuntime: (id, fields) => Object.assign(bot, fields)
+  }
+  const manager = new BotManager(db, {})
+  const state = { child: {}, accountId: bot.accountId, protocolIndex: 0, billingMode: 'hourly', stopping: false }
+  manager.processes.set(bot.id, state)
+  manager.accountLocks.set(bot.accountId, bot.id)
+  let launched = null
+  manager.launchAttempt = current => { launched = current }
+
+  assert.deepEqual(manager.executeSmartRequest(bot.id, 'runtime_restart_prepare', { username: 'Guest' }), { allowed: false, silent: true })
+  assert.equal(state.restartPending, undefined)
+  assert.deepEqual(manager.executeSmartRequest(bot.id, 'runtime_restart_prepare', { username: 'RootPlayer' }), { allowed: true })
+  assert.equal(state.restartPending, true)
+  assert.equal(bot.runtimeState, 'restarting')
+  assert.equal(bot.lastError, '')
+
+  manager.handleExit(bot.id, state, 0, null)
+  await new Promise(resolve => setTimeout(resolve, 650))
+  assert.equal(launched.id, bot.id)
+  assert.equal(manager.accountReconnects.has(bot.accountId), false)
+  assert.equal(manager.listLogs(bot.id).some(entry => entry.message.includes('连续失败')), false)
+})
+
+test('clean exits from older smart runtimes remain compatible with in-game restart', async () => {
+  const bot = { id: 'bot-legacy-restart', accountId: 'account-legacy', mode: 'smart', desiredState: 'running', runtimeState: 'online', lastError: '' }
+  const db = {
+    getBot: () => ({ ...bot }),
+    updateBotRuntime: (id, fields) => Object.assign(bot, fields)
+  }
+  const manager = new BotManager(db, {})
+  const state = { child: {}, accountId: bot.accountId, protocolIndex: 0, billingMode: 'hourly', stopping: false, disconnectPending: false }
+  manager.processes.set(bot.id, state)
+  let launched = null
+  manager.launchAttempt = current => { launched = current }
+
+  manager.handleExit(bot.id, state, 0, null)
+  await new Promise(resolve => setTimeout(resolve, 650))
+  assert.equal(launched.id, bot.id)
+  assert.equal(manager.accountReconnects.has(bot.accountId), false)
+  assert.equal(bot.lastError, '')
+})
+
+test('in-game restart command prepares the supervisor before scheduling process exit', async () => {
+  const bot = { username: 'PlatformBot', chat: message => chats.push(message) }
+  const chats = []
+  const requests = []
+  let scheduled = 0
+  const handler = createSmartCommandHandler(bot, {
+    commandPrefixes: ['PlatformBot'],
+    platform: {
+      request: async (action, payload) => {
+        requests.push({ action, payload })
+        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: true, lock: { locked: false, adminLocked: false } }
+        if (action === 'runtime_version') return { version: '1.0.19' }
+        if (action === 'runtime_restart_prepare') return { allowed: true }
+        throw new Error(`unexpected action ${action}`)
+      }
+    },
+    scheduleRestart: callback => {
+      assert.equal(typeof callback, 'function')
+      scheduled += 1
+    }
+  })
+
+  await handler({ username: 'RootPlayer', message: 'PlatformBot重启' })
+  assert.deepEqual(requests.map(row => row.action), ['access', 'runtime_version', 'runtime_restart_prepare'])
+  assert.deepEqual(requests.at(-1).payload, { username: 'RootPlayer' })
+  assert.equal(chats.at(-1), '机器人正在重启。')
+  assert.equal(scheduled, 1)
+})
+
 test('periodic right click settings persist direct target coordinates and game-tick interval', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-platform-right-click-'))
   const config = { databasePath: path.join(root, 'data.sqlite'), sessionDays: 30 }
@@ -1746,7 +1823,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.19')
+  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.20')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })
