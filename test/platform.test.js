@@ -20,7 +20,7 @@ const { verifyCloudStoreToken } = require('../src/cloudStoreSso')
 const { LoginAttemptLimiter, clientIp } = require('../src/security')
 const { invalidateMinecraftAccessTokenCache, isMinecraftProfileAuthError } = require('../src/authCache')
 const { upgradeObjectState } = require('../src/supervisorHotReload')
-const { activateNearestVault, attackAtCursor, bindTaskArguments, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, isVersionNewer, mountNearestMinecart, normalizeItemId, parsePeriodicRightClickArgs, parseSmartCommand, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
+const { activateNearestVault, attackAtCursor, bindTaskArguments, createFishingController, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, isVersionNewer, mountNearestMinecart, normalizeItemId, parsePeriodicRightClickArgs, parseSmartCommand, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
 
 test('login attempts are blocked by IP after repeated failures', () => {
   const limiter = new LoginAttemptLimiter({ maxFailures: 3, windowMs: 1000, blockMs: 2000 })
@@ -1006,6 +1006,32 @@ test('smart ominous bottle schedule persists its enabled state and next due time
   }
 })
 
+test('automatic fishing state persists across database and Bot restarts', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-platform-fishing-'))
+  const config = { databasePath: path.join(root, 'data.sqlite'), sessionDays: 30 }
+  let db = new PlatformDb(config)
+  try {
+    const user = db.createUser('fishing_owner', 'password-123')
+    const bot = db.createBot(user.id, { mode: 'smart', label: 'Fisher', microsoftEmail: 'fisher@example.com', serverHost: 'localhost' })
+    const enabled = db.setSmartBotFishing(bot.id, true, 20)
+    assert.equal(enabled.fishingEnabled, true)
+    assert.equal(enabled.fishingIntervalTicks, 20)
+    assert.throws(() => db.setSmartBotFishing(bot.id, true, 0), /1-1728000gt/)
+
+    db.close()
+    db = new PlatformDb(config)
+    assert.equal(db.getSmartBotAutomation(bot.id).fishingEnabled, true)
+    assert.equal(db.getSmartBotAutomation(bot.id).fishingIntervalTicks, 20)
+    const restarted = db.resetSmartBotVolatileSchedules(bot.id).automation
+    assert.equal(restarted.fishingEnabled, true)
+    assert.equal(restarted.fishingIntervalTicks, 20)
+    assert.equal(db.setSmartBotFishing(bot.id, false).fishingEnabled, false)
+  } finally {
+    db.close()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('periodic right click settings persist direct target coordinates and game-tick interval', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-platform-right-click-'))
   const config = { databasePath: path.join(root, 'data.sqlite'), sessionDays: 30 }
@@ -1439,6 +1465,90 @@ test('ominous bottle scheduler records only successful drinks', async () => {
   scheduler.stop()
 })
 
+test('smart fishing command persists and applies the requested state', async () => {
+  const bot = new EventEmitter()
+  bot.username = 'PlatformBot'
+  const chats = []
+  const settings = { fishingEnabled: false, fishingIntervalTicks: 10 }
+  bot.chat = message => chats.push(message)
+  const handler = createSmartCommandHandler(bot, {
+    commandPrefixes: ['PlatformBot'],
+    platform: {
+      request: async (action, payload) => {
+        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
+        if (action === 'fishing_schedule_set') {
+          settings.fishingEnabled = Boolean(payload.enabled)
+          if (settings.fishingEnabled) settings.fishingIntervalTicks = payload.intervalTicks
+          return { allowed: true, settings }
+        }
+        throw new Error(`unexpected action ${action}`)
+      }
+    },
+    applyFishingSettings: next => next
+  })
+
+  await handler({ username: 'White', message: 'PlatformBot钓鱼 开 0' })
+  assert.match(chats.pop(), /默认间隔 10gt/)
+  await handler({ username: 'White', message: 'PlatformBot钓鱼 开 1.5' })
+  assert.match(chats.pop(), /默认间隔 10gt/)
+  await handler({ username: 'White', message: 'PlatformBot钓鱼 关 10' })
+  assert.match(chats.pop(), /默认间隔 10gt/)
+  await handler({ username: 'White', message: 'PlatformBot钓鱼 开' })
+  assert.equal(settings.fishingEnabled, true)
+  assert.equal(settings.fishingIntervalTicks, 10)
+  assert.match(chats.pop(), /10gt 重抛/)
+  await handler({ username: 'White', message: 'PlatformBot钓鱼 开 20' })
+  assert.equal(settings.fishingIntervalTicks, 20)
+  assert.match(chats.pop(), /20gt 重抛/)
+  await handler({ username: 'White', message: 'PlatformBot钓鱼 关' })
+  assert.equal(settings.fishingEnabled, false)
+  assert.equal(chats.pop(), '自动钓鱼已关闭。')
+})
+
+test('automatic fishing restores its state, uses the configured tick interval, and retracts when disabled', async () => {
+  const timers = []
+  let casts = 0
+  let activations = 0
+  let pendingFish
+  const bot = {
+    entity: {},
+    heldItem: { name: 'fishing_rod' },
+    fish: () => {
+      casts += 1
+      return new Promise((resolve, reject) => { pendingFish = { resolve, reject } })
+    },
+    activateItem: () => {
+      activations += 1
+      pendingFish?.reject(new Error('Fishing cancelled'))
+    }
+  }
+  const controller = createFishingController(bot, {
+    platform: { request: async action => action === 'fishing_schedule_get' ? { fishingEnabled: true, fishingIntervalTicks: 20 } : Promise.reject(new Error(`unexpected action ${action}`)) },
+    setTimer: (handler, milliseconds) => { timers.push({ handler, milliseconds }); return { unref () {} } },
+    clearTimer: () => {},
+    logger: { warn () {} }
+  })
+
+  await controller.start()
+  assert.equal(controller.getState().enabled, true)
+  assert.equal(controller.getState().intervalTicks, 20)
+  assert.equal(timers.at(-1).milliseconds, 0)
+
+  const firstCast = controller.runNow()
+  assert.equal(casts, 1)
+  pendingFish.resolve()
+  await firstCast
+  assert.equal(timers.at(-1).milliseconds, 1000)
+
+  const secondCast = controller.runNow()
+  assert.equal(casts, 2)
+  controller.applySettings({ fishingEnabled: false })
+  await secondCast
+  assert.equal(activations, 1)
+  assert.equal(controller.getState().enabled, false)
+  controller.stop()
+})
+
 test('periodic right click scheduler advances after each placement attempt', async () => {
   const requests = []
   const timers = []
@@ -1506,6 +1616,11 @@ test('smart command database requests recheck roles before mutations', () => {
     const ominous = manager.executeSmartRequest(bot.id, 'ominous_schedule_set', { username: 'Alice', enabled: true })
     assert.equal(ominous.allowed, true)
     assert.equal(manager.list(user.id)[0].smartSchedules.automation.ominousBottleEnabled, true)
+
+    const fishing = manager.executeSmartRequest(bot.id, 'fishing_schedule_set', { username: 'Alice', enabled: true, intervalTicks: 40 })
+    assert.equal(fishing.allowed, true)
+    assert.equal(manager.executeSmartRequest(bot.id, 'fishing_schedule_get', {}).fishingEnabled, true)
+    assert.equal(manager.executeSmartRequest(bot.id, 'fishing_schedule_get', {}).fishingIntervalTicks, 40)
 
     const lock = manager.executeSmartRequest(bot.id, 'lock_set', { username: 'Alice', level: 'normal', locked: true, reason: 'afk' })
     assert.equal(lock.status, 'locked')
@@ -1631,7 +1746,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.18')
+  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.19')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })

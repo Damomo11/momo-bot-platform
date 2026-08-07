@@ -450,6 +450,7 @@ async function api (req, res, url) {
     if (bot.mode !== 'smart') throw new Error('只有智能 Bot 使用游戏内定时任务。')
     const action = String(input.action || '')
     if (action === 'stop_ominous') db.setSmartBotOminousBottle(bot.id, false)
+    else if (action === 'stop_fishing') db.setSmartBotFishing(bot.id, false)
     else if (action === 'stop_periodic_right_click') db.setSmartBotPeriodicRightClick(bot.id, { enabled: false })
     else if (action === 'stop_task') db.scheduleSmartBotTask(bot.id, input.name, null)
     else throw new Error('未知的定时任务操作。')

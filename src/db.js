@@ -138,6 +138,8 @@ class PlatformDb {
         ominous_bottle_enabled INTEGER NOT NULL DEFAULT 0,
         ominous_bottle_last_used_at INTEGER,
         ominous_bottle_next_due_at INTEGER,
+        fishing_enabled INTEGER NOT NULL DEFAULT 0,
+        fishing_interval_ticks INTEGER NOT NULL DEFAULT 10,
         periodic_right_click_enabled INTEGER NOT NULL DEFAULT 0,
         periodic_right_click_x INTEGER,
         periodic_right_click_y INTEGER,
@@ -245,6 +247,8 @@ class PlatformDb {
     this.ensureColumn('feature_modules', 'instructions', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('feature_modules', 'help_json', "TEXT NOT NULL DEFAULT '[]'")
     this.ensureColumn('smart_bot_automation', 'periodic_right_click_enabled', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('smart_bot_automation', 'fishing_enabled', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('smart_bot_automation', 'fishing_interval_ticks', 'INTEGER NOT NULL DEFAULT 10')
     this.ensureColumn('smart_bot_automation', 'periodic_right_click_x', 'INTEGER')
     this.ensureColumn('smart_bot_automation', 'periodic_right_click_y', 'INTEGER')
     this.ensureColumn('smart_bot_automation', 'periodic_right_click_z', 'INTEGER')
@@ -1010,7 +1014,7 @@ class PlatformDb {
 
   setSmartUserMessages (userId, overrides = {}) {
     if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) throw new Error('自定义消息格式无效。')
-    const allowed = new Set(['permissionUsage', 'permissionResult', 'openBoxUsage', 'openBoxSuccess', 'openBoxFailure', 'nearUsage', 'nearSuccess', 'nearEmpty', 'nearFailure', 'mountAlready', 'mountMissing', 'mountSuccess', 'mountFailure', 'dismountMissing', 'dismountSuccess', 'dismountFailure', 'vaultSuccess', 'vaultMissing', 'vaultFailure', 'clearEmpty', 'clearSuccess', 'clearFailure', 'takeUsage', 'takeSuccess', 'takeMissing', 'offhandUsage', 'offhandSuccess', 'offhandEmpty', 'offhandFailure', 'dropUsage', 'dropSuccess', 'dropMissing', 'dropFailure', 'switchUsage', 'switchSuccess', 'ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff', 'periodicRightClickUsage', 'periodicRightClickEnabled', 'periodicRightClickDisabled', 'periodicRightClickStatusOff', 'periodicRightClickStatusOn', 'rightClickUsage', 'rightClickSuccess', 'rightClickFailure', 'attackUsage', 'attackSuccess', 'attackMiss', 'attackFailure', 'balanceResult', 'topUpUsage', 'topUpPending', 'topUpBusy', 'topUpFailure', 'topUpSuccess', 'moveUsage', 'moveSuccess', 'moveFailure', 'lookUsage', 'lookSuccess', 'lookFailure', 'placeUsage', 'placeSuccess', 'placeFailure', 'taskUsage', 'taskScheduled', 'taskStopped', 'scheduleStatus', 'locked', 'lockUsage', 'alreadyLocked', 'lockSuccess', 'notLocked', 'adminUnlockRequired', 'unlockSuccess', 'forwardUsage', 'forwardInvalid', 'forwardNested', 'forwardDangerous', 'forwardHome', 'restartLocked', 'restarting', 'permissionAdded', 'permissionExists', 'permissionRemoved', 'permissionMissing', 'temporaryUsage', 'temporaryAdded', 'adminLockUsage', 'alreadyAdminLocked', 'adminLockSuccess', 'notAdminLocked', 'adminUnlockSuccess'])
+    const allowed = new Set(['permissionUsage', 'permissionResult', 'openBoxUsage', 'openBoxSuccess', 'openBoxFailure', 'nearUsage', 'nearSuccess', 'nearEmpty', 'nearFailure', 'mountAlready', 'mountMissing', 'mountSuccess', 'mountFailure', 'dismountMissing', 'dismountSuccess', 'dismountFailure', 'vaultSuccess', 'vaultMissing', 'vaultFailure', 'clearEmpty', 'clearSuccess', 'clearFailure', 'takeUsage', 'takeSuccess', 'takeMissing', 'offhandUsage', 'offhandSuccess', 'offhandEmpty', 'offhandFailure', 'dropUsage', 'dropSuccess', 'dropMissing', 'dropFailure', 'switchUsage', 'switchSuccess', 'ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff', 'fishingUsage', 'fishingEnabled', 'fishingDisabled', 'periodicRightClickUsage', 'periodicRightClickEnabled', 'periodicRightClickDisabled', 'periodicRightClickStatusOff', 'periodicRightClickStatusOn', 'rightClickUsage', 'rightClickSuccess', 'rightClickFailure', 'attackUsage', 'attackSuccess', 'attackMiss', 'attackFailure', 'balanceResult', 'topUpUsage', 'topUpPending', 'topUpBusy', 'topUpFailure', 'topUpSuccess', 'moveUsage', 'moveSuccess', 'moveFailure', 'lookUsage', 'lookSuccess', 'lookFailure', 'placeUsage', 'placeSuccess', 'placeFailure', 'taskUsage', 'taskScheduled', 'taskStopped', 'scheduleStatus', 'locked', 'lockUsage', 'alreadyLocked', 'lockSuccess', 'notLocked', 'adminUnlockRequired', 'unlockSuccess', 'forwardUsage', 'forwardInvalid', 'forwardNested', 'forwardDangerous', 'forwardHome', 'restartLocked', 'restarting', 'permissionAdded', 'permissionExists', 'permissionRemoved', 'permissionMissing', 'temporaryUsage', 'temporaryAdded', 'adminLockUsage', 'alreadyAdminLocked', 'adminLockSuccess', 'notAdminLocked', 'adminUnlockSuccess'])
     const normalized = {}
     for (const [key, value] of Object.entries(overrides)) {
       if (!allowed.has(key)) throw new Error(`不支持的消息项: ${key}`)
@@ -1247,6 +1251,8 @@ class PlatformDb {
       SELECT ominous_bottle_enabled AS ominousBottleEnabled,
              ominous_bottle_last_used_at AS ominousBottleLastUsedAt,
              ominous_bottle_next_due_at AS ominousBottleNextDueAt,
+             fishing_enabled AS fishingEnabled,
+             fishing_interval_ticks AS fishingIntervalTicks,
              periodic_right_click_enabled AS periodicRightClickEnabled,
              periodic_right_click_x AS periodicRightClickX,
              periodic_right_click_y AS periodicRightClickY,
@@ -1263,6 +1269,8 @@ class PlatformDb {
           ominousBottleEnabled: Boolean(row.ominousBottleEnabled),
           ominousBottleLastUsedAt: row.ominousBottleLastUsedAt == null ? null : Number(row.ominousBottleLastUsedAt),
           ominousBottleNextDueAt: row.ominousBottleNextDueAt == null ? null : Number(row.ominousBottleNextDueAt),
+          fishingEnabled: Boolean(row.fishingEnabled),
+          fishingIntervalTicks: Number(row.fishingIntervalTicks || 10),
           periodicRightClickEnabled: Boolean(row.periodicRightClickEnabled),
           periodicRightClickX: row.periodicRightClickX == null ? null : Number(row.periodicRightClickX),
           periodicRightClickY: row.periodicRightClickY == null ? null : Number(row.periodicRightClickY),
@@ -1276,6 +1284,8 @@ class PlatformDb {
           ominousBottleEnabled: false,
           ominousBottleLastUsedAt: null,
           ominousBottleNextDueAt: null,
+          fishingEnabled: false,
+          fishingIntervalTicks: 10,
           periodicRightClickEnabled: false,
           periodicRightClickX: null,
           periodicRightClickY: null,
@@ -1306,6 +1316,23 @@ class PlatformDb {
         ominous_bottle_next_due_at = excluded.ominous_bottle_next_due_at,
         updated_at = CURRENT_TIMESTAMP
     `).run(botId, active ? 1 : 0, current.ominousBottleLastUsedAt, nextDueAt)
+    return this.getSmartBotAutomation(botId)
+  }
+
+  setSmartBotFishing (botId, enabled, intervalTicks = null) {
+    if (!this.getBot(botId)) throw new Error('机器人不存在。')
+    const active = Boolean(enabled)
+    const current = this.getSmartBotAutomation(botId)
+    const ticks = active ? Number(intervalTicks ?? 10) : current.fishingIntervalTicks
+    if (!Number.isInteger(ticks) || ticks < 1 || ticks > 1728000) throw new Error('钓鱼重抛间隔必须为 1-1728000gt。')
+    this.db.prepare(`
+      INSERT INTO smart_bot_automation (bot_id, fishing_enabled, fishing_interval_ticks)
+      VALUES (?, ?, ?)
+      ON CONFLICT(bot_id) DO UPDATE SET
+        fishing_enabled = excluded.fishing_enabled,
+        fishing_interval_ticks = excluded.fishing_interval_ticks,
+        updated_at = CURRENT_TIMESTAMP
+    `).run(botId, active ? 1 : 0, ticks)
     return this.getSmartBotAutomation(botId)
   }
 
