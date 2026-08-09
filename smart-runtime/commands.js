@@ -1468,6 +1468,11 @@ function createSmartCommandHandler (bot, options = {}) {
 
     if (parsed.command === '重启') {
       if (access.lock.locked) return reply(COMMAND_TEXT.restartLocked, 'restartLocked')
+      const prepared = await request('runtime_restart_prepare', { username })
+      if (!prepared.allowed) {
+        if (prepared.locked) reply(COMMAND_TEXT.restartLocked, 'restartLocked')
+        return
+      }
       reply(COMMAND_TEXT.restarting, 'restarting')
       scheduleRestart(() => process.exit(0))
       return
