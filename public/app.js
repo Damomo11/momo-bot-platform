@@ -51,7 +51,7 @@ const MESSAGE_DEFAULTS = {
   mountAlready: '机器人已经在载具上。', mountMissing: '附近 6 格内没有可乘坐的矿车。', mountSuccess: '机器人已上车。', mountFailure: '上车失败，请确认矿车可乘坐且距离足够近。',
   dismountMissing: '机器人当前没有乘坐矿车。', dismountSuccess: '机器人已下车。', dismountFailure: '下车失败，请稍后重试。',
   vaultSuccess: '已右键附近的宝库。', vaultMissing: '附近 6 格内没有找到宝库。', vaultFailure: '开启宝库失败，请确认宝库在交互距离内。',
-  clearEmpty: '机器人背包已经是空的。', clearSuccess: '背包已清空，共丢出 {stacks} 组、{items} 个物品。', clearFailure: '清空背包中断，已丢出 {stacks} 组。原因: {reason}', takeUsage: '正确格式: 拿出 物品中文名或id', takeSuccess: '已将 {item} 拿到主手。', takeMissing: '背包中没有 {item}。', offhandUsage: '正确格式: 副手', offhandSuccess: '已将主手的 {item} 放到副手。', offhandEmpty: '主手没有物品。', offhandFailure: '放入副手失败，请稍后重试。', dropUsage: '正确格式: 丢弃 物品中文名或id', dropSuccess: '已丢弃背包中的全部 {item}，共 {stacks} 组、{items} 个。', dropMissing: '背包中没有 {item}。', dropFailure: '丢弃 {item} 中断，已丢出 {items} 个。原因: {reason}',
+  clearEmpty: '机器人背包已经是空的。', clearSuccess: '背包已清空，共丢出 {stacks} 组、{items} 个物品。', clearFailure: '清空背包中断，已丢出 {stacks} 组。原因: {reason}', takeUsage: '正确格式: 拿出 物品中文名或id', takeSuccess: '已将 {item} 拿到主手。', takeMissing: '背包中没有 {item}。', offhandUsage: '正确格式: 副手', offhandSuccess: '已将主手的 {item} 放到副手。', offhandToHandSuccess: '已将副手的 {item} 放到主手。', offhandEmpty: '主手和副手都没有物品。', offhandFailure: '切换主手和副手失败，请稍后重试。', dropUsage: '正确格式: 丢弃 物品中文名或id', dropSuccess: '已丢弃背包中的全部 {item}，共 {stacks} 组、{items} 个。', dropMissing: '背包中没有 {item}。', dropFailure: '丢弃 {item} 中断，已丢出 {items} 个。原因: {reason}',
   switchUsage: '正确格式: 切换 1-9', switchSuccess: '快捷栏已切换到第 {slot} 格。',
   ominousUsage: '正确格式: 定时灾厄之瓶 开|关', ominousEnabled: '定时灾厄之瓶已开启，将立即饮用一瓶；成功后每 31 分钟执行一次。', ominousDisabled: '定时灾厄之瓶已关闭。', ominousStatusOn: '定时灾厄之瓶: 开，下次执行: {nextTime}', ominousStatusOff: '定时灾厄之瓶: 关。',
   periodicRightClickUsage: '正确格式: 定时放置 x y z ngt，例如 定时放置 100 64 200 20。', periodicRightClickEnabled: '定时放置已开启: ({x},{y},{z})，每 {ticks} 游戏刻执行。', periodicRightClickDisabled: '定时放置已关闭。', periodicRightClickStatusOff: '定时放置: 关。', periodicRightClickStatusOn: '定时放置: 开，坐标 ({x},{y},{z})，间隔 {ticks} 游戏刻。',
@@ -69,8 +69,9 @@ const MESSAGE_LABELS = Object.fromEntries(Object.keys(MESSAGE_DEFAULTS).map(key 
 MESSAGE_LABELS.scheduleStatus = '定时状态'
 MESSAGE_LABELS.offhandUsage = '副手格式'
 MESSAGE_LABELS.offhandSuccess = '放入副手成功'
-MESSAGE_LABELS.offhandEmpty = '主手为空'
-MESSAGE_LABELS.offhandFailure = '放入副手失败'
+MESSAGE_LABELS.offhandToHandSuccess = '取回主手成功'
+MESSAGE_LABELS.offhandEmpty = '双手为空'
+MESSAGE_LABELS.offhandFailure = '切换副手失败'
 MESSAGE_LABELS.attackUsage = '攻击格式'
 MESSAGE_LABELS.attackSuccess = '攻击命中'
 MESSAGE_LABELS.attackMiss = '攻击未命中'
@@ -96,7 +97,7 @@ const MESSAGE_GROUPS = [
   { command: '开宝库', note: '附近宝库交互反馈', keys: ['vaultSuccess', 'vaultMissing', 'vaultFailure'] },
   { command: '清空', note: '背包清空反馈', keys: ['clearEmpty', 'clearSuccess', 'clearFailure'] },
   { command: '拿出', note: '物品拿出反馈', keys: ['takeUsage', 'takeSuccess', 'takeMissing'] },
-  { command: '副手', note: '主手物品转移反馈', keys: ['offhandUsage', 'offhandSuccess', 'offhandEmpty', 'offhandFailure'] },
+  { command: '副手', note: '主手与副手切换反馈', keys: ['offhandUsage', 'offhandSuccess', 'offhandToHandSuccess', 'offhandEmpty', 'offhandFailure'] },
   { command: '丢弃', note: '指定物品全部丢弃反馈', keys: ['dropUsage', 'dropSuccess', 'dropMissing', 'dropFailure'] },
   { command: '切换', note: '快捷栏切换反馈', keys: ['switchUsage', 'switchSuccess'] },
   { command: '定时灾厄之瓶', note: '定时饮用与状态反馈', keys: ['ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff'] },

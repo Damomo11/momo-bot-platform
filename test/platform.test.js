@@ -1901,10 +1901,19 @@ test('smart command can take and discard Chinese-named items, move, and look at 
   assert.equal(equips.at(-1).destination, 'off-hand')
   assert.equal(chats.pop(), '已将主手的 minecraft:stone 放到副手。')
 
+  const offhandItem = { name: 'shield', count: 1, slot: 45 }
+  bot.inventory.slots = []
+  bot.inventory.slots[45] = offhandItem
   bot.heldItem = null
   await handler({ username: 'White', message: 'PlatformBot副手' })
-  assert.equal(equips.length, 2)
-  assert.equal(chats.pop(), '主手没有物品。')
+  assert.deepEqual(equips.at(-1), { item: offhandItem, destination: 'hand' })
+  assert.equal(chats.pop(), '已将副手的 minecraft:shield 放到主手。')
+
+  bot.heldItem = null
+  bot.inventory.slots[45] = null
+  await handler({ username: 'White', message: 'PlatformBot副手' })
+  assert.equal(equips.length, 3)
+  assert.equal(chats.pop(), '主手和副手都没有物品。')
 
   inventoryItems = [{ name: 'stone', count: 32, slot: 9 }, { name: 'dirt', count: 5, slot: 10 }, { name: 'stone', count: 3, slot: 11 }]
   await handler({ username: 'White', message: 'PlatformBot丢弃 石头' })

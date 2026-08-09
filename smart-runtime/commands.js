@@ -7,6 +7,7 @@ const PLAYER_MAP_URL = 'https://map.zenoxs.cn/tiles/settings.json'
 const OMINOUS_BOTTLE_INTERVAL_MS = 31 * 60 * 1000
 const OMINOUS_BOTTLE_RETRY_MS = 60 * 1000
 const FISHING_DEFAULT_INTERVAL_TICKS = 10
+const OFF_HAND_SLOT = 45
 const FISHING_ATTEMPT_TIMEOUT_MS = 90 * 1000
 
 // All in-game reply text lives here so wording can be changed without touching command logic.
@@ -40,8 +41,9 @@ const COMMAND_TEXT = Object.freeze({
   takeMissing: item => `背包中没有 ${item}。`,
   offhandUsage: '正确格式: 副手',
   offhandSuccess: item => `已将主手的 ${item} 放到副手。`,
-  offhandEmpty: '主手没有物品。',
-  offhandFailure: '放入副手失败，请稍后重试。',
+  offhandToHandSuccess: item => `已将副手的 ${item} 放到主手。`,
+  offhandEmpty: '主手和副手都没有物品。',
+  offhandFailure: '切换主手和副手失败，请稍后重试。',
   dropUsage: '正确格式: 丢弃 物品中文名或id',
   dropSuccess: (item, stacks, items) => `已丢弃背包中的全部 ${item}，共 ${stacks} 组、${items} 个。`,
   dropMissing: item => `背包中没有 ${item}。`,
@@ -449,14 +451,16 @@ async function collectItemToHand (bot, itemId) {
 
 async function moveHeldItemToOffhand (bot) {
   if (!bot.entity || !bot.inventory || typeof bot.equip !== 'function') throw new Error('机器人尚未进入服务器。')
-  const item = bot.heldItem
+  const heldItem = bot.heldItem
+  const item = heldItem || bot.inventory.slots?.[OFF_HAND_SLOT]
   if (!item) {
-    const error = new Error('主手没有物品。')
+    const error = new Error('主手和副手都没有物品。')
     error.code = 'HAND_EMPTY'
     throw error
   }
-  await bot.equip(item, 'off-hand')
-  return { item: item.name || '物品' }
+  const destination = heldItem ? 'off-hand' : 'hand'
+  await bot.equip(item, destination)
+  return { destination, item: item.name || '物品' }
 }
 
 async function discardInventoryItems (bot, itemId) {
@@ -1281,7 +1285,8 @@ function createSmartCommandHandler (bot, options = {}) {
       try {
         const result = await runBotAction(() => moveHeldItemToOffhand(bot))
         const item = displayItemId(result.item)
-        reply(COMMAND_TEXT.offhandSuccess(item), 'offhandSuccess', { item })
+        const toHand = result.destination === 'hand'
+        reply(toHand ? COMMAND_TEXT.offhandToHandSuccess(item) : COMMAND_TEXT.offhandSuccess(item), toHand ? 'offhandToHandSuccess' : 'offhandSuccess', { item })
       } catch (error) {
         if (error?.code === 'HAND_EMPTY') reply(COMMAND_TEXT.offhandEmpty, 'offhandEmpty')
         else reply(COMMAND_TEXT.offhandFailure, 'offhandFailure')
