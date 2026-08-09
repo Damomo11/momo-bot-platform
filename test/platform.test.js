@@ -1549,6 +1549,51 @@ test('automatic fishing restores its state, uses the configured tick interval, a
   controller.stop()
 })
 
+test('automatic fishing retracts and retries when Mineflayer never finishes a cast', async () => {
+  const timers = []
+  const pendingCasts = []
+  let casts = 0
+  let activations = 0
+  const bot = {
+    entity: {},
+    heldItem: { name: 'fishing_rod' },
+    fish: () => {
+      casts += 1
+      return new Promise(resolve => pendingCasts.push(resolve))
+    },
+    activateItem: () => { activations += 1 }
+  }
+  const controller = createFishingController(bot, {
+    fishingAttemptTimeoutMs: 5000,
+    setTimer: (handler, milliseconds) => {
+      const timer = { handler, milliseconds, cleared: false, unref () {} }
+      timers.push(timer)
+      return timer
+    },
+    clearTimer: timer => { timer.cleared = true },
+    logger: { warn () {} }
+  })
+
+  controller.applySettings({ fishingEnabled: true, fishingIntervalTicks: 20 })
+  const firstCast = controller.runNow()
+  assert.equal(casts, 1)
+  const watchdog = timers.at(-1)
+  assert.equal(watchdog.milliseconds, 5000)
+
+  watchdog.handler()
+  await firstCast
+  assert.equal(activations, 1)
+  assert.equal(controller.getState().running, false)
+  const retry = timers.at(-1)
+  assert.equal(retry.milliseconds, 1000)
+
+  const secondCast = retry.handler()
+  assert.equal(casts, 2)
+  pendingCasts.at(-1)()
+  await secondCast
+  controller.stop()
+})
+
 test('periodic right click scheduler advances after each placement attempt', async () => {
   const requests = []
   const timers = []

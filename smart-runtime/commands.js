@@ -7,6 +7,7 @@ const PLAYER_MAP_URL = 'https://map.zenoxs.cn/tiles/settings.json'
 const OMINOUS_BOTTLE_INTERVAL_MS = 31 * 60 * 1000
 const OMINOUS_BOTTLE_RETRY_MS = 60 * 1000
 const FISHING_DEFAULT_INTERVAL_TICKS = 10
+const FISHING_ATTEMPT_TIMEOUT_MS = 90 * 1000
 
 // All in-game reply text lives here so wording can be changed without touching command logic.
 const COMMAND_TEXT = Object.freeze({
@@ -515,6 +516,7 @@ function createFishingController (bot, options = {}) {
   const fish = options.fishAtCursor || options.fish || fishAtCursor
   const setTimer = options.setTimer || setTimeout
   const clearTimer = options.clearTimer || clearTimeout
+  const attemptTimeoutMs = options.fishingAttemptTimeoutMs || FISHING_ATTEMPT_TIMEOUT_MS
   const logger = options.logger || console
   let timer = null
   let enabled = false
@@ -546,6 +548,28 @@ function createFishingController (bot, options = {}) {
     timer?.unref?.()
   }
 
+  async function fishWithTimeout () {
+    let timeoutTimer = null
+    let finished = false
+    const fishing = fish(bot)
+    const timeout = new Promise((resolve, reject) => {
+      timeoutTimer = setTimer(() => {
+        if (finished) return
+        if (isFishingRodHeld(bot) && typeof bot.activateItem === 'function') {
+          try { bot.activateItem() } catch {}
+        }
+        reject(new Error(`单次钓鱼超过 ${Math.ceil(attemptTimeoutMs / 1000)} 秒，已自动收竿重试。`))
+      }, attemptTimeoutMs)
+      timeoutTimer?.unref?.()
+    })
+    try {
+      await Promise.race([fishing, timeout])
+    } finally {
+      finished = true
+      if (timeoutTimer) clearTimer(timeoutTimer)
+    }
+  }
+
   async function run () {
     timer = null
     if (stopped || !enabled || running) return
@@ -559,7 +583,7 @@ function createFishingController (bot, options = {}) {
         if (stopped || !enabled || !isFishingRodHeld(bot)) return
         lineActive = true
         try {
-          await fish(bot)
+          await fishWithTimeout()
         } finally {
           lineActive = false
         }
