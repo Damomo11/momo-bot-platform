@@ -99,6 +99,11 @@ main { min-width: 0; height: 100vh; overflow-y: auto; padding: 40px; }
 .create-panel { margin-bottom: 18px; }
 .compact-editor { padding: 18px; }
 .compact-fields { display: grid; grid-template-columns: minmax(180px, 280px) minmax(220px, 380px); gap: 14px; align-items: end; margin-bottom: 20px; }
+.task-restart-option { min-height: 48px; display: flex; align-items: center; gap: 11px; width: fit-content; margin-bottom: 4px; cursor: pointer; }
+.task-restart-option input { width: 18px; height: 18px; flex: 0 0 18px; accent-color: var(--gold); }
+.task-restart-option span, .task-restart-option strong, .task-restart-option small { display: block; }
+.task-restart-option strong { color: var(--text); font-size: 13px; }
+.task-restart-option small { margin-top: 2px; color: var(--muted); font-size: 12px; }
 .compact-editor .section-head { display: flex; align-items: end; justify-content: space-between; gap: 16px; border-top: 1px solid var(--line); padding: 18px 0 12px; }
 .compact-editor .section-head p { margin: 4px 0 0; }
 .compact-editor .task-editor-head { border-top: 0; padding-top: 0; }

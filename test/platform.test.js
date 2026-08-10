@@ -1201,6 +1201,40 @@ test('custom task parameters are validated, persisted, and saved with scheduled 
   }
 })
 
+test('custom tasks cancel schedules on restart by default and can opt into persistence', () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('persistent_task_owner', 'password-123')
+    const bot = f.db.createBot(user.id, { mode: 'smart', label: 'Smart', microsoftEmail: 'persistent-task@example.com', serverHost: 'localhost' })
+    const volatileTask = f.db.setSmartBotTask(bot.id, {
+      name: '默认取消',
+      steps: [{ type: 'command', command: '切换', args: ['1'] }]
+    })
+    const persistentTask = f.db.setSmartBotTask(bot.id, {
+      name: '重启保留',
+      cancelOnRestart: false,
+      steps: [{ type: 'command', command: '切换', args: ['2'] }]
+    })
+    assert.equal(volatileTask.cancelOnRestart, true)
+    assert.equal(persistentTask.cancelOnRestart, false)
+
+    f.db.scheduleSmartBotTask(bot.id, volatileTask.name, 20)
+    const scheduledPersistent = f.db.scheduleSmartBotTask(bot.id, persistentTask.name, 40)
+    const reset = f.db.resetSmartBotVolatileSchedules(bot.id)
+    const resetVolatile = reset.tasks.find(task => task.name === volatileTask.name)
+    const resetPersistent = reset.tasks.find(task => task.name === persistentTask.name)
+
+    assert.equal(resetVolatile.intervalTicks, null)
+    assert.deepEqual(resetVolatile.scheduleArgs, [])
+    assert.equal(resetVolatile.nextDueAt, null)
+    assert.equal(resetPersistent.intervalTicks, 40)
+    assert.equal(resetPersistent.nextDueAt, scheduledPersistent.nextDueAt)
+    assert.equal(f.db.getSmartBotScheduleStatus(bot.id).tasks[0].cancelOnRestart, false)
+  } finally {
+    f.close()
+  }
+})
+
 test('Bot owners can save forwarded commands in custom tasks', () => {
   const f = fixture()
   try {
@@ -1308,6 +1342,50 @@ test('custom task attacks the entity under the crosshair and a miss swings once'
   calls.length = 0
   assert.deepEqual(await attackAtCursor(bot), { status: 'miss', target: null })
   assert.deepEqual(calls, [{ type: 'cursor', distance: 3.5 }, { type: 'swing', hand: 'right' }])
+})
+
+test('attack command never sends server-invalid or stale entity attacks', async () => {
+  const botEntity = { id: 1, type: 'player', name: 'player' }
+  const invalidTargets = [
+    botEntity,
+    { id: 2, type: 'other', name: 'item' },
+    { id: 3, type: 'orb', name: 'experience_orb' },
+    { id: 4, type: 'other', name: 'arrow' },
+    { id: 5, type: 'other', name: 'spectral_arrow' },
+    { id: 6, type: 'other', name: 'trident' },
+    { id: 7, type: 'mob', name: 'zombie', isValid: false },
+    { id: 8, type: 'mob', name: 'zombie' }
+  ]
+  const attacks = []
+  const swings = []
+  const bot = {
+    entity: botEntity,
+    entities: Object.fromEntries(invalidTargets.slice(1, -1).map(entity => [entity.id, entity])),
+    attack: entity => attacks.push(entity),
+    swingArm: hand => swings.push(hand)
+  }
+
+  for (const target of invalidTargets) {
+    bot.entityAtCursor = () => target
+    assert.deepEqual(await attackAtCursor(bot), { status: 'miss', target: null })
+  }
+
+  assert.deepEqual(attacks, [])
+  assert.equal(swings.length, invalidTargets.length)
+})
+
+test('attack command accepts a live entity from the current entity map', async () => {
+  const target = { id: 23, type: 'mob', name: 'zombie', isValid: true }
+  const attacks = []
+  const bot = {
+    entity: { id: 1 },
+    entities: { 23: target },
+    entityAtCursor: () => target,
+    attack: entity => attacks.push(entity)
+  }
+
+  assert.deepEqual(await attackAtCursor(bot), { status: 'attacked', target })
+  assert.deepEqual(attacks, [target])
 })
 
 test('smart attack command performs one native crosshair attack', async () => {

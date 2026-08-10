@@ -297,10 +297,32 @@ async function rightClickTarget (bot, args) {
   await bot.activateBlock(block)
 }
 
+const INVALID_ATTACK_ENTITY_NAMES = new Set([
+  'item',
+  'experience_orb',
+  'arrow',
+  'spectral_arrow',
+  'trident'
+])
+
+function isSafeAttackTarget (bot, target) {
+  if (!target || target === bot.entity || !Number.isInteger(target.id) || target.isValid === false) return false
+  if (Number.isInteger(bot.entity?.id) && target.id === bot.entity.id) return false
+
+  // A destroyed entity can remain in a caller's cursor result briefly. Never send
+  // an attack packet unless Mineflayer still has the exact entity in its live map.
+  if (bot.entities && bot.entities[target.id] !== target) return false
+
+  const registryName = bot.registry?.entities?.[target.entityType]?.name
+  const entityName = String(target.name || registryName || '').toLowerCase().replace(/^minecraft:/, '')
+  if (target.type === 'orb' || INVALID_ATTACK_ENTITY_NAMES.has(entityName)) return false
+  return true
+}
+
 async function attackAtCursor (bot, maxDistance = 3.5) {
   if (!bot.entity || typeof bot.entityAtCursor !== 'function') throw new Error('机器人尚未进入服务器。')
   const target = bot.entityAtCursor(maxDistance)
-  if (!target) {
+  if (!isSafeAttackTarget(bot, target)) {
     if (typeof bot.swingArm !== 'function') throw new Error('机器人无法挥动主手。')
     bot.swingArm('right')
     return { status: 'miss', target: null }
