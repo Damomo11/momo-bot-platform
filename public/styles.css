@@ -98,7 +98,9 @@ main { min-width: 0; height: 100vh; overflow-y: auto; padding: 40px; }
 .section-head h2 { margin: 0; color: var(--gold); font-size: 16px; }
 .create-panel { margin-bottom: 18px; }
 .compact-editor { padding: 18px; }
-.compact-fields { display: grid; grid-template-columns: minmax(180px, 280px) minmax(220px, 380px); gap: 14px; align-items: end; margin-bottom: 20px; }
+.compact-fields { display: grid; grid-template-columns: minmax(180px, 280px) minmax(220px, 380px) auto; gap: 14px; align-items: end; margin-bottom: 20px; }
+.task-persistence-check { min-height: 39px; display: flex; align-items: center; gap: 8px; }
+.task-persistence-check input { width: auto; }
 .compact-editor .section-head { display: flex; align-items: end; justify-content: space-between; gap: 16px; border-top: 1px solid var(--line); padding: 18px 0 12px; }
 .compact-editor .section-head p { margin: 4px 0 0; }
 .compact-editor .task-editor-head { border-top: 0; padding-top: 0; }

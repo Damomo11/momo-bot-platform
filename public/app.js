@@ -869,6 +869,7 @@ function collectTaskSteps () {
 function resetTaskEditor () {
   state.editingTaskName = ''
   $('taskName').value = ''
+  $('taskSchedulePersistent').checked = false
   $('taskEditorTitle').textContent = '新建任务'
   $('saveTask').textContent = '保存任务'
   $('cancelTaskEdit').classList.add('hidden')
@@ -885,6 +886,7 @@ function editTask (name) {
   const waits = task.steps.filter(step => step.type === 'wait').map(step => step.ticks)
   state.editingTaskName = task.name
   $('taskName').value = task.name
+  $('taskSchedulePersistent').checked = Boolean(task.schedulePersistent)
   $('taskEditorTitle').textContent = `编辑任务：${task.name}`
   $('saveTask').textContent = '保存修改'
   $('cancelTaskEdit').classList.remove('hidden')
@@ -906,7 +908,7 @@ async function loadTasks () {
   if (!$('taskSteps').children.length) renderTaskEditor()
   const data = await request(`/api/smart/tasks?botId=${encodeURIComponent(state.editingTaskBotId)}`)
   state.taskRows = data.rows
-  $('taskRows').innerHTML = data.rows.length ? `<table><thead><tr><th>任务</th><th>命令数</th><th>游戏内调用</th><th></th></tr></thead><tbody>${data.rows.map(row => { const parameters = row.parameters || []; const signature = [row.name, ...parameters].join(' '); return `<tr><td><strong>${esc(row.name)}</strong>${parameters.length ? `<div class="muted">参数：${esc(parameters.join('、'))}</div>` : ''}</td><td>${Math.ceil(row.steps.length / 2)}</td><td><code>${esc(signature)}</code><div class="muted">定时任务 ${esc(row.name)} 5${parameters.length ? ` ${esc(parameters.join(' '))}` : ''}</div></td><td><div class="row-actions"><button data-edit-task="${esc(row.name)}">编辑</button><button class="danger" data-delete-task="${esc(row.name)}">删除</button></div></td></tr>` }).join('')}</tbody></table>` : '<div class="empty">尚未创建任务。</div>'
+  $('taskRows').innerHTML = data.rows.length ? `<table><thead><tr><th>任务</th><th>命令数</th><th>游戏内调用</th><th></th></tr></thead><tbody>${data.rows.map(row => { const parameters = row.parameters || []; const signature = [row.name, ...parameters].join(' '); return `<tr><td><strong>${esc(row.name)}</strong>${row.schedulePersistent ? '<div class="positive">持久化定时</div>' : '<div class="muted">定时不持久化</div>'}${parameters.length ? `<div class="muted">参数：${esc(parameters.join('、'))}</div>` : ''}</td><td>${Math.ceil(row.steps.length / 2)}</td><td><code>${esc(signature)}</code><div class="muted">定时任务 ${esc(row.name)} 5${parameters.length ? ` ${esc(parameters.join(' '))}` : ''}</div></td><td><div class="row-actions"><button data-edit-task="${esc(row.name)}">编辑</button><button class="danger" data-delete-task="${esc(row.name)}">删除</button></div></td></tr>` }).join('')}</tbody></table>` : '<div class="empty">尚未创建任务。</div>'
   document.querySelectorAll('[data-edit-task]').forEach(btn => { btn.onclick = () => editTask(btn.dataset.editTask) })
   document.querySelectorAll('[data-delete-task]').forEach(btn => { btn.onclick = async () => { if (!confirm(`确定删除任务“${btn.dataset.deleteTask}”吗？`)) return; await post('/api/smart/tasks', { botId: state.editingTaskBotId, action: 'delete', name: btn.dataset.deleteTask }); if (state.editingTaskName.toLowerCase() === btn.dataset.deleteTask.toLowerCase()) resetTaskEditor(); await loadTasks() } })
 }
@@ -915,7 +917,7 @@ async function saveTask () {
   $('taskError').textContent = ''
   try {
     const wasEditing = Boolean(state.editingTaskName)
-    await post('/api/smart/tasks', { botId: $('taskBot').value, originalName: state.editingTaskName || undefined, name: $('taskName').value, parameters: collectTaskParameters(), steps: collectTaskSteps() })
+    await post('/api/smart/tasks', { botId: $('taskBot').value, originalName: state.editingTaskName || undefined, name: $('taskName').value, schedulePersistent: $('taskSchedulePersistent').checked, parameters: collectTaskParameters(), steps: collectTaskSteps() })
     resetTaskEditor()
     await loadTasks(); toast(wasEditing ? '任务已更新' : '任务已保存')
   } catch (error) { $('taskError').textContent = error.message; throw error }

@@ -1241,6 +1241,7 @@ test('custom task parameters are validated, persisted, and saved with scheduled 
     })
     assert.deepEqual(saved.parameters, ['x', 'y', 'z'])
     assert.deepEqual(saved.scheduleArgs, [])
+    assert.equal(saved.schedulePersistent, false)
     assert.throws(() => f.db.scheduleSmartBotTask(bot.id, saved.name, 20, ['100', '64']), /需要 3 个参数/)
     const scheduled = f.db.scheduleSmartBotTask(bot.id, saved.name, 20, ['100', '64', '-200'])
     assert.deepEqual(scheduled.scheduleArgs, ['100', '64', '-200'])
@@ -1254,6 +1255,42 @@ test('custom task parameters are validated, persisted, and saved with scheduled 
     }), /未声明的参数/)
   } finally {
     f.close()
+  }
+})
+
+test('custom task schedule persistence is opt-in across Bot and platform restarts', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-platform-persistent-task-'))
+  const config = { databasePath: path.join(root, 'data.sqlite'), sessionDays: 30 }
+  let db = new PlatformDb(config)
+  try {
+    const user = db.createUser('persistent_task_owner', 'password-123')
+    const bot = db.createBot(user.id, { mode: 'smart', label: 'Smart', microsoftEmail: 'persistent-task@example.com', serverHost: 'localhost' })
+    const steps = [{ type: 'command', command: '切换', args: ['1'] }]
+    const volatile = db.setSmartBotTask(bot.id, { name: '临时任务', steps })
+    const persistent = db.setSmartBotTask(bot.id, { name: '持久任务', schedulePersistent: true, steps })
+    assert.equal(volatile.schedulePersistent, false)
+    assert.equal(persistent.schedulePersistent, true)
+
+    db.scheduleSmartBotTask(bot.id, volatile.name, 20)
+    const scheduledPersistent = db.scheduleSmartBotTask(bot.id, persistent.name, 40)
+    const persistentDueAt = scheduledPersistent.nextDueAt
+
+    db.close()
+    db = new PlatformDb(config)
+    assert.equal(db.getSmartBotTask(bot.id, volatile.name).intervalTicks, 20)
+    assert.equal(db.getSmartBotTask(bot.id, persistent.name).nextDueAt, persistentDueAt)
+
+    const restarted = db.resetSmartBotVolatileSchedules(bot.id).tasks
+    const resetVolatile = restarted.find(task => task.name === volatile.name)
+    const keptPersistent = restarted.find(task => task.name === persistent.name)
+    assert.equal(resetVolatile.intervalTicks, null)
+    assert.deepEqual(resetVolatile.scheduleArgs, [])
+    assert.equal(keptPersistent.intervalTicks, 40)
+    assert.equal(keptPersistent.nextDueAt, persistentDueAt)
+    assert.equal(keptPersistent.schedulePersistent, true)
+  } finally {
+    db.close()
+    fs.rmSync(root, { recursive: true, force: true })
   }
 })
 
