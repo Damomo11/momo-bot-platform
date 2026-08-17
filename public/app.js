@@ -57,7 +57,7 @@ const MESSAGE_DEFAULTS = {
   switchUsage: '正确格式: 切换 1-9', switchSuccess: '快捷栏已切换到第 {slot} 格。',
   ominousUsage: '正确格式: 定时灾厄之瓶 开|关', ominousEnabled: '定时灾厄之瓶已开启，将立即饮用一瓶；成功后每 31 分钟执行一次。', ominousDisabled: '定时灾厄之瓶已关闭。', ominousStatusOn: '定时灾厄之瓶: 开，下次执行: {nextTime}', ominousStatusOff: '定时灾厄之瓶: 关。',
   periodicRightClickUsage: '正确格式: 定时放置 x y z ngt，例如 定时放置 100 64 200 20。', periodicRightClickEnabled: '定时放置已开启: ({x},{y},{z})，每 {ticks} 游戏刻执行。', periodicRightClickDisabled: '定时放置已关闭。', periodicRightClickStatusOff: '定时放置: 关。', periodicRightClickStatusOn: '定时放置: 开，坐标 ({x},{y},{z})，间隔 {ticks} 游戏刻。',
-  rightClickUsage: '正确格式: 右键 玩家名，或 右键 x y z。', rightClickSuccess: '右键交互成功。', rightClickFailure: '右键交互失败，请确认目标存在且在交互距离内。', attackUsage: '正确格式: 攻击', attackSuccess: '已攻击准星指向的目标。', attackMiss: '准星方向没有可攻击目标，已挥动主手。', attackFailure: '攻击失败，请确认机器人已进入服务器。', balanceResult: 'Bot 所有者当前拥有 {balance} momoc。', topUpUsage: '正确格式: 充值 金额，例如 充值 50。', topUpPending: '正在支付 {amount} C，等待服务器确认。', topUpBusy: '上一笔充值仍在等待服务器确认。', topUpFailure: '充值指令发送失败，请稍后重试。', topUpSuccess: '充值成功，已增加 {amount} momoc，当前余额 {balance} momoc。', moveUsage: '正确格式: 移动 x y z [停止距离]，或 移动 玩家名 [停止距离]，或 移动 东|西|南|北 格数 [停止距离]', moveSuccess: '已移动到目标附近。', moveFailure: '移动失败，请确认目标可达。', lookUsage: '正确格式: 注视 玩家名', lookSuccess: '已调整视角。', lookFailure: '注视失败，请确认目标存在。', placeUsage: '正确格式: 放置 x y z。', placeSuccess: '放置成功。', placeFailure: '{reason}',
+  rightClickUsage: '正确格式: 右键 准星、右键 玩家名，或 右键 x y z。', rightClickSuccess: '右键交互成功。', rightClickFailure: '右键交互失败，请确认目标存在且在交互距离内。', attackUsage: '正确格式: 攻击', attackSuccess: '已攻击准星指向的目标。', attackMiss: '准星方向没有可攻击目标，已挥动主手。', attackFailure: '攻击失败，请确认机器人已进入服务器。', balanceResult: 'Bot 所有者当前拥有 {balance} momoc。', topUpUsage: '正确格式: 充值 金额，例如 充值 50。', topUpPending: '正在支付 {amount} C，等待服务器确认。', topUpBusy: '上一笔充值仍在等待服务器确认。', topUpFailure: '充值指令发送失败，请稍后重试。', topUpSuccess: '充值成功，已增加 {amount} momoc，当前余额 {balance} momoc。', moveUsage: '正确格式: 移动 x y z [停止距离]，或 移动 玩家名 [停止距离]，或 移动 东|西|南|北 格数 [停止距离]', moveSuccess: '已移动到目标附近。', moveFailure: '移动失败，请确认目标可达。', lookUsage: '正确格式: 注视 玩家名', lookSuccess: '已调整视角。', lookFailure: '注视失败，请确认目标存在。', placeUsage: '正确格式: 放置 准星，或 放置 x y z。', placeSuccess: '放置成功。', placeFailure: '{reason}',
   fishingUsage: '正确格式: 钓鱼 开 [间隔gt]，或 钓鱼 关；默认间隔 10gt。', fishingEnabled: '自动钓鱼已开启；主手持钓鱼竿时会朝准星方向抛竿，收竿后 {ticks}gt 重抛。', fishingDisabled: '自动钓鱼已关闭。',
   taskUsage: '正确格式: 定时任务 任务名 5 [参数...]；关闭时使用 定时任务 任务名 关。', taskScheduled: '定时任务 {task} 已开启，每 {ticks} 游戏刻执行一次。', taskStopped: '定时任务 {task} 已关闭。', scheduleStatus: '定时：{schedules}',
   locked: '机器人已被 {player} {label}，备注: {reason}', lockUsage: '正确格式: 锁定 备注', alreadyLocked: '机器人已被锁定，请勿重复锁定。', lockSuccess: '锁定成功，由于发消息会取消 afk，请寻找安全地方挂机。', notLocked: '机器人没有被锁定。', adminUnlockRequired: '机器人处于超级锁定，请由超管使用“超级解锁”。', unlockSuccess: '机器人已解锁。',
@@ -774,7 +774,7 @@ async function saveSmartCommandPrefix () {
 }
 
 function taskArgumentHint (command) {
-  return { 上车: '无需参数', 下车: '无需参数', 清空: '无需参数', 拿出: '石头 / minecraft:stone / stone', 丢弃: '石头 / minecraft:stone / stone', 副手: '无需参数', 切换: '1-9', 放置: 'x y z', 右键: '玩家名 或 x y z', 攻击: '无需参数', 移动: 'x y z [停止距离] / 玩家名 / 东 5', 注视: '玩家名', 指令: '服务器指令' }[command] || ''
+  return { 上车: '无需参数', 下车: '无需参数', 清空: '无需参数', 拿出: '石头 / minecraft:stone / stone', 丢弃: '石头 / minecraft:stone / stone', 副手: '无需参数', 切换: '1-9', 放置: '准星 或 x y z', 右键: '准星 / 玩家名 / x y z', 攻击: '无需参数', 移动: 'x y z [停止距离] / 玩家名 / 东 5', 注视: '玩家名', 指令: '服务器指令' }[command] || ''
 }
 
 function renderTaskParameters (parameters = []) {

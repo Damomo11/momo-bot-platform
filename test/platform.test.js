@@ -20,7 +20,7 @@ const { verifyCloudStoreToken } = require('../src/cloudStoreSso')
 const { LoginAttemptLimiter, clientIp } = require('../src/security')
 const { invalidateMinecraftAccessTokenCache, isMinecraftProfileAuthError } = require('../src/authCache')
 const { upgradeObjectState } = require('../src/supervisorHotReload')
-const { activateNearestVault, attackAtCursor, bindTaskArguments, createFishingController, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, isVersionNewer, mountNearestMinecart, normalizeItemId, parsePeriodicRightClickArgs, parseSmartCommand, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
+const { activateNearestVault, attackAtCursor, bindTaskArguments, createFishingController, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, isVersionNewer, mountNearestMinecart, normalizeItemId, parsePeriodicRightClickArgs, parseSmartCommand, placeAtCursor, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
 
 test('login attempts are blocked by IP after repeated failures', () => {
   const limiter = new LoginAttemptLimiter({ maxFailures: 3, windowMs: 1000, blockMs: 2000 })
@@ -1165,6 +1165,27 @@ test('in-game restart command prepares the supervisor before scheduling process 
   assert.equal(scheduled, 1)
 })
 
+test('version command reports the running version before the latest release details', async () => {
+  const chats = []
+  const handler = createSmartCommandHandler({ username: 'PlatformBot', chat: message => chats.push(message) }, {
+    commandPrefixes: ['PlatformBot'],
+    platform: {
+      request: async action => {
+        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
+        if (action === 'runtime_version') return { version: '1.0.22', release: { summary: '下一版更新说明' } }
+        throw new Error(`unexpected action ${action}`)
+      }
+    }
+  })
+
+  await handler({ username: 'White', message: 'PlatformBot版本' })
+
+  assert.deepEqual(chats, [
+    '智能 Bot 当前运行版本：v1.0.21',
+    '智能 Bot 最新版本：v1.0.22；更新内容：下一版更新说明'
+  ])
+})
+
 test('periodic right click settings persist direct target coordinates and game-tick interval', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-platform-right-click-'))
   const config = { databasePath: path.join(root, 'data.sqlite'), sessionDays: 30 }
@@ -1356,6 +1377,29 @@ test('custom task accepts all commands exposed by the task editor', () => {
       ]
     })
     assert.deepEqual(saved.steps.map(step => step.type === 'command' ? step.command : step.type), ['拿出', 'wait', '丢弃', 'wait', '副手', 'wait', '攻击', 'wait', '移动', 'wait', '注视'])
+  } finally {
+    f.close()
+  }
+})
+
+test('custom task storage accepts cursor right click and placement targets', () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('cursor_task_owner', 'password-123')
+    const bot = f.db.createBot(user.id, { mode: 'smart', label: 'Cursor', microsoftEmail: 'cursor-task@example.com', serverHost: 'localhost' })
+    const saved = f.db.setSmartBotTask(bot.id, {
+      name: '准星操作',
+      steps: [
+        { type: 'command', command: '右键', args: ['准星'] },
+        { type: 'wait', ticks: 1 },
+        { type: 'command', command: '放置', args: ['准星'] }
+      ]
+    })
+    assert.deepEqual(saved.steps, [
+      { type: 'command', command: '右键', args: ['准星'] },
+      { type: 'wait', ticks: 1 },
+      { type: 'command', command: '放置', args: ['准星'] }
+    ])
   } finally {
     f.close()
   }
@@ -1604,6 +1648,80 @@ test('periodic right click places at the exact target using an automatically sel
   await placePeriodicRightClick(bot, { periodicRightClickX: 100, periodicRightClickY: 64, periodicRightClickZ: 200 })
   assert.deepEqual({ x: placed[0].reference.x, y: placed[0].reference.y, z: placed[0].reference.z }, { x: 100, y: 63, z: 200 })
   assert.deepEqual({ x: placed[0].face.x, y: placed[0].face.y, z: placed[0].face.z }, { x: 0, y: 1, z: 0 })
+})
+
+test('cursor right click and placement preserve the view and exact stair hit point', async () => {
+  const block = {
+    name: 'oak_stairs',
+    position: new Vec3(100, 64, 200),
+    intersect: new Vec3(100, 64.25, 200.75),
+    face: 5
+  }
+  const packets = []
+  const placements = []
+  const cursorRanges = []
+  const swings = []
+  const bot = {
+    entity: {},
+    heldItem: { name: 'oak_planks' },
+    blockAtCursor: range => {
+      cursorRanges.push(range)
+      return block
+    },
+    lookAt: async () => { throw new Error('cursor interaction must not turn the bot') },
+    supportFeature: name => name === 'blockPlaceHasInsideBlock',
+    _client: { write: (name, packet) => packets.push({ name, packet }) },
+    swingArm: hand => swings.push(hand),
+    _placeBlockWithOptions: async (reference, face, options) => placements.push({ reference, face, options })
+  }
+
+  await rightClickTarget(bot, ['准星'])
+  await placeAtCursor(bot)
+
+  assert.equal(packets[0].name, 'block_place')
+  assert.deepEqual(packets[0].packet, {
+    location: block.position,
+    direction: 5,
+    hand: 0,
+    cursorX: 0,
+    cursorY: 0.25,
+    cursorZ: 0.75,
+    insideBlock: false,
+    sequence: 0,
+    worldBorderHit: false
+  })
+  assert.deepEqual(swings, ['right'])
+  assert.equal(placements[0].reference, block)
+  assert.deepEqual(placements[0].face, new Vec3(1, 0, 0))
+  assert.deepEqual(placements[0].options, { swingArm: 'right', forceLook: 'ignore', delta: new Vec3(0, 0.25, 0.75) })
+  assert.deepEqual(placements[0].reference.position.plus(placements[0].face), new Vec3(101, 64, 200))
+  assert.deepEqual(cursorRanges, [4.5, 4.5])
+})
+
+test('custom tasks execute cursor placement and right click without changing the view', async () => {
+  const block = { name: 'stone', position: new Vec3(0, 64, 0), intersect: new Vec3(0.5, 65, 0.5), face: 1 }
+  const actions = []
+  const bot = {
+    entity: {},
+    heldItem: { name: 'stone' },
+    blockAtCursor: () => block,
+    supportFeature: name => name === 'blockPlaceHasInsideBlock',
+    _client: { write: (name, packet) => actions.push({ type: 'rightClick', target: packet.location }) },
+    swingArm: () => {},
+    _placeBlockWithOptions: async (reference, face) => actions.push({ type: 'place', target: reference.position.plus(face) })
+  }
+  const result = await executeCustomTask(bot, {
+    name: '准星操作',
+    steps: [
+      { type: 'command', command: '右键', args: ['准星'] },
+      { type: 'wait', ticks: 1 },
+      { type: 'command', command: '放置', args: ['准星'] }
+    ]
+  })
+
+  assert.deepEqual(result.failures, [])
+  assert.equal(actions[0].target, block.position)
+  assert.deepEqual(actions[1].target, new Vec3(0, 65, 0))
 })
 
 test('ominous bottle scheduler records only successful drinks', async () => {
@@ -1961,7 +2079,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 版本：v1.0.20')
+  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.21')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })
