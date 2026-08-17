@@ -1107,8 +1107,8 @@ class PlatformDb {
       if (['上车', '下车', '清空', '副手', '攻击'].includes(command) && args.length) throw new Error(`${command} 命令不需要参数。`)
       if (['拿出', '丢弃'].includes(command) && (args.length !== 1 || (!/^[\p{L}\p{N}_.:/-]+$/u.test(args[0]) && !hasTemplate(args[0])))) throw new Error(`${command}命令需要一个物品中文名、id 或参数占位符。`)
       if (command === '切换' && (args.length !== 1 || (!/^[1-9]$/.test(args[0]) && !hasTemplate(args[0])))) throw new Error('切换命令参数必须为 1-9 或参数占位符。')
-      if (command === '放置' && (args.length !== 3 || !args.every(isIntegerOrTemplate))) throw new Error('放置命令需要三个整数坐标或参数占位符。')
-      if (command === '右键' && !((args.length === 1 && isNameOrTemplate(args[0])) || (args.length === 3 && args.every(isIntegerOrTemplate)))) throw new Error('右键命令需要玩家名或三个整数坐标。')
+      if (command === '放置' && !((args.length === 1 && (args[0] === '准星' || hasTemplate(args[0]))) || (args.length === 3 && args.every(isIntegerOrTemplate)))) throw new Error('放置命令需要“准星”、三个整数坐标或参数占位符。')
+      if (command === '右键' && !((args.length === 1 && isNameOrTemplate(args[0])) || (args.length === 3 && args.every(isIntegerOrTemplate)))) throw new Error('右键命令需要“准星”、玩家名或三个整数坐标。')
       if (command === '移动') {
         const coordinateMove = (args.length === 3 || args.length === 4) && args.slice(0, 3).every(isIntegerOrTemplate) && isStopDistanceOrTemplate(args[3])
         const directionMove = (args.length === 2 || args.length === 3) && ((['东', '西', '南', '北'].includes(args[0]) || hasTemplate(args[0])) && isIntegerOrTemplate(args[1]) && isStopDistanceOrTemplate(args[2]))

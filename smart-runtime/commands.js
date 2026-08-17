@@ -60,7 +60,7 @@ const COMMAND_TEXT = Object.freeze({
   periodicRightClickDisabled: '定时放置已关闭。',
   periodicRightClickStatusOff: '定时放置: 关。',
   periodicRightClickStatusOn: settings => `定时放置: 开，坐标 (${settings.periodicRightClickX},${settings.periodicRightClickY},${settings.periodicRightClickZ})，间隔 ${settings.periodicRightClickIntervalTicks} 游戏刻。`,
-  rightClickUsage: '正确格式: 右键 玩家名，或 右键 x y z。',
+  rightClickUsage: '正确格式: 右键 准星、右键 玩家名，或 右键 x y z。',
   rightClickSuccess: '右键交互成功。',
   rightClickFailure: '右键交互失败，请确认目标存在且在交互距离内。',
   attackUsage: '正确格式: 攻击',
@@ -83,7 +83,7 @@ const COMMAND_TEXT = Object.freeze({
   lookUsage: '正确格式: 注视 玩家名',
   lookSuccess: '已调整视角。',
   lookFailure: '注视失败，请确认目标存在。',
-  placeUsage: '正确格式: 放置 x y z。',
+  placeUsage: '正确格式: 放置 准星，或 放置 x y z。',
   placeSuccess: '放置成功。',
   taskScheduled: (name, ticks) => `定时任务 ${name} 已开启，每 ${ticks} 游戏刻执行一次。`,
   taskStopped: name => `定时任务 ${name} 已关闭。`,
@@ -273,6 +273,11 @@ async function activateNearestVault (bot, maxDistance = 6) {
 }
 
 async function rightClickTarget (bot, args) {
+  if (args.length === 1 && args[0] === '准星') {
+    const target = blockAtCursorTarget(bot)
+    activateBlockAtCursorWithoutLook(bot, target)
+    return
+  }
   if (args.length === 1) {
     const entity = Object.values(bot.entities || {}).filter(row => row?.type === 'player' && String(row.username || '').toLowerCase() === String(args[0]).toLowerCase())[0]
     if (!entity || !Number.isInteger(entity.id) || typeof bot._client?.write !== 'function') throw new Error('player missing')
@@ -295,6 +300,71 @@ async function rightClickTarget (bot, args) {
   const block = point && bot.blockAt?.(new Vec3(point.x, point.y, point.z))
   if (!block || block.name === 'air' || typeof bot.activateBlock !== 'function') throw new Error('block missing')
   await bot.activateBlock(block)
+}
+
+const BLOCK_FACE_VECTORS = Object.freeze({
+  0: new Vec3(0, -1, 0),
+  1: new Vec3(0, 1, 0),
+  2: new Vec3(0, 0, -1),
+  3: new Vec3(0, 0, 1),
+  4: new Vec3(-1, 0, 0),
+  5: new Vec3(1, 0, 0)
+})
+
+function blockAtCursorTarget (bot, maxDistance = 4.5) {
+  if (!bot.entity || typeof bot.blockAtCursor !== 'function') throw new Error('机器人尚未进入服务器。')
+  const block = bot.blockAtCursor(maxDistance)
+  const face = BLOCK_FACE_VECTORS[block?.face]
+  if (!block || block.name === 'air' || !face) throw new Error('准星没有指向可交互的方块。')
+  const cursor = block.intersect?.minus ? block.intersect.minus(block.position) : new Vec3(0.5, 0.5, 0.5)
+  return { block, face, faceId: block.face, cursor }
+}
+
+function activateBlockAtCursorWithoutLook (bot, target) {
+  if (typeof bot.supportFeature !== 'function' || typeof bot._client?.write !== 'function' || typeof bot.swingArm !== 'function') throw new Error('机器人尚未进入服务器。')
+  const base = { location: target.block.position, direction: target.faceId }
+  if (bot.supportFeature('blockPlaceHasHeldItem')) {
+    const Item = require('prismarine-item')(bot.registry)
+    bot._client.write('block_place', {
+      ...base,
+      heldItem: Item.toNotch(bot.heldItem),
+      cursorX: target.cursor.scaled(16).x,
+      cursorY: target.cursor.scaled(16).y,
+      cursorZ: target.cursor.scaled(16).z
+    })
+  } else if (bot.supportFeature('blockPlaceHasHandAndIntCursor')) {
+    bot._client.write('block_place', {
+      ...base,
+      hand: 0,
+      cursorX: target.cursor.scaled(16).x,
+      cursorY: target.cursor.scaled(16).y,
+      cursorZ: target.cursor.scaled(16).z
+    })
+  } else if (bot.supportFeature('blockPlaceHasHandAndFloatCursor')) {
+    bot._client.write('block_place', { ...base, hand: 0, cursorX: target.cursor.x, cursorY: target.cursor.y, cursorZ: target.cursor.z })
+  } else if (bot.supportFeature('blockPlaceHasInsideBlock')) {
+    bot._client.write('block_place', {
+      ...base,
+      hand: 0,
+      cursorX: target.cursor.x,
+      cursorY: target.cursor.y,
+      cursorZ: target.cursor.z,
+      insideBlock: false,
+      sequence: 0,
+      worldBorderHit: false
+    })
+  } else {
+    throw new Error('当前服务器版本不支持准星方块交互。')
+  }
+  bot.swingArm('right')
+}
+
+async function placeAtCursor (bot, maxDistance = 4.5) {
+  if (!bot.heldItem) throw new Error('机器人主手没有可放置物品。')
+  if (typeof bot._placeBlockWithOptions !== 'function') throw new Error('机器人尚未进入服务器。')
+  const target = blockAtCursorTarget(bot, maxDistance)
+  await bot._placeBlockWithOptions(target.block, target.face, { swingArm: 'right', forceLook: 'ignore', delta: target.cursor })
+  return { placed: true }
 }
 
 async function attackAtCursor (bot, maxDistance = 3.5) {
@@ -673,7 +743,10 @@ async function executeCustomTask (bot, task, options = {}) {
         else if (step.command === '丢弃') await discardInventoryItems(bot, args[0])
         else if (step.command === '副手') await moveHeldItemToOffhand(bot)
         else if (step.command === '切换') await bot.setQuickBarSlot(Number(args[0]) - 1)
-        else if (step.command === '放置') await placePeriodicRightClick(bot, { periodicRightClickX: Number(args[0]), periodicRightClickY: Number(args[1]), periodicRightClickZ: Number(args[2]) })
+        else if (step.command === '放置') {
+          if (args.length === 1 && args[0] === '准星') await placeAtCursor(bot)
+          else await placePeriodicRightClick(bot, { periodicRightClickX: Number(args[0]), periodicRightClickY: Number(args[1]), periodicRightClickZ: Number(args[2]) })
+        }
         else if (step.command === '右键') await rightClickTarget(bot, args)
         else if (step.command === '攻击') await attackAtCursor(bot)
         else if (step.command === '移动') {
@@ -709,8 +782,8 @@ function validateCustomTaskCommand (command, args) {
   if (['上车', '下车', '清空', '副手', '攻击'].includes(command) && args.length) throw new Error(`${command} 命令不需要参数。`)
   if (['拿出', '丢弃'].includes(command) && (args.length !== 1 || !normalizeItemId(args[0]) || /\s/.test(args[0]))) throw new Error(`${command}命令需要一个物品中文名或 id。`)
   if (command === '切换' && (args.length !== 1 || !/^[1-9]$/.test(args[0]))) throw new Error('切换命令参数必须为 1-9。')
-  if (command === '放置' && !parseCoordinates(args)) throw new Error('放置命令需要三个有效整数坐标。')
-  if (command === '右键' && !((args.length === 1 && args[0].length <= 32 && !/\s/.test(args[0])) || parseCoordinates(args))) throw new Error('右键命令需要玩家名或三个有效整数坐标。')
+  if (command === '放置' && !(args.length === 1 && args[0] === '准星') && !parseCoordinates(args)) throw new Error('放置命令需要“准星”或三个有效整数坐标。')
+  if (command === '右键' && !((args.length === 1 && args[0].length <= 32 && !/\s/.test(args[0])) || parseCoordinates(args))) throw new Error('右键命令需要“准星”、玩家名或三个有效整数坐标。')
   if (command === '移动' && !isValidMoveSyntax(args)) throw new Error('移动命令需要坐标、玩家名或方向与距离。')
   if (command === '注视' && (args.length !== 1 || !args[0].length)) throw new Error('注视命令需要一个玩家名。')
   if (command === '指令') {
@@ -1092,16 +1165,16 @@ function createSmartCommandHandler (bot, options = {}) {
 
     if (parsed.command === '版本') {
       if (!access.whitelisted && !access.admin) return
+      bot.chat(`智能 Bot 当前运行版本：v${SMART_BOT_VERSION}`)
       try {
         const latest = await request('runtime_version', {})
         const summary = latest?.release?.summary || latest?.release?.title || ''
-        const updateText = isVersionNewer(latest?.version, SMART_BOT_VERSION)
-          ? `，最新 v${latest.version}${summary ? `：${summary}` : ''}`
-          : summary ? `，本版说明：${summary}` : ''
-        bot.chat(`智能 Bot 版本：v${SMART_BOT_VERSION}${updateText}`.slice(0, 256))
-      } catch {
-        bot.chat(`智能 Bot 版本：v${SMART_BOT_VERSION}`)
-      }
+        if (isVersionNewer(latest?.version, SMART_BOT_VERSION)) {
+          bot.chat(`智能 Bot 最新版本：v${latest.version}${summary ? `；更新内容：${summary}` : ''}`.slice(0, 256))
+        } else if (String(latest?.version || '') === SMART_BOT_VERSION) {
+          bot.chat(`智能 Bot 当前已是最新版${summary ? `；本版说明：${summary}` : ''}`.slice(0, 256))
+        }
+      } catch {}
       return
     }
 
@@ -1342,9 +1415,10 @@ function createSmartCommandHandler (bot, options = {}) {
 
     if (parsed.command === '放置') {
       const point = parseCoordinates(parsed.args)
-      if (!point) return reply(COMMAND_TEXT.placeUsage, 'placeUsage')
+      const cursor = parsed.args.length === 1 && parsed.args[0] === '准星'
+      if (!point && !cursor) return reply(COMMAND_TEXT.placeUsage, 'placeUsage')
       try {
-        await runBotAction(() => placePeriodicRightClick(bot, { periodicRightClickX: point.x, periodicRightClickY: point.y, periodicRightClickZ: point.z }))
+        await runBotAction(() => cursor ? placeAtCursor(bot) : placePeriodicRightClick(bot, { periodicRightClickX: point.x, periodicRightClickY: point.y, periodicRightClickZ: point.z }))
         reply(COMMAND_TEXT.placeSuccess, 'placeSuccess')
       } catch (error) { const reason = error?.message || '未知错误'; reply(reason, 'placeFailure', { reason }) }
       return
@@ -1718,6 +1792,7 @@ module.exports = {
   parseSmartCommand,
   parsePeriodicRightClickArgs,
   parseCoordinates,
+  placeAtCursor,
   placePeriodicRightClick,
   rightClickTarget,
   formatScheduleStatus,
