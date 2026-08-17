@@ -10,6 +10,8 @@ const state = {
   botSettings: { commandPrefix: '!', whitelist: [] },
   accounts: [],
   accountAuthorizationPending: new Set(),
+  accountCodeRefreshPending: new Set(),
+  accountCodeRefreshUntil: new Map(),
   accountCreationPending: false,
   bots: [],
   managedBots: [],
@@ -376,7 +378,12 @@ async function loadAccounts () {
           : '-'
         const authorizationActive = accountAuthorizationActive(account)
         const authorizationLabel = account.authState === 'auth_required' && account.oauth ? '等待登录' : authorizationActive ? '授权处理中...' : account.authState === 'authorized' ? '重新授权' : '授权'
-        return `<tr><td><strong>${esc(account.email)}</strong></td><td>${esc(account.minecraftName || '-')}</td><td><span class="status ${esc(account.authState)}">${esc(accountStatusLabel(account.authState))}</span><div class="muted">${esc(account.lastError || '')}</div></td><td>${oauth}</td><td>${account.botCount}</td><td><div class="actions"><button class="primary" data-account-auth="${esc(account.id)}"${authorizationActive ? ' disabled aria-busy="true"' : ''}>${authorizationLabel}</button><button class="danger" data-account-delete="${esc(account.id)}"${authorizationActive ? ' disabled' : ''}>删除</button></div></td></tr>`
+        const refreshRemainingMs = Math.max(0, Number(state.accountCodeRefreshUntil.get(account.id) || 0) - Date.now())
+        const refreshPending = state.accountCodeRefreshPending.has(account.id)
+        const refreshDisabled = refreshPending || refreshRemainingMs > 0
+        const refreshLabel = refreshPending ? '更换中...' : refreshRemainingMs > 0 ? `${Math.ceil(refreshRemainingMs / 1000)} 秒后更换` : '更换验证码'
+        const refresh = account.authState === 'auth_required' && account.oauth ? `<button data-account-refresh-code="${esc(account.id)}"${refreshDisabled ? ' disabled aria-busy="true"' : ''}>${refreshLabel}</button>` : ''
+        return `<tr><td><strong>${esc(account.email)}</strong></td><td>${esc(account.minecraftName || '-')}</td><td><span class="status ${esc(account.authState)}">${esc(accountStatusLabel(account.authState))}</span><div class="muted">${esc(account.lastError || '')}</div></td><td>${oauth}</td><td>${account.botCount}</td><td><div class="actions"><button class="primary" data-account-auth="${esc(account.id)}"${authorizationActive ? ' disabled aria-busy="true"' : ''}>${authorizationLabel}</button>${refresh}<button class="danger" data-account-delete="${esc(account.id)}">删除</button></div></td></tr>`
       }).join('') + '</tbody></table>'
     : '<div class="empty">还没有微软账号。</div>'
   document.querySelectorAll('[data-account-auth]').forEach(btn => {
@@ -394,6 +401,27 @@ async function loadAccounts () {
       } catch (error) { toast(error.message) }
       finally {
         state.accountAuthorizationPending.delete(id)
+        await loadAccounts().catch(() => {})
+      }
+    }
+  })
+  document.querySelectorAll('[data-account-refresh-code]').forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.dataset.accountRefreshCode
+      if (state.accountCodeRefreshPending.has(id) || Number(state.accountCodeRefreshUntil.get(id) || 0) > Date.now()) return
+      state.accountCodeRefreshPending.add(id)
+      btn.disabled = true
+      btn.setAttribute('aria-busy', 'true')
+      btn.textContent = '更换中...'
+      try {
+        await post('/api/accounts/auth', { id, refreshCode: true })
+        state.accountCodeRefreshUntil.set(id, Date.now() + 60000)
+        toast('OAuth 验证码已更换')
+        setTimeout(() => loadAccounts().catch(() => {}), 60000)
+        await loadAccounts()
+      } catch (error) { toast(error.message) }
+      finally {
+        state.accountCodeRefreshPending.delete(id)
         await loadAccounts().catch(() => {})
       }
     }

@@ -366,7 +366,7 @@ async function api (req, res, url) {
     const user = requireUser(req)
     const input = await body(req)
     const actor = user.role === 'admin' ? null : user.id
-    if (url.pathname.endsWith('/auth')) accounts.authorize(input.id, actor, Boolean(input.force))
+    if (url.pathname.endsWith('/auth')) accounts.authorize(input.id, actor, Boolean(input.force), { refreshCode: Boolean(input.refreshCode) })
     if (url.pathname.endsWith('/delete')) accounts.remove(input.id, actor)
     return json(res, 200, { ok: true })
   }

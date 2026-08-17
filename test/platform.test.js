@@ -598,6 +598,62 @@ test('Microsoft authorization deduplicates active requests and rate limits immed
   assert.throws(() => manager.authorize(account.id, account.userId), error => error.status === 429 && /请求过于频繁/.test(error.message))
 })
 
+test('pending Microsoft authorization can be deleted and cancels the active request', async () => {
+  let account = { id: 'account-1', userId: 'user-1', authState: 'pending' }
+  let manager
+  const db = {
+    getMicrosoftAccount: () => account ? { ...account } : null,
+    updateMicrosoftAccountAuth: (id, fields) => Object.assign(account, fields),
+    deleteMicrosoftAccount: id => {
+      assert.equal(id, account.id)
+      assert.equal(manager.authorizing.get(id).cancelled, true)
+      account = null
+      return 1
+    }
+  }
+  manager = new AccountManager(db, { authCacheRoot: '.', accountAuthorizationCooldownMs: 30000 })
+  let finish
+  manager.runAuthorization = async () => {
+    await new Promise(resolve => { finish = resolve })
+  }
+
+  manager.authorize('account-1', account.userId)
+  assert.equal(manager.authorizing.get('account-1').cancelled, false)
+  assert.equal(manager.remove('account-1', account.userId), true)
+  assert.equal(manager.authorizationStartedAt.has('account-1'), false)
+  finish()
+  await manager.authorizing.get('account-1').promise
+  assert.equal(manager.authorizing.has('account-1'), false)
+})
+
+test('OAuth code refresh cancels the active authorization and is rate limited for one minute', async () => {
+  const account = { id: 'account-1', userId: 'user-1', authState: 'auth_required', oauth: { userCode: 'OLD' } }
+  const db = {
+    getMicrosoftAccount: () => ({ ...account }),
+    updateMicrosoftAccountAuth: (id, fields) => Object.assign(account, fields)
+  }
+  const manager = new AccountManager(db, { authCacheRoot: '.', accountOAuthRefreshCooldownMs: 60000 })
+  const runs = []
+  const finishes = []
+  manager.runAuthorization = async (current, force, authorization) => {
+    runs.push({ force, authorization })
+    await new Promise(resolve => finishes.push(resolve))
+  }
+
+  manager.authorize(account.id, account.userId)
+  manager.authorize(account.id, account.userId, false, { refreshCode: true })
+  assert.equal(runs.length, 2)
+  assert.equal(runs[0].authorization.cancelled, true)
+  assert.equal(runs[1].force, true)
+  assert.throws(
+    () => manager.authorize(account.id, account.userId, false, { refreshCode: true }),
+    error => error.status === 429 && /60 秒后重试/.test(error.message)
+  )
+
+  finishes.forEach(resolve => resolve())
+  await Promise.all(runs.map(run => run.authorization.promise))
+})
+
 test('one Microsoft account cannot run two core bot processes at once', async () => {
   const bots = {
     first: { id: 'first', userId: 'user', accountId: 'account', accountAuthState: 'authorized', billingMode: 'hourly', priceMomoc: 0 },
