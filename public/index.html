@@ -85,7 +85,7 @@
       <section id="helpView" class="view hidden">
         <div class="toolbar"><div><h1>智能 Bot 命令</h1><p>公开聊天使用前缀，私聊 Bot 可直接发送命令</p></div></div>
         <div class="help-note"><div class="help-rule"><strong>私聊免前缀</strong><span>私聊 Bot 时无需添加命令前缀，例如 <code>/msg Bot名字 指令 1</code>；公开聊天仍需使用自定义前缀或 Bot 游戏名。</span></div><div class="help-rule"><strong>自动接受请求</strong><span>白名单玩家的 /tpa 会随时接受；超级锁定时只有超管的 /tpa 会接受。/tpahere 在普通锁定或超级锁定期间不接受。/peek 不受任何锁定影响。</span></div></div>
-        <div class="help-note"><div class="help-rule"><strong>重启提示</strong><span>“自动钓鱼”和“定时灾厄之瓶”状态会在 Bot 重启后恢复；自定义任务的定时状态会丢失，需要重新开启。</span></div></div>
+        <div class="help-note"><div class="help-rule"><strong>重启提示</strong><span>“自动钓鱼”和“定时灾厄之瓶”状态会在 Bot 重启后恢复；勾选“持久化定时”的自定义任务也会恢复，其他任务仍需重新开启。</span></div></div>
         <div class="help-note"><div class="help-rule"><strong>公开聊天</strong><span>公开发送命令时需加自己设置的前缀，或直接使用 Bot 游戏名。</span></div><div class="help-examples"><code>@near Steve</code><code>==上车</code><code>NanKinz2查白 Alex</code></div></div>
 
         <section class="command-group command-public">
@@ -147,10 +147,10 @@
 
       <section id="tasksView" class="view hidden">
         <div class="toolbar"><div><h1>自定义任务</h1><p>按顺序组合平台命令；白名单玩家可直接输入任务名执行一次，也可开启定时执行</p></div><button id="refreshTasks">刷新</button></div>
-        <div class="help-note"><div class="help-rule"><strong>重启提示</strong><span>任务内容会保留，但任务的定时状态会在 Bot 程序重启后丢失，需要重新开启。</span></div></div>
+        <div class="help-note"><div class="help-rule"><strong>重启提示</strong><span>任务内容始终保留。勾选“持久化定时”后，已开启的定时状态也会在 Bot 或平台重启后恢复；默认不持久化。</span></div></div>
         <section class="panel create-panel compact-editor">
           <div class="section-head task-editor-head"><div><h2 id="taskEditorTitle">新建任务</h2><p class="muted">可从下方任务列表载入已有任务进行修改。</p></div></div>
-          <div class="compact-fields"><label>智能 Bot<select id="taskBot"></select></label><label>任务名<input id="taskName" maxlength="32" placeholder="例如 自动喊话"></label></div>
+          <div class="compact-fields"><label>智能 Bot<select id="taskBot"></select></label><label>任务名<input id="taskName" maxlength="32" placeholder="例如 自动喊话"></label><label class="task-persistence-check"><input id="taskSchedulePersistent" type="checkbox"> 持久化定时</label></div>
           <div class="section-head"><div><h2>任务参数</h2><p class="muted">每个参数单独填写；不需要参数时可留空，单参数会接收玩家输入的整段内容。</p></div><button id="addTaskParameter" type="button">添加参数</button></div>
           <div id="taskParameterRows" class="task-parameter-editor"></div>
           <div class="section-head"><div><h2>任务步骤</h2><p class="muted">在步骤参数中使用右侧显示的 {参数名}。</p></div><button id="addTaskStep" type="button">添加命令</button></div>

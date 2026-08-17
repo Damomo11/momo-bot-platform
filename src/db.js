@@ -162,6 +162,7 @@ class PlatformDb {
         name TEXT NOT NULL COLLATE NOCASE,
         parameters_json TEXT NOT NULL DEFAULT '[]',
         steps_json TEXT NOT NULL DEFAULT '[]',
+        schedule_persistent INTEGER NOT NULL DEFAULT 0,
         interval_ticks INTEGER,
         schedule_args_json TEXT NOT NULL DEFAULT '[]',
         next_due_at INTEGER,
@@ -258,6 +259,7 @@ class PlatformDb {
     this.ensureColumn('smart_bot_settings', 'message_overrides_json', "TEXT NOT NULL DEFAULT '{}'")
     this.ensureColumn('smart_bot_tasks', 'parameters_json', "TEXT NOT NULL DEFAULT '[]'")
     this.ensureColumn('smart_bot_tasks', 'schedule_args_json', "TEXT NOT NULL DEFAULT '[]'")
+    this.ensureColumn('smart_bot_tasks', 'schedule_persistent', 'INTEGER NOT NULL DEFAULT 0')
     this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_external_identity ON users(auth_source, external_id) WHERE external_id IS NOT NULL AND external_id <> ''")
     this.db.exec('DROP TABLE IF EXISTS bot_modules; DROP TABLE IF EXISTS feature_modules; DROP TABLE IF EXISTS user_bot_settings;')
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_hourly_price', '0.03')").run()
@@ -1050,8 +1052,9 @@ class PlatformDb {
   }
 
   listSmartBotTasks (botId) {
-    return this.db.prepare('SELECT name, parameters_json AS parametersJson, steps_json AS stepsJson, interval_ticks AS intervalTicks, schedule_args_json AS scheduleArgsJson, next_due_at AS nextDueAt, updated_at AS updatedAt FROM smart_bot_tasks WHERE bot_id = ? ORDER BY name COLLATE NOCASE').all(botId).map(row => ({
+    return this.db.prepare('SELECT name, parameters_json AS parametersJson, steps_json AS stepsJson, schedule_persistent AS schedulePersistent, interval_ticks AS intervalTicks, schedule_args_json AS scheduleArgsJson, next_due_at AS nextDueAt, updated_at AS updatedAt FROM smart_bot_tasks WHERE bot_id = ? ORDER BY name COLLATE NOCASE').all(botId).map(row => ({
       ...row,
+      schedulePersistent: Boolean(row.schedulePersistent),
       parameters: JSON.parse(row.parametersJson || '[]'),
       steps: JSON.parse(row.stepsJson || '[]'),
       scheduleArgs: JSON.parse(row.scheduleArgsJson || '[]'),
@@ -1065,7 +1068,7 @@ class PlatformDb {
     const automation = this.getSmartBotAutomation(botId)
     const tasks = this.listSmartBotTasks(botId)
       .filter(task => task.intervalTicks != null)
-      .map(task => ({ name: task.name, intervalTicks: task.intervalTicks, nextDueAt: task.nextDueAt }))
+      .map(task => ({ name: task.name, schedulePersistent: task.schedulePersistent, intervalTicks: task.intervalTicks, nextDueAt: task.nextDueAt }))
     return { automation, tasks }
   }
 
@@ -1077,6 +1080,7 @@ class PlatformDb {
 
   setSmartBotTask (botId, input = {}) {
     const name = String(input.name || '').trim()
+    const schedulePersistent = Boolean(input.schedulePersistent)
     const parameters = Array.isArray(input.parameters) ? input.parameters.map(value => String(value).trim()) : []
     const steps = input.steps
     if (!name || name.length > 32 || /\s/.test(name)) throw new Error('任务名必须为 1-32 个不含空格的字符。')
@@ -1134,9 +1138,9 @@ class PlatformDb {
       if (!original) throw new Error('要编辑的任务不存在，请刷新后重试。')
       const target = this.getSmartBotTask(botId, name)
       if (target && target.name.toLowerCase() !== original.name.toLowerCase()) throw new Error(`任务“${name}”已存在。`)
-      this.db.prepare(`UPDATE smart_bot_tasks SET name=?, parameters_json=?, steps_json=?, interval_ticks=NULL, schedule_args_json='[]', next_due_at=NULL, updated_at=CURRENT_TIMESTAMP WHERE bot_id=? AND name=? COLLATE NOCASE`).run(name, JSON.stringify(parameters), JSON.stringify(normalizedSteps), botId, original.name)
+      this.db.prepare(`UPDATE smart_bot_tasks SET name=?, parameters_json=?, steps_json=?, schedule_persistent=?, interval_ticks=NULL, schedule_args_json='[]', next_due_at=NULL, updated_at=CURRENT_TIMESTAMP WHERE bot_id=? AND name=? COLLATE NOCASE`).run(name, JSON.stringify(parameters), JSON.stringify(normalizedSteps), schedulePersistent ? 1 : 0, botId, original.name)
     } else {
-      this.db.prepare(`INSERT INTO smart_bot_tasks (bot_id, name, parameters_json, steps_json) VALUES (?, ?, ?, ?) ON CONFLICT(bot_id, name) DO UPDATE SET parameters_json=excluded.parameters_json, steps_json=excluded.steps_json, interval_ticks=NULL, schedule_args_json='[]', next_due_at=NULL, updated_at=CURRENT_TIMESTAMP`).run(botId, name, JSON.stringify(parameters), JSON.stringify(normalizedSteps))
+      this.db.prepare(`INSERT INTO smart_bot_tasks (bot_id, name, parameters_json, steps_json, schedule_persistent) VALUES (?, ?, ?, ?, ?) ON CONFLICT(bot_id, name) DO UPDATE SET parameters_json=excluded.parameters_json, steps_json=excluded.steps_json, schedule_persistent=excluded.schedule_persistent, interval_ticks=NULL, schedule_args_json='[]', next_due_at=NULL, updated_at=CURRENT_TIMESTAMP`).run(botId, name, JSON.stringify(parameters), JSON.stringify(normalizedSteps), schedulePersistent ? 1 : 0)
     }
     return this.getSmartBotTask(botId, name)
   }
@@ -1177,7 +1181,7 @@ class PlatformDb {
         periodic_right_click_next_due_at = NULL,
         updated_at = CURRENT_TIMESTAMP
     `).run(botId)
-    this.db.prepare('UPDATE smart_bot_tasks SET interval_ticks = NULL, next_due_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE bot_id = ?').run(botId)
+    this.db.prepare('UPDATE smart_bot_tasks SET interval_ticks = NULL, next_due_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE bot_id = ? AND schedule_persistent = 0').run(botId)
     return { automation: this.getSmartBotAutomation(botId), tasks: this.listSmartBotTasks(botId) }
   }
 
