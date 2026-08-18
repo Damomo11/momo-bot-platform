@@ -40,6 +40,7 @@ global.botPlatform = Object.freeze({
   success: detail => send('template_success', { detail: String(detail || '').slice(0, 200) }),
   moduleSuccess: (moduleId, detail) => send('module_success', { moduleId: String(moduleId || ''), detail: String(detail || '').slice(0, 200) }),
   log: message => send('log', { message: String(message || '').slice(0, 500) }),
+  relatedLog: (message, level = 'audit') => send('related_log', { level: String(level || 'audit').slice(0, 32), message: String(message || '').slice(0, 500) }),
   request: smartRequest
 })
 

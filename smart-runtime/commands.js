@@ -311,13 +311,30 @@ const BLOCK_FACE_VECTORS = Object.freeze({
   5: new Vec3(1, 0, 0)
 })
 
+function pointInsideBlockShapes (shapes, point) {
+  return shapes.some(shape => point.x >= shape[0] && point.x <= shape[3] && point.y >= shape[1] && point.y <= shape[4] && point.z >= shape[2] && point.z <= shape[5])
+}
+
+function cursorFaceId (block, cursor) {
+  if (!Array.isArray(block?.shapes) || !block.shapes.length) return block?.face
+  const sampleDistance = 0.0001
+  const exposedFaces = Object.entries(BLOCK_FACE_VECTORS).filter(([, normal]) => {
+    const inside = cursor.minus(normal.scaled(sampleDistance))
+    const outside = cursor.plus(normal.scaled(sampleDistance))
+    return pointInsideBlockShapes(block.shapes, inside) && !pointInsideBlockShapes(block.shapes, outside)
+  })
+  return exposedFaces.length === 1 ? Number(exposedFaces[0][0]) : block.face
+}
+
 function blockAtCursorTarget (bot, maxDistance = 4.5) {
   if (!bot.entity || typeof bot.blockAtCursor !== 'function') throw new Error('机器人尚未进入服务器。')
   const block = bot.blockAtCursor(maxDistance)
-  const face = BLOCK_FACE_VECTORS[block?.face]
-  if (!block || block.name === 'air' || !face) throw new Error('准星没有指向可交互的方块。')
+  if (!block || block.name === 'air') throw new Error('准星没有指向可交互的方块。')
   const cursor = block.intersect?.minus ? block.intersect.minus(block.position) : new Vec3(0.5, 0.5, 0.5)
-  return { block, face, faceId: block.face, cursor }
+  const faceId = cursorFaceId(block, cursor)
+  const face = BLOCK_FACE_VECTORS[faceId]
+  if (!face) throw new Error('准星没有指向可交互的方块。')
+  return { block, face, faceId, cursor }
 }
 
 function activateBlockAtCursorWithoutLook (bot, target) {
@@ -1148,6 +1165,7 @@ function createSmartCommandHandler (bot, options = {}) {
     if (!parsed) return
 
     const username = String(event.username).replace(/^#/, '')
+    platform.relatedLog?.(`玩家 ${username} 调用 Bot 指令：${[parsed.command, ...parsed.args].join(' ').slice(0, 400)}`)
     const replyText = (message, key, variables = {}) => {
       const overrides = options.getMessageOverrides?.() || {}
       const template = Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : message
@@ -1689,6 +1707,7 @@ function installSmartCommands (bot, options = {}) {
   }
   bot.on('botPlatformMessage', listener)
   const teleportListener = event => {
+    if (event?.kind === 'to_requester') platform.relatedLog?.(`玩家 ${String(event.username || '').replace(/^#/, '')} 向 Bot 发送了 /tpahere。`)
     handleTeleportRequest(event).catch(error => console.error('[smart-teleport]', error?.stack || error))
   }
   bot.on('botPlatformTeleportRequest', teleportListener)

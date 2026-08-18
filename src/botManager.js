@@ -33,6 +33,7 @@ class BotManager {
     this.schedules = new Map()
     this.profileAuthRecoveryAt = new Map()
     this.logs = new Map()
+    this.relatedLogs = new Map()
     this.pendingTopUps = new Map()
     this.accountReconnects = new Map()
     this.serverFailureWindows = new Map()
@@ -40,25 +41,56 @@ class BotManager {
     this.reconnectTimers = new Map()
   }
 
-  appendLog (id, level, message) {
-    const botId = String(id || '')
-    if (!botId) return
-    const entries = this.logs.get(botId) || []
+  sanitizedLogLines (message) {
     const text = String(message ?? '')
       .replace(/(["']?(?:access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|user[_ -]?code|verification[_ -]?(?:uri|url)(?:_complete)?)["']?\s*[:=]\s*["']?)([^\s,"'}\]]+)/gi, '$1[redacted]')
       .replace(/(authorization\s*[:=]\s*)([^\r\n]+)/gi, '$1[redacted]')
       .replace(/([?&](?:access_token|refresh_token|code)=)[^&\s]+/gi, '$1[redacted]')
       .trim()
-    for (const line of text.split(/\r?\n/).filter(Boolean).slice(0, 20)) {
-      entries.push({ at: Date.now(), level: String(level || 'info'), message: line.slice(0, 2000) })
-    }
-    if (entries.length > 100) entries.splice(0, entries.length - 100)
-    this.logs.set(botId, entries)
+    return text.split(/\r?\n/).filter(Boolean).slice(0, 20).map(line => line.slice(0, 2000))
   }
 
-  listLogs (id) {
-    return (this.logs.get(String(id || '')) || []).map(entry => ({ ...entry }))
+  appendStoredLog (id, category, level, message) {
+    const botId = String(id || '')
+    if (!botId) return
+    const kind = category === 'related' ? 'related' : 'general'
+    const fallback = kind === 'related' ? this.relatedLogs : this.logs
+    for (const line of this.sanitizedLogLines(message)) {
+      if (kind === 'general' && String(level) === 'stdout' && /^\[message:(?:public|private)\]/i.test(line)) continue
+      const entry = { at: Date.now(), level: String(level || 'info'), message: line }
+      if (typeof this.db.appendBotLog === 'function') {
+        try {
+          this.db.appendBotLog(botId, kind, entry.level, entry.message, entry.at)
+          continue
+        } catch (error) {
+          console.warn(`[bot:${botId}] 持久化日志失败，暂存到内存：${error.message || error}`)
+        }
+      }
+      const entries = fallback.get(botId) || []
+      entries.push(entry)
+      const limit = kind === 'related' ? 500 : 100
+      if (entries.length > limit) entries.splice(0, entries.length - limit)
+      fallback.set(botId, entries)
+    }
   }
+
+  listStoredLogs (id, category) {
+    const botId = String(id || '')
+    const kind = category === 'related' ? 'related' : 'general'
+    const fallback = kind === 'related' ? this.relatedLogs : this.logs
+    const memory = (fallback.get(botId) || []).map(entry => ({ ...entry }))
+    if (typeof this.db.listBotLogs !== 'function') return memory
+    const limit = kind === 'related' ? 500 : 100
+    return [...this.db.listBotLogs(botId, kind), ...memory].slice(-limit)
+  }
+
+  appendLog (id, level, message) { this.appendStoredLog(id, 'general', level, message) }
+
+  appendRelatedLog (id, level, message) { this.appendStoredLog(id, 'related', level, message) }
+
+  listLogs (id) { return this.listStoredLogs(id, 'general') }
+
+  listRelatedLogs (id) { return this.listStoredLogs(id, 'related') }
 
   startDesiredBots () {
     for (const bot of this.db.listBots()) {
@@ -81,7 +113,7 @@ class BotManager {
     const runtimeVersion = state?.runtimeVersion || this.readPackageVersion(state?.instancePath)
     const latestRuntimeVersion = this.readPackageVersion(path.join(this.config.root || '', bot.mode === 'signin' ? 'signin-runtime' : 'smart-runtime'))
     const updateAvailable = bot.mode === 'smart' && Boolean(state) && isReleaseNewer(latestRuntimeVersion, runtimeVersion)
-    return { ...safe, minecraftVersion: this.protocolVersions(bot)[0], billingMode: bot.mode === 'signin' ? 'once' : 'hourly', priceMomoc: bot.mode === 'signin' ? prices.signinOncePrice : prices.smartHourlyPrice, allowScheduling: bot.mode === 'signin', scheduleEnabled: Boolean(bot.scheduleEnabled), oauth, smartSchedules, runtimeVersion, latestRuntimeVersion, updateAvailable, logs: this.listLogs(bot.id) }
+    return { ...safe, minecraftVersion: this.protocolVersions(bot)[0], billingMode: bot.mode === 'signin' ? 'once' : 'hourly', priceMomoc: bot.mode === 'signin' ? prices.signinOncePrice : prices.smartHourlyPrice, allowScheduling: bot.mode === 'signin', scheduleEnabled: Boolean(bot.scheduleEnabled), oauth, smartSchedules, runtimeVersion, latestRuntimeVersion, updateAvailable, logs: [] }
   }
 
   readPackageVersion (directory) {
@@ -378,6 +410,7 @@ class BotManager {
 
     this.db.updateBotRuntime(bot.id, { runtimeState: 'connecting', oauthJson: '' })
     this.appendLog(bot.id, 'info', `Launching Minecraft ${activeVersion || 'auto-detect'}.`)
+    this.appendRelatedLog(bot.id, 'lifecycle', `Bot 启动（Minecraft ${activeVersion || '自动检测'}），正在连接服务器。`)
     const child = fork(project.entry, project.args, {
       cwd: project.instancePath,
       silent: true,
@@ -516,6 +549,10 @@ class BotManager {
     if (!state) return
     if (message?.type === 'smart_request') {
       this.handleSmartRequest(id, state, message)
+      return
+    }
+    if (message?.type === 'related_log') {
+      this.appendRelatedLog(id, message.level || 'audit', message.message)
       return
     }
     if (message?.type === 'oauth') {
@@ -677,7 +714,14 @@ class BotManager {
     if (action === 'task_get') return { task: this.db.getSmartBotTask(botId, payload.name) }
     if (action === 'task_list') return { tasks: this.db.listSmartBotTasks(botId) }
     if (action === 'schedule_status') return this.db.getSmartBotScheduleStatus(botId)
-    if (action === 'volatile_schedules_reset') return this.db.resetSmartBotVolatileSchedules(botId)
+    if (action === 'volatile_schedules_reset') {
+      const automation = this.db.getSmartBotAutomation(botId)
+      const tasks = this.db.listSmartBotTasks(botId).filter(task => task.intervalTicks != null && !task.schedulePersistent)
+      const result = this.db.resetSmartBotVolatileSchedules(botId)
+      if (automation.periodicRightClickEnabled) this.appendRelatedLog(botId, 'schedule', 'Bot 重启时自动关闭了非持久化定时任务「定时放置」。')
+      for (const task of tasks) this.appendRelatedLog(botId, 'schedule', `Bot 重启时自动关闭了非持久化定时任务「${task.name}」。`)
+      return result
+    }
     if (action === 'task_schedule_complete') return { task: this.db.completeSmartBotTaskSchedule(botId, payload.name) }
     const username = String(payload.username || '')
     const actor = this.db.getSmartAccess(bot.userId, username)
@@ -725,31 +769,43 @@ class BotManager {
 
     if (action === 'ominous_schedule_set') {
       if (!actor.whitelisted || lock.adminLocked) return { allowed: false, silent: true }
-      return { allowed: true, settings: this.db.setSmartBotOminousBottle(botId, Boolean(payload.enabled)) }
+      const enabled = Boolean(payload.enabled)
+      const settings = this.db.setSmartBotOminousBottle(botId, enabled)
+      this.appendRelatedLog(botId, 'schedule', `玩家 ${actor.playerName || username.replace(/^#/, '')} ${enabled ? '开启' : '关闭'}了定时任务「定时灾厄之瓶」。`)
+      return { allowed: true, settings }
     }
 
     if (action === 'fishing_schedule_set') {
       if (!actor.whitelisted || lock.adminLocked) return { allowed: false, silent: true }
-      return { allowed: true, settings: this.db.setSmartBotFishing(botId, Boolean(payload.enabled), payload.intervalTicks) }
+      const enabled = Boolean(payload.enabled)
+      const settings = this.db.setSmartBotFishing(botId, enabled, payload.intervalTicks)
+      this.appendRelatedLog(botId, 'schedule', `玩家 ${actor.playerName || username.replace(/^#/, '')} ${enabled ? '开启' : '关闭'}了定时任务「自动钓鱼」。`)
+      return { allowed: true, settings }
     }
 
     if (action === 'periodic_right_click_set') {
       if (!actor.whitelisted || lock.adminLocked) return { allowed: false, silent: true }
+      const enabled = Boolean(payload.enabled)
+      const settings = this.db.setSmartBotPeriodicRightClick(botId, {
+        enabled,
+        x: payload.x,
+        y: payload.y,
+        z: payload.z,
+        intervalTicks: payload.intervalTicks
+      })
+      this.appendRelatedLog(botId, 'schedule', `玩家 ${actor.playerName || username.replace(/^#/, '')} ${enabled ? '开启' : '关闭'}了定时任务「定时放置」。`)
       return {
         allowed: true,
-        settings: this.db.setSmartBotPeriodicRightClick(botId, {
-          enabled: Boolean(payload.enabled),
-          x: payload.x,
-          y: payload.y,
-          z: payload.z,
-          intervalTicks: payload.intervalTicks
-        })
+        settings
       }
     }
 
     if (action === 'task_schedule_set') {
       if (!actor.whitelisted || lock.adminLocked) return { allowed: false, silent: true }
-      return { allowed: true, task: this.db.scheduleSmartBotTask(botId, payload.name, payload.intervalTicks, payload.args) }
+      const enabled = payload.intervalTicks != null
+      const task = this.db.scheduleSmartBotTask(botId, payload.name, payload.intervalTicks, payload.args)
+      this.appendRelatedLog(botId, 'schedule', `玩家 ${actor.playerName || username.replace(/^#/, '')} ${enabled ? '开启' : '关闭'}了定时任务「${task.name}」。`)
+      return { allowed: true, task }
     }
 
     if (action === 'lock_set') {
@@ -1039,6 +1095,7 @@ class BotManager {
     this.removeSchedule(id)
     this.db.deleteBot(id)
     this.logs.delete(id)
+    this.relatedLogs.delete(id)
     return true
   }
 

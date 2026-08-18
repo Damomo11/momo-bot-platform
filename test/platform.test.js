@@ -20,7 +20,7 @@ const { verifyCloudStoreToken } = require('../src/cloudStoreSso')
 const { LoginAttemptLimiter, clientIp } = require('../src/security')
 const { invalidateMinecraftAccessTokenCache, isMinecraftProfileAuthError } = require('../src/authCache')
 const { upgradeObjectState } = require('../src/supervisorHotReload')
-const { activateNearestVault, attackAtCursor, bindTaskArguments, createFishingController, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, isVersionNewer, mountNearestMinecart, normalizeItemId, parsePeriodicRightClickArgs, parseSmartCommand, placeAtCursor, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
+const { activateNearestVault, attackAtCursor, bindTaskArguments, createFishingController, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, installSmartCommands, isVersionNewer, mountNearestMinecart, normalizeItemId, parsePeriodicRightClickArgs, parseSmartCommand, placeAtCursor, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
 
 test('login attempts are blocked by IP after repeated failures', () => {
   const limiter = new LoginAttemptLimiter({ maxFailures: 3, windowMs: 1000, blockMs: 2000 })
@@ -769,15 +769,18 @@ test('web platform restarts reconnect to the same persistent bot supervisor', { 
   }
 })
 
-test('bot runtime logs stay in memory and retain only the latest fifty entries', () => {
+test('bot runtime log fallback retains 100 general and 500 related entries', () => {
   const manager = new BotManager({ getModePrices: () => ({ smartHourlyPrice: 0.03, signinOncePrice: 0.01 }) }, {})
-  for (let index = 0; index < 52; index++) manager.appendLog('bot-log-test', 'info', `line ${index}`)
+  for (let index = 0; index < 102; index++) manager.appendLog('bot-log-test', 'info', `line ${index}`)
   const logs = manager.listLogs('bot-log-test')
-  assert.equal(logs.length, 50)
+  assert.equal(logs.length, 100)
   assert.equal(logs[0].message, 'line 2')
-  assert.equal(logs.at(-1).message, 'line 51')
+  assert.equal(logs.at(-1).message, 'line 101')
   logs[0].message = 'changed by caller'
   assert.equal(manager.listLogs('bot-log-test')[0].message, 'line 2')
+  for (let index = 0; index < 502; index++) manager.appendRelatedLog('bot-log-test', 'audit', `related ${index}`)
+  assert.equal(manager.listRelatedLogs('bot-log-test').length, 500)
+  assert.equal(manager.listRelatedLogs('bot-log-test')[0].message, 'related 2')
   manager.appendLog('bot-log-secret', 'stdout', '{"access_token":"secret-token", "user_code":"device-code"} Authorization: bearer-token')
   const redacted = manager.listLogs('bot-log-secret')[0].message
   assert.doesNotMatch(redacted, /secret-token|device-code|bearer-token/)
@@ -785,7 +788,30 @@ test('bot runtime logs stay in memory and retain only the latest fifty entries',
   manager.appendLog('bot-log-test', 'stdout', '[message:public] Player: unrelated server chat')
   assert.equal(manager.listLogs('bot-log-test').some(entry => entry.message.includes('unrelated server chat')), false)
   const bot = manager.publicBot({ id: 'bot-log-test', mode: 'smart', oauthJson: '', templateVarsJson: '' })
-  assert.equal(bot.logs.length, 50)
+  assert.deepEqual(bot.logs, [])
+})
+
+test('bot logs persist across database reopen and enforce category limits', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-platform-logs-'))
+  const config = { databasePath: path.join(root, 'data.sqlite') }
+  let db = new PlatformDb(config)
+  try {
+    const user = db.createUser('log_owner', 'password-123')
+    const bot = db.createBot(user.id, { mode: 'smart', label: 'Log Bot', microsoftEmail: 'logs@example.com', serverHost: 'localhost' })
+    const manager = new BotManager(db, {})
+    for (let index = 0; index < 105; index++) manager.appendLog(bot.id, 'info', `general ${index}`)
+    for (let index = 0; index < 505; index++) manager.appendRelatedLog(bot.id, 'audit', `related ${index}`)
+    db.close()
+
+    db = new PlatformDb(config)
+    assert.equal(db.listBotLogs(bot.id, 'general').length, 100)
+    assert.equal(db.listBotLogs(bot.id, 'general')[0].message, 'general 5')
+    assert.equal(db.listBotLogs(bot.id, 'related').length, 500)
+    assert.equal(db.listBotLogs(bot.id, 'related')[0].message, 'related 5')
+  } finally {
+    if (db.db.open) db.close()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('dismount uses the Minecraft sneak control and releases it after leaving the vehicle', async () => {
@@ -915,6 +941,41 @@ test('zenox chat parser emits deduplicated TSL teleport requests', () => {
     { username: 'NanKinz2', kind: 'to_requester', source: 'system_chat' },
     { username: 'WhiteOne', kind: 'to_bot', source: 'system_chat' }
   ])
+})
+
+test('smart runtime reports command callers and tpahere senders to related logs', async () => {
+  const bot = new EventEmitter()
+  bot.username = 'PlatformBot'
+  bot.chat = () => {}
+  const related = []
+  const automation = {
+    ominousBottleEnabled: false,
+    fishingEnabled: false,
+    fishingIntervalTicks: 10,
+    periodicRightClickEnabled: false,
+    periodicRightClickIntervalTicks: 20
+  }
+  const platform = {
+    relatedLog: message => related.push(message),
+    request: async (action, payload) => {
+      if (action === 'settings') return { commandPrefix: '', messageOverrides: {}, topUp: {} }
+      if (action === 'volatile_schedules_reset') return { automation, tasks: [] }
+      if (['ominous_schedule_get', 'fishing_schedule_get', 'periodic_right_click_get'].includes(action)) return automation
+      if (action === 'task_list') return { tasks: [] }
+      if (action === 'access') return { blacklisted: false, whitelisted: false, admin: false, lock: { locked: false, adminLocked: false } }
+      throw new Error(`unexpected action ${action}: ${JSON.stringify(payload)}`)
+    }
+  }
+  const remove = installSmartCommands(bot, { platform, commandPrefixes: ['PlatformBot'] })
+  try {
+    bot.emit('botPlatformMessage', { username: 'GuestOne', message: 'PlatformBot移动 北 5', channel: 'public' })
+    bot.emit('botPlatformTeleportRequest', { username: 'HereOne', kind: 'to_requester' })
+    bot.emit('botPlatformTeleportRequest', { username: 'TpaOne', kind: 'to_bot' })
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(related.some(message => message.includes('玩家 GuestOne 调用 Bot 指令：移动 北 5')), true)
+    assert.equal(related.some(message => message.includes('玩家 HereOne 向 Bot 发送了 /tpahere')), true)
+    assert.equal(related.some(message => message.includes('TpaOne') && message.includes('/tpahere')), false)
+  } finally { remove() }
 })
 
 test('smart teleport acceptance permits a locked bot to receive whitelisted players', async () => {
@@ -1172,7 +1233,7 @@ test('version command reports the running version before the latest release deta
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.22', release: { summary: '下一版更新说明' } }
+        if (action === 'runtime_version') return { version: '1.0.23', release: { summary: '下一版更新说明' } }
         throw new Error(`unexpected action ${action}`)
       }
     }
@@ -1181,8 +1242,8 @@ test('version command reports the running version before the latest release deta
   await handler({ username: 'White', message: 'PlatformBot版本' })
 
   assert.deepEqual(chats, [
-    '智能 Bot 当前运行版本：v1.0.21',
-    '智能 Bot 最新版本：v1.0.22；更新内容：下一版更新说明'
+    '智能 Bot 当前运行版本：v1.0.22',
+    '智能 Bot 最新版本：v1.0.23；更新内容：下一版更新说明'
   ])
 })
 
@@ -1698,6 +1759,39 @@ test('cursor right click and placement preserve the view and exact stair hit poi
   assert.deepEqual(cursorRanges, [4.5, 4.5])
 })
 
+test('cursor placement uses the underside of an upside-down stair instead of a reported side face', async () => {
+  const block = {
+    name: 'oak_stairs',
+    position: new Vec3(100, 64, 200),
+    intersect: new Vec3(100.5, 64.5, 200.75),
+    face: 5,
+    shapes: [
+      [0, 0, 0, 1, 1, 0.5],
+      [0, 0.5, 0.5, 1, 1, 1]
+    ]
+  }
+  const placements = []
+  const bot = {
+    entity: {},
+    heldItem: { name: 'stone' },
+    blockAtCursor: () => block,
+    _placeBlockWithOptions: async (reference, face, options) => placements.push({ reference, face, options })
+  }
+
+  await placeAtCursor(bot)
+
+  assert.deepEqual(placements[0].face, new Vec3(0, -1, 0))
+  assert.deepEqual(placements[0].reference.position.plus(placements[0].face), new Vec3(100, 63, 200))
+  assert.deepEqual(placements[0].options.delta, new Vec3(0.5, 0.5, 0.75))
+
+  block.intersect = new Vec3(100.5, 64.25, 200.5)
+  block.face = 0
+  placements.length = 0
+  await placeAtCursor(bot)
+  assert.deepEqual(placements[0].face, new Vec3(0, 0, 1))
+  assert.deepEqual(placements[0].reference.position.plus(placements[0].face), new Vec3(100, 64, 201))
+})
+
 test('custom tasks execute cursor placement and right click without changing the view', async () => {
   const block = { name: 'stone', position: new Vec3(0, 64, 0), intersect: new Vec3(0.5, 65, 0.5), face: 1 }
   const actions = []
@@ -1954,6 +2048,10 @@ test('smart command database requests recheck roles before mutations', () => {
     assert.equal(fishing.allowed, true)
     assert.equal(manager.executeSmartRequest(bot.id, 'fishing_schedule_get', {}).fishingEnabled, true)
     assert.equal(manager.executeSmartRequest(bot.id, 'fishing_schedule_get', {}).fishingIntervalTicks, 40)
+    const scheduleLogs = manager.listRelatedLogs(bot.id)
+    assert.equal(scheduleLogs.some(entry => entry.message.includes('玩家 Alice 开启了定时任务「定时放置」')), true)
+    assert.equal(scheduleLogs.some(entry => entry.message.includes('玩家 Alice 开启了定时任务「定时灾厄之瓶」')), true)
+    assert.equal(scheduleLogs.some(entry => entry.message.includes('玩家 Alice 开启了定时任务「自动钓鱼」')), true)
 
     const lock = manager.executeSmartRequest(bot.id, 'lock_set', { username: 'Alice', level: 'normal', locked: true, reason: 'afk' })
     assert.equal(lock.status, 'locked')
@@ -2079,7 +2177,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.21')
+  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.22')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })

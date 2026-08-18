@@ -645,37 +645,40 @@ function bindBotActions () {
     }
   })
   document.querySelectorAll('[data-bot-logs]').forEach(btn => {
-    btn.onclick = () => openBotLogDialog(btn.dataset.botLogs)
+    btn.onclick = () => openBotLogDialog(btn.dataset.botLogs).catch(error => toast(error.message))
   })
   document.querySelectorAll('[data-bot-modules]').forEach(btn => {
     btn.onclick = () => openBotModuleDialog(btn.dataset.botModules)
   })
 }
 
-function openBotLogDialog (id) {
+async function openBotLogDialog (id) {
   let modal = $('botLogDialog')
   if (!modal) {
     modal = document.createElement('div')
     modal.id = 'botLogDialog'
     modal.className = 'modal hidden'
-    modal.innerHTML = '<div class="dialog log-dialog" role="dialog" aria-modal="true"><div class="dialog-head"><strong id="botLogTitle"></strong><div class="actions"><button id="refreshBotLogs">刷新</button><button id="closeBotLogs" class="icon-button" title="关闭">×</button></div></div><div id="botLogRows" class="bot-log-rows"></div></div>'
+    modal.innerHTML = '<div class="dialog log-dialog" role="dialog" aria-modal="true"><div class="dialog-head"><strong id="botLogTitle"></strong><div class="actions"><button id="refreshBotLogs">刷新</button><button id="closeBotLogs" class="icon-button" title="关闭">×</button></div></div><div class="log-tabs"><button data-log-kind="general" class="active">普通日志</button><button data-log-kind="related">与我相关</button></div><div id="botLogRows" class="bot-log-rows"></div></div>'
     document.body.append(modal)
     modal.addEventListener('click', event => {
       if (event.target === modal || event.target.id === 'closeBotLogs') modal.classList.add('hidden')
     })
   }
 
-  const render = () => {
+  let activeKind = 'general'
+  let loadSequence = 0
+  modal.querySelectorAll('[data-log-kind]').forEach(button => button.classList.toggle('active', button.dataset.logKind === activeKind))
+  const render = logs => {
     const bot = findBot(id)
     if (!bot) return modal.classList.add('hidden')
-    $('botLogTitle').textContent = `${bot.label} - 最近 100 条日志`
+    const related = activeKind === 'related'
+    $('botLogTitle').textContent = `${bot.label} - ${related ? '与我相关（最近 500 条）' : '普通日志（最近 100 条）'}`
     const rows = $('botLogRows')
     rows.replaceChildren()
-    const logs = Array.isArray(bot.logs) ? bot.logs : []
     if (!logs.length) {
       const empty = document.createElement('div')
       empty.className = 'empty'
-      empty.textContent = '当前进程还没有日志。'
+      empty.textContent = related ? '还没有与此 Bot 相关的审计记录。' : '还没有普通日志记录。'
       rows.append(empty)
       return
     }
@@ -694,17 +697,25 @@ function openBotLogDialog (id) {
     rows.scrollTop = rows.scrollHeight
   }
 
-  $('refreshBotLogs').onclick = async () => {
-    try {
-      if (state.managedBots.some(row => row.id === id)) await loadManagedBots()
-      else await loadBots()
-      render()
-    } catch (error) {
-      toast(error.message)
-    }
+  const load = async () => {
+    const sequence = ++loadSequence
+    const kind = activeKind
+    const rows = $('botLogRows')
+    rows.innerHTML = '<div class="empty">正在读取日志...</div>'
+    const data = await request(`/api/bots/logs?botId=${encodeURIComponent(id)}&kind=${encodeURIComponent(kind)}`)
+    if (sequence !== loadSequence || kind !== activeKind) return
+    render(Array.isArray(data.rows) ? data.rows : [])
   }
-  render()
+  modal.querySelectorAll('[data-log-kind]').forEach(button => {
+    button.onclick = async () => {
+      activeKind = button.dataset.logKind
+      modal.querySelectorAll('[data-log-kind]').forEach(entry => entry.classList.toggle('active', entry === button))
+      try { await load() } catch (error) { toast(error.message) }
+    }
+  })
+  $('refreshBotLogs').onclick = () => load().catch(error => toast(error.message))
   modal.classList.remove('hidden')
+  await load()
 }
 
 function smartRoleLabel (role) {

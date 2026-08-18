@@ -303,6 +303,11 @@ function botForUser (id, user) {
   return bot
 }
 
+function appendRelatedBotLog (botId, message, level = 'schedule') {
+  if (typeof db.appendBotLog !== 'function') return
+  db.appendBotLog(botId, 'related', level, String(message || '').replace(/[\r\n\t]+/g, ' ').slice(0, 2000))
+}
+
 async function api (req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { ok: true, service: 'bot-self-hosting-platform' })
   if (req.method === 'GET' && url.pathname === '/api/public-settings') {
@@ -375,6 +380,13 @@ async function api (req, res, url) {
     const rows = await bots.list(user.role === 'admin' && url.searchParams.get('all') === '1' ? null : user.id)
     return json(res, 200, { ok: true, rows })
   }
+  if (req.method === 'GET' && url.pathname === '/api/bots/logs') {
+    const user = requireUser(req)
+    const bot = botForUser(url.searchParams.get('botId'), user)
+    const kind = String(url.searchParams.get('kind') || 'general')
+    if (!['general', 'related'].includes(kind)) throw new Error('日志类型无效。')
+    return json(res, 200, { ok: true, bot: { id: bot.id, label: bot.label }, kind, rows: db.listBotLogs(bot.id, kind) })
+  }
   if (req.method === 'GET' && url.pathname === '/api/smart/permissions') {
     const user = requireUser(req)
     const bot = botForUser(url.searchParams.get('botId'), user)
@@ -436,10 +448,17 @@ async function api (req, res, url) {
     const input = await body(req)
     const bot = botForUser(input.botId, user)
     if (bot.userId !== user.id) { const err = new Error('自定义任务只能修改自己的机器人。'); err.status = 403; throw err }
+    const previous = db.getSmartBotTask(bot.id, input.originalName || input.name)
     let result
     if (input.action === 'delete') result = db.deleteSmartBotTask(bot.id, input.name)
     else if (input.action === 'schedule') result = db.scheduleSmartBotTask(bot.id, input.name, input.intervalTicks === '' ? null : input.intervalTicks)
     else result = db.setSmartBotTask(bot.id, input)
+    if (input.action === 'schedule') {
+      const enabled = input.intervalTicks !== '' && input.intervalTicks != null
+      appendRelatedBotLog(bot.id, `网页用户 ${user.username} ${enabled ? '开启' : '关闭'}了定时任务「${result.name}」。`)
+    } else if (previous?.intervalTicks != null) {
+      appendRelatedBotLog(bot.id, `网页用户 ${user.username} ${input.action === 'delete' ? '删除任务并关闭' : '编辑任务时关闭'}了定时任务「${previous.name}」。`)
+    }
     await bots.syncSmartSettings(bot.id)
     return json(res, 200, { ok: true, result, rows: db.listSmartBotTasks(bot.id) })
   }
@@ -454,6 +473,13 @@ async function api (req, res, url) {
     else if (action === 'stop_periodic_right_click') db.setSmartBotPeriodicRightClick(bot.id, { enabled: false })
     else if (action === 'stop_task') db.scheduleSmartBotTask(bot.id, input.name, null)
     else throw new Error('未知的定时任务操作。')
+    const scheduleName = {
+      stop_ominous: '定时灾厄之瓶',
+      stop_fishing: '自动钓鱼',
+      stop_periodic_right_click: '定时放置',
+      stop_task: String(input.name || '')
+    }[action]
+    appendRelatedBotLog(bot.id, `网页用户 ${user.username} 关闭了定时任务「${scheduleName}」。`)
     const schedules = await bots.syncSmartAutomation(bot.id)
     return json(res, 200, { ok: true, schedules })
   }
@@ -488,7 +514,9 @@ async function api (req, res, url) {
     const user = requireUser(req)
     const input = await body(req)
     botForUser(input.id, user)
-    return json(res, 200, { ok: true, bot: await bots.setSchedule(input.id, Boolean(input.enabled), String(input.cron || ''), user.role === 'admin' ? null : user.id) })
+    const updated = await bots.setSchedule(input.id, Boolean(input.enabled), String(input.cron || ''), user.role === 'admin' ? null : user.id)
+    appendRelatedBotLog(input.id, `网页用户 ${user.username} ${input.enabled ? '开启' : '关闭'}了 Bot 运行计划${input.enabled ? `（${String(input.cron || '')}）` : ''}。`)
+    return json(res, 200, { ok: true, bot: updated })
   }
   if (req.method === 'POST' && ['/api/bots/start', '/api/bots/stop', '/api/bots/restart', '/api/bots/delete'].includes(url.pathname)) {
     const user = requireUser(req)

@@ -176,6 +176,15 @@ class PlatformDb {
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS bot_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bot_id TEXT NOT NULL,
+        category TEXT NOT NULL CHECK (category IN ('general', 'related')),
+        level TEXT NOT NULL DEFAULT 'info',
+        message TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE
+      );
       CREATE TABLE IF NOT EXISTS feature_modules (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
@@ -218,6 +227,7 @@ class PlatformDb {
       CREATE INDEX IF NOT EXISTS idx_ledger_user ON momoc_ledger(user_id, id DESC);
       CREATE INDEX IF NOT EXISTS idx_smart_permissions_expiry ON smart_permissions(expires_at);
       CREATE INDEX IF NOT EXISTS idx_smart_permissions_owner ON smart_permissions(owner_user_id, role, player_name);
+      CREATE INDEX IF NOT EXISTS idx_bot_logs_bot_category ON bot_logs(bot_id, category, id DESC);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_smart_bot_prefix_unique
         ON smart_bot_settings(command_prefix COLLATE NOCASE)
         WHERE command_prefix <> '';
@@ -1456,6 +1466,53 @@ class PlatformDb {
   updateBotSchedule (id, enabled, cron) {
     this.db.prepare('UPDATE bots SET schedule_enabled = ?, schedule_cron = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(enabled ? 1 : 0, enabled ? String(cron || '') : '', id)
     return this.getBot(id)
+  }
+
+  appendBotLog (botId, category, level, message, at = Date.now()) {
+    const kind = String(category || '')
+    if (!['general', 'related'].includes(kind)) throw new Error('Bot 日志类型无效。')
+    const timestamp = Number(at)
+    if (!Number.isFinite(timestamp)) throw new Error('Bot 日志时间无效。')
+    const entry = {
+      botId: String(botId || ''),
+      category: kind,
+      level: String(level || 'info').slice(0, 32),
+      message: String(message || '').slice(0, 2000),
+      at: Math.trunc(timestamp)
+    }
+    const limit = kind === 'related' ? 500 : 100
+    const save = this.db.transaction(() => {
+      const result = this.db.prepare('INSERT INTO bot_logs (bot_id, category, level, message, at) VALUES (?, ?, ?, ?, ?)').run(entry.botId, entry.category, entry.level, entry.message, entry.at)
+      this.db.prepare(`
+        DELETE FROM bot_logs
+        WHERE bot_id = ? AND category = ? AND id <= COALESCE((
+          SELECT id FROM bot_logs
+          WHERE bot_id = ? AND category = ?
+          ORDER BY id DESC
+          LIMIT 1 OFFSET ?
+        ), -1)
+      `).run(entry.botId, entry.category, entry.botId, entry.category, limit)
+      return { id: Number(result.lastInsertRowid), level: entry.level, message: entry.message, at: entry.at }
+    })
+    return save()
+  }
+
+  listBotLogs (botId, category = 'general', limit = null) {
+    const kind = String(category || '')
+    if (!['general', 'related'].includes(kind)) throw new Error('Bot 日志类型无效。')
+    const maximum = kind === 'related' ? 500 : 100
+    const count = Math.min(maximum, Math.max(1, Number.parseInt(limit ?? maximum, 10) || maximum))
+    return this.db.prepare(`
+      SELECT id, level, message, at
+      FROM (
+        SELECT id, level, message, at
+        FROM bot_logs
+        WHERE bot_id = ? AND category = ?
+        ORDER BY id DESC
+        LIMIT ?
+      )
+      ORDER BY id ASC
+    `).all(String(botId || ''), kind, count).map(row => ({ ...row, id: Number(row.id), at: Number(row.at) }))
   }
 
   adminOverview () {
