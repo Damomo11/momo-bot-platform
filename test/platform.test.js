@@ -740,12 +740,16 @@ test('daily scheduler signs in online smart bots and catches up silent renewal a
     const second = f.db.createBot(user.id, { mode: 'smart', label: 'Offline', microsoftEmail: 'daily-offline@example.com', serverHost: 'localhost' })
     f.db.setSmartBotSettings(first.id, { autoRenewEnabled: true })
     f.db.setSmartBotSettings(second.id, { autoRenewEnabled: true })
-    const now = Date.parse('2026-08-22T16:02:00Z')
+    let now = Date.parse('2026-08-22T16:01:00Z')
     const manager = new BotManager(f.db, { now: () => now, timeSyncEnabled: false })
     const firstMessages = []
     manager.processes.set(first.id, { reachedOnline: true, child: { send: message => firstMessages.push(message) } })
 
     await manager.runDailyAutomations()
+    assert.deepEqual(firstMessages, [
+      { type: 'smart_daily_action', action: 'signin', command: '/signin click' }
+    ])
+    now = Date.parse('2026-08-22T16:02:00Z')
     await manager.runDailyAutomations()
     assert.deepEqual(firstMessages, [
       { type: 'smart_daily_action', action: 'signin', command: '/signin click' },
@@ -1332,7 +1336,7 @@ test('version command reports the running version before the latest release deta
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.23', release: { summary: '下一版更新说明' } }
+        if (action === 'runtime_version') return { version: '1.0.24', release: { summary: '下一版更新说明' } }
         throw new Error(`unexpected action ${action}`)
       }
     }
@@ -1341,8 +1345,8 @@ test('version command reports the running version before the latest release deta
   await handler({ username: 'White', message: 'PlatformBot版本' })
 
   assert.deepEqual(chats, [
-    '智能 Bot 当前运行版本：v1.0.22',
-    '智能 Bot 最新版本：v1.0.23；更新内容：下一版更新说明'
+    '智能 Bot 当前运行版本：v1.0.23',
+    '智能 Bot 最新版本：v1.0.24；更新内容：下一版更新说明'
   ])
 })
 
@@ -2276,7 +2280,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.22')
+  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.23')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })

@@ -165,6 +165,7 @@ class BotManager {
           console.error(`[daily-signin:${botId}]`, error)
         }
       }
+      if (clock.minuteOfDay < 2) continue
       const settings = this.db.getSmartBotSettings(botId)
       if (!settings.autoRenewEnabled) continue
       const pending = this.pendingTopUps.get(botId)
