@@ -76,6 +76,9 @@ const COMMAND_TEXT = Object.freeze({
   topUpBusy: '上一笔充值仍在等待服务器确认。',
   topUpFailure: '充值指令发送失败，请稍后重试。',
   topUpSuccess: (amount, balance) => `充值成功，已增加 ${amount} momoc，当前余额 ${balance} momoc。`,
+  autoRenewUsage: '正确格式: 自动续费 开，或 自动续费 关。',
+  autoRenewEnabled: '自动续费已开启。',
+  autoRenewDisabled: '自动续费已关闭。',
   tslInsufficient: amount => `tsl余额不足${amount}`,
   moveUsage: '正确格式: 移动 x y z [停止距离]，或 移动 玩家名 [停止距离]，或 移动 东|西|南|北 格数 [停止距离]',
   moveSuccess: '已移动到目标附近。',
@@ -1192,21 +1195,13 @@ function createSmartCommandHandler (bot, options = {}) {
     if (parsed.command === '上线' || parsed.command === '下线') {
       if (parsed.args.length || !access.admin) return
       try {
-        const result = await request('runtime_control', {
+        await request('runtime_control', {
           username,
           operation: parsed.command === '上线' ? 'start' : 'stop',
           targetBotId: process.env.BOT_PLATFORM_INSTANCE_ID
         })
-        if (!result?.allowed) return
-        if (result.duplicate) return
-        const name = String(bot.username || '机器人')
-        if (result.status === 'already_online') reply(COMMAND_TEXT.runtimeAlreadyOnline(name), 'runtimeAlreadyOnline', { bot: name })
-        else if (result.status === 'already_offline') reply(COMMAND_TEXT.runtimeAlreadyOffline(name), 'runtimeAlreadyOffline', { bot: name })
-        // Starting a Bot is intentionally silent; the command only schedules
-        // the runtime transition and should not announce it in chat.
-        else if (result.status === 'stopping') reply(COMMAND_TEXT.runtimeStopping(name), 'runtimeStopping', { bot: name })
       } catch (error) {
-        reply(COMMAND_TEXT.runtimeFailure(error?.message || error), 'runtimeFailure', { reason: error?.message || error })
+        platform.log?.(`Bot 上下线请求失败: ${error?.message || error}`)
       }
       return
     }
@@ -1297,6 +1292,16 @@ function createSmartCommandHandler (bot, options = {}) {
         await request('top_up_cancel', {}).catch(() => {})
         reply(COMMAND_TEXT.topUpFailure, 'topUpFailure')
       }
+      return
+    }
+
+    if (parsed.command === '自动续费') {
+      if (!access.admin) return
+      if (parsed.args.length !== 1 || !['开', '关'].includes(parsed.args[0])) return reply(COMMAND_TEXT.autoRenewUsage, 'autoRenewUsage')
+      const enabled = parsed.args[0] === '开'
+      const result = await request('auto_renew_set', { username, enabled })
+      if (!result?.allowed) return
+      reply(enabled ? COMMAND_TEXT.autoRenewEnabled : COMMAND_TEXT.autoRenewDisabled, enabled ? 'autoRenewEnabled' : 'autoRenewDisabled')
       return
     }
 
@@ -1704,6 +1709,9 @@ function installSmartCommands (bot, options = {}) {
       periodicRightClickScheduler.applySettings(message.automation || {})
       fishingController.applySettings(message.automation || {})
     }
+    if (message?.type === 'smart_daily_action' && ['signin', 'auto_renew'].includes(message.action) && String(message.command || '')) {
+      runBotAction(() => bot.chat(String(message.command))).catch(error => console.error('[smart-daily-action]', error?.stack || error))
+    }
   }
   process.on('message', settingsListener)
   platform?.request?.('settings', {}).then(settings => {
@@ -1761,14 +1769,8 @@ function installSmartCommands (bot, options = {}) {
         const parsed = parseSmartCommand(event.message, target.prefixes || [])
         if (!parsed || !['上线', '下线'].includes(parsed.command) || parsed.args.length) continue
         const operation = parsed.command === '上线' ? 'start' : 'stop'
-        const name = String(target.label || target.prefixes?.[0] || '机器人')
-        request('runtime_control', { username: String(event.username).replace(/^#/, ''), targetBotId: target.id, operation }).then(result => {
-          if (!result?.allowed || result.duplicate) return
-          if (result.status === 'already_online') bot.chat(COMMAND_TEXT.runtimeAlreadyOnline(name))
-          else if (result.status === 'already_offline') bot.chat(COMMAND_TEXT.runtimeAlreadyOffline(name))
-          // Starting a Bot is intentionally silent.
-          else if (result.status === 'stopping') bot.chat(COMMAND_TEXT.runtimeStopping(name))
-        }).catch(error => bot.chat(COMMAND_TEXT.runtimeFailure(error?.message || error)))
+        request('runtime_control', { username: String(event.username).replace(/^#/, ''), targetBotId: target.id, operation })
+          .catch(error => platform.log?.(`代收 Bot 上下线请求失败: ${error?.message || error}`))
         return
       }
     }).catch(() => {})
@@ -1785,12 +1787,14 @@ function installSmartCommands (bot, options = {}) {
   bot.on('botPlatformPeekRequest', peekListener)
   const paymentListener = event => {
     if (event?.kind === 'insufficient') {
-      platform.request('top_up_cancel', {}).catch(() => {})
-      bot.chat(COMMAND_TEXT.tslInsufficient(String(event.amount || '')))
+      platform.request('top_up_cancel', {}).then(result => {
+        if (!result?.silent) bot.chat(COMMAND_TEXT.tslInsufficient(String(event.amount || '')))
+      }).catch(() => {})
       return
     }
     platform.request('top_up_confirm', { amount: event?.amount }).then(result => {
       if (!result?.confirmed) return
+      if (result.silent) return
       const sender = String(result.sender || '')
       const template = Object.prototype.hasOwnProperty.call(messageOverrides, 'topUpSuccess') ? messageOverrides.topUpSuccess : COMMAND_TEXT.topUpSuccess(result.amount, formatMomoc(result.balance))
       const text = String(template || '').replace(/\{(sender|amount|balance)\}/g, (match, name) => ({ sender, amount: result.amount, balance: formatMomoc(result.balance) })[name])

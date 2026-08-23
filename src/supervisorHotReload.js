@@ -71,6 +71,7 @@ class SupervisorHotReloader {
       Object.setPrototypeOf(this.db, NextPlatformDb.prototype)
       this.db.init()
       upgradeObjectState(this.bots, NextBotManager, [this.db, this.config])
+      this.bots.startDailyAutomationScheduler?.()
       const recovered = this.bots.recoverDisconnectedRuntimes?.() || 0
       this.revision = nextRevision
       this.pendingRevision = ''

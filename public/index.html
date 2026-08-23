@@ -135,6 +135,7 @@
           <div class="command-list">
             <div class="command-row"><code>余额</code><span>查看 Bot 所有者当前拥有的 momoc</span></div>
             <div class="command-row"><code>充值 金额</code><span>向管理员配置的收款玩家支付同额 C；服务器确认后按 1:1 增加所有者 momoc</span></div>
+            <div class="command-row"><code>自动续费 开 / 关</code><span>每天 00:02 静默充值 1 C；离线时将在下次上线后补充执行</span></div>
             <div class="command-row"><code>加白|去白 玩家名</code><span>添加或移除永久白名单</span></div>
             <div class="command-row"><code>加黑|去黑 玩家名</code><span>添加或移除永久黑名单</span></div>
             <div class="command-row"><code>临时加白 玩家名 分钟</code><span>添加限时白名单</span></div>
@@ -143,6 +144,7 @@
             <div class="command-row"><code>超级锁定 备注</code><span>禁止所有非超管操作</span></div>
             <div class="command-row"><code>超级解锁</code><span>同时解除超级锁定和普通锁定</span></div>
             <div class="command-row"><code>重启</code><span>重启当前智能 Bot</span></div>
+            <div class="command-row"><code>上线 / 下线</code><span>静默控制智能 Bot 上下线；离线 Bot 的命令可由同服在线智能 Bot 代收</span></div>
           </div>
         </section>
       </section>
@@ -319,7 +321,13 @@
       <div id="smartLockState" class="muted"></div>
       <div class="prefix-form">
         <label>自定义命令前缀<input id="smartCommandPrefix" autocomplete="off" placeholder="例如 @、==、bot@；留空使用 Bot 名"></label>
-        <button id="saveSmartCommandPrefix" class="primary">保存前缀</button>
+        <label class="variable-check"><input id="smartAutoRenewEnabled" type="checkbox"> 自动续费（每天 00:02 充值 1 C）</label>
+        <button id="saveSmartCommandPrefix" class="primary">保存设置</button>
+      </div>
+      <div id="smartMomocExemptionForm" class="prefix-form momoc-exemption-form hidden">
+        <label class="variable-check"><input id="smartMomocExempt" type="checkbox"> 免 momoc 计费</label>
+        <div class="muted">按正版名 <strong id="smartMomocExemptName">-</strong> 绑定，删除并重建 Bot 后仍然保留。</div>
+        <button id="saveSmartMomocExemption" class="primary">保存计费设置</button>
       </div>
       <div class="permission-form">
         <label>玩家名<input id="smartPermissionPlayer" autocomplete="off" maxlength="32"></label>

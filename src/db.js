@@ -154,8 +154,17 @@ class PlatformDb {
         bot_id TEXT PRIMARY KEY,
         command_prefix TEXT NOT NULL DEFAULT '',
         message_overrides_json TEXT NOT NULL DEFAULT '{}',
+        auto_renew_enabled INTEGER NOT NULL DEFAULT 0,
+        last_signin_date TEXT NOT NULL DEFAULT '',
+        last_auto_renew_date TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS smart_momoc_exemptions (
+        minecraft_name TEXT PRIMARY KEY COLLATE NOCASE,
+        updated_by TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
       CREATE TABLE IF NOT EXISTS smart_bot_tasks (
         bot_id TEXT NOT NULL,
@@ -267,6 +276,9 @@ class PlatformDb {
     this.ensureColumn('smart_bot_automation', 'periodic_right_click_last_run_at', 'INTEGER')
     this.ensureColumn('smart_bot_automation', 'periodic_right_click_next_due_at', 'INTEGER')
     this.ensureColumn('smart_bot_settings', 'message_overrides_json', "TEXT NOT NULL DEFAULT '{}'")
+    this.ensureColumn('smart_bot_settings', 'auto_renew_enabled', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('smart_bot_settings', 'last_signin_date', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('smart_bot_settings', 'last_auto_renew_date', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('smart_bot_tasks', 'parameters_json', "TEXT NOT NULL DEFAULT '[]'")
     this.ensureColumn('smart_bot_tasks', 'schedule_args_json', "TEXT NOT NULL DEFAULT '[]'")
     this.ensureColumn('smart_bot_tasks', 'schedule_persistent', 'INTEGER NOT NULL DEFAULT 0')
@@ -585,6 +597,9 @@ class PlatformDb {
   chargeHourlyMinute (botId, hourlyRate) {
     const bot = this.getBot(botId)
     if (!bot) return { ok: false, reason: 'missing' }
+    if (bot.mode === 'smart' && this.isSmartBotMomocExempt(botId)) {
+      return { ok: true, balance: this.getUser(bot.userId)?.momoc || 0, charged: 0, exempt: true }
+    }
     try {
       const rate = Number(hourlyRate)
       if (!Number.isFinite(rate) || rate < 0) throw new Error('每小时价格无效。')
@@ -1011,9 +1026,10 @@ class PlatformDb {
   }
 
   getSmartBotSettings (botId) {
-    const row = this.db.prepare('SELECT command_prefix AS commandPrefix, message_overrides_json AS messageOverridesJson, updated_at AS updatedAt FROM smart_bot_settings WHERE bot_id = ?').get(botId)
+    const row = this.db.prepare('SELECT command_prefix AS commandPrefix, message_overrides_json AS messageOverridesJson, auto_renew_enabled AS autoRenewEnabled, last_signin_date AS lastSigninDate, last_auto_renew_date AS lastAutoRenewDate, updated_at AS updatedAt FROM smart_bot_settings WHERE bot_id = ?').get(botId)
     const bot = this.getBot(botId)
-    if (!row) return { commandPrefix: '', messageOverrides: bot ? this.getSmartUserMessages(bot.userId) : {}, updatedAt: null }
+    if (!row) return { commandPrefix: '', messageOverrides: bot ? this.getSmartUserMessages(bot.userId) : {}, autoRenewEnabled: false, lastSigninDate: '', lastAutoRenewDate: '', updatedAt: null }
+    row.autoRenewEnabled = Boolean(row.autoRenewEnabled)
     row.messageOverrides = bot ? this.getSmartUserMessages(bot.userId) : {}
     delete row.messageOverridesJson
     return row
@@ -1041,6 +1057,7 @@ class PlatformDb {
     if (!bot || bot.mode !== 'smart') throw new Error('智能 Bot 不存在。')
     const current = this.getSmartBotSettings(botId)
     const commandPrefix = String(input.commandPrefix ?? current.commandPrefix ?? '').trim()
+    const autoRenewEnabled = input.autoRenewEnabled == null ? Boolean(current.autoRenewEnabled) : Boolean(input.autoRenewEnabled)
     if (/[\u0000\r\n]/.test(commandPrefix)) throw new Error('命令前缀不能包含换行或空字符。')
     if (commandPrefix && /[\p{L}\p{N}]$/u.test(commandPrefix)) throw new Error('命令前缀必须以特殊符号结尾，不能以字母或数字结尾。')
     const conflict = commandPrefix && this.db.prepare(`
@@ -1052,13 +1069,60 @@ class PlatformDb {
     `).get(commandPrefix, botId)
     if (conflict) throw new Error(`命令前缀“${commandPrefix}”已被其他 Bot 使用。`)
     this.db.prepare(`
-      INSERT INTO smart_bot_settings (bot_id, command_prefix, updated_at)
-      VALUES (?, ?, CURRENT_TIMESTAMP)
+      INSERT INTO smart_bot_settings (bot_id, command_prefix, auto_renew_enabled, updated_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(bot_id) DO UPDATE SET
         command_prefix = excluded.command_prefix,
+        auto_renew_enabled = excluded.auto_renew_enabled,
         updated_at = CURRENT_TIMESTAMP
-    `).run(botId, commandPrefix)
+    `).run(botId, commandPrefix, autoRenewEnabled ? 1 : 0)
     return this.getSmartBotSettings(botId)
+  }
+
+  getSmartBotMomocExemption (botId) {
+    const identity = this.db.prepare(`
+      SELECT b.mode, COALESCE(NULLIF(a.minecraft_name, ''), NULLIF(b.minecraft_name, '')) AS minecraftName
+      FROM bots b
+      LEFT JOIN microsoft_accounts a ON a.id = b.account_id
+      WHERE b.id = ?
+    `).get(botId)
+    if (!identity || identity.mode !== 'smart') return { minecraftName: '', enabled: false }
+    const minecraftName = String(identity.minecraftName || '')
+    const enabled = Boolean(minecraftName && this.db.prepare('SELECT 1 FROM smart_momoc_exemptions WHERE minecraft_name = ? COLLATE NOCASE').get(minecraftName))
+    return { minecraftName, enabled }
+  }
+
+  isSmartBotMomocExempt (botId) {
+    return this.getSmartBotMomocExemption(botId).enabled
+  }
+
+  setSmartBotMomocExemption (botId, enabled, updatedBy = '') {
+    const current = this.getSmartBotMomocExemption(botId)
+    if (!current.minecraftName || !/^[A-Za-z0-9_]{3,16}$/.test(current.minecraftName)) throw new Error('这个智能 Bot 尚未取得有效的正版名。')
+    if (enabled) {
+      this.db.prepare(`
+        INSERT INTO smart_momoc_exemptions (minecraft_name, updated_by)
+        VALUES (?, ?)
+        ON CONFLICT(minecraft_name) DO UPDATE SET
+          minecraft_name = excluded.minecraft_name,
+          updated_by = excluded.updated_by,
+          updated_at = CURRENT_TIMESTAMP
+      `).run(current.minecraftName, String(updatedBy || '').slice(0, 64))
+    } else {
+      this.db.prepare('DELETE FROM smart_momoc_exemptions WHERE minecraft_name = ? COLLATE NOCASE').run(current.minecraftName)
+    }
+    return this.getSmartBotMomocExemption(botId)
+  }
+
+  claimSmartBotDailyAction (botId, action, date) {
+    const column = action === 'signin' ? 'last_signin_date' : action === 'auto_renew' ? 'last_auto_renew_date' : ''
+    const value = String(date || '')
+    if (!column || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error('每日任务日期无效。')
+    const bot = this.getBot(botId)
+    if (!bot || bot.mode !== 'smart') throw new Error('智能 Bot 不存在。')
+    this.db.prepare('INSERT OR IGNORE INTO smart_bot_settings (bot_id) VALUES (?)').run(botId)
+    const enabled = action === 'auto_renew' ? ' AND auto_renew_enabled = 1' : ''
+    return this.db.prepare(`UPDATE smart_bot_settings SET ${column} = ?, updated_at = CURRENT_TIMESTAMP WHERE bot_id = ? AND ${column} <> ?${enabled}`).run(value, botId, value).changes > 0
   }
 
   listSmartBotTasks (botId) {

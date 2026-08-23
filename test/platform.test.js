@@ -688,6 +688,109 @@ test('platform runtime settings persist and admin overview exposes configured pr
   } finally { f.close() }
 })
 
+test('smart momoc exemption follows the licensed Minecraft name across bot recreation', async () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('exempt_owner', 'password-123')
+    const account = f.db.createMicrosoftAccount(user.id, 'exempt@example.com')
+    f.db.updateMicrosoftAccountAuth(account.id, { authState: 'authorized', minecraftName: 'LicensedBot' })
+    const first = f.db.createBot(user.id, { accountId: account.id, mode: 'smart', label: 'First', serverHost: 'localhost' })
+
+    assert.deepEqual(f.db.setSmartBotMomocExemption(first.id, true, 'admin'), { minecraftName: 'LicensedBot', enabled: true })
+    assert.equal(f.db.chargeHourlyMinute(first.id, 0.03).exempt, true)
+    assert.equal(f.db.getUser(user.id).momoc, 0)
+    assert.equal(f.db.getBot(first.id).billedMinutes, 0)
+    assert.equal(f.db.listLedger(user.id).some(row => row.kind === 'bot_hourly'), false)
+
+    f.db.deleteBot(first.id)
+    const recreated = f.db.createBot(user.id, { accountId: account.id, mode: 'smart', label: 'Recreated', serverHost: 'localhost' })
+    assert.deepEqual(f.db.getSmartBotMomocExemption(recreated.id), { minecraftName: 'LicensedBot', enabled: true })
+    const manager = new BotManager(f.db, {})
+    manager.launchAttempt = () => {}
+    await assert.doesNotReject(manager.start(recreated.id))
+    assert.equal(manager.publicBot(f.db.getBot(recreated.id)).momocExempt, true)
+
+    assert.deepEqual(f.db.setSmartBotMomocExemption(recreated.id, false, 'admin'), { minecraftName: 'LicensedBot', enabled: false })
+    assert.equal(f.db.chargeHourlyMinute(recreated.id, 0.03).ok, false)
+  } finally { f.close() }
+})
+
+test('smart daily settings persist and claim each action at most once per date', () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('daily_settings_owner', 'password-123')
+    const bot = f.db.createBot(user.id, { mode: 'smart', label: 'Daily', microsoftEmail: 'daily@example.com', serverHost: 'localhost' })
+    assert.equal(f.db.getSmartBotSettings(bot.id).autoRenewEnabled, false)
+    assert.equal(f.db.setSmartBotSettings(bot.id, { commandPrefix: 'daily!', autoRenewEnabled: true }).autoRenewEnabled, true)
+    assert.equal(f.db.claimSmartBotDailyAction(bot.id, 'signin', '2026-08-23'), true)
+    assert.equal(f.db.claimSmartBotDailyAction(bot.id, 'signin', '2026-08-23'), false)
+    assert.equal(f.db.claimSmartBotDailyAction(bot.id, 'auto_renew', '2026-08-23'), true)
+    assert.equal(f.db.claimSmartBotDailyAction(bot.id, 'auto_renew', '2026-08-23'), false)
+    assert.equal(f.db.claimSmartBotDailyAction(bot.id, 'signin', '2026-08-24'), true)
+    f.db.setSmartBotSettings(bot.id, { autoRenewEnabled: false })
+    assert.equal(f.db.claimSmartBotDailyAction(bot.id, 'auto_renew', '2026-08-24'), false)
+  } finally { f.close() }
+})
+
+test('daily scheduler signs in online smart bots and catches up silent renewal after login', async () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('daily_scheduler_owner', 'password-123')
+    const first = f.db.createBot(user.id, { mode: 'smart', label: 'Online', microsoftEmail: 'daily-online@example.com', serverHost: 'localhost' })
+    const second = f.db.createBot(user.id, { mode: 'smart', label: 'Offline', microsoftEmail: 'daily-offline@example.com', serverHost: 'localhost' })
+    f.db.setSmartBotSettings(first.id, { autoRenewEnabled: true })
+    f.db.setSmartBotSettings(second.id, { autoRenewEnabled: true })
+    let now = Date.parse('2026-08-22T16:01:00Z')
+    const manager = new BotManager(f.db, { now: () => now, timeSyncEnabled: false })
+    const firstMessages = []
+    manager.processes.set(first.id, { reachedOnline: true, child: { send: message => firstMessages.push(message) } })
+
+    await manager.runDailyAutomations()
+    assert.deepEqual(firstMessages, [
+      { type: 'smart_daily_action', action: 'signin', command: '/signin click' }
+    ])
+    now = Date.parse('2026-08-22T16:02:00Z')
+    await manager.runDailyAutomations()
+    assert.deepEqual(firstMessages, [
+      { type: 'smart_daily_action', action: 'signin', command: '/signin click' },
+      { type: 'smart_daily_action', action: 'auto_renew', command: '/pay Damomo1 1.00' }
+    ])
+    assert.equal(manager.pendingTopUps.get(first.id).silent, true)
+
+    const secondMessages = []
+    manager.processes.set(second.id, { reachedOnline: true, child: { send: message => secondMessages.push(message) } })
+    await manager.runDailyAutomations({ allowSignin: false })
+    assert.deepEqual(secondMessages, [
+      { type: 'smart_daily_action', action: 'auto_renew', command: '/pay Damomo1 1.00' }
+    ])
+  } finally { f.close() }
+})
+
+test('smart auto-renew command is restricted to admins and persists the switch', async () => {
+  const chats = []
+  const requests = []
+  let admin = false
+  const handler = createSmartCommandHandler({ username: 'PlatformBot', chat: message => chats.push(message) }, {
+    commandPrefixes: ['PlatformBot'],
+    platform: {
+      request: async (action, payload) => {
+        requests.push({ action, payload })
+        if (action === 'access') return { blacklisted: false, whitelisted: true, admin, lock: { locked: false, adminLocked: false } }
+        if (action === 'runtime_version') return { version: '1.0.0' }
+        if (action === 'auto_renew_set') return { allowed: true, settings: { autoRenewEnabled: payload.enabled } }
+        throw new Error(`unexpected action ${action}`)
+      }
+    }
+  })
+
+  await handler({ username: 'White', message: 'PlatformBot自动续费 开' })
+  assert.equal(requests.some(row => row.action === 'auto_renew_set'), false)
+  admin = true
+  await handler({ username: 'RootPlayer', message: 'PlatformBot自动续费 开' })
+  assert.deepEqual(requests.find(row => row.action === 'auto_renew_set').payload, { username: 'RootPlayer', enabled: true })
+  assert.equal(chats.at(-1), '自动续费已开启。')
+})
+
 test('smart running limit does not apply to signin bots', async () => {
   const rows = {
     running: { id: 'running', userId: 'user', accountId: 'account-1', accountAuthState: 'authorized', mode: 'smart' },
@@ -1226,6 +1329,98 @@ test('in-game restart command prepares the supervisor before scheduling process 
   assert.equal(scheduled, 1)
 })
 
+test('in-game runtime control commands never send chat feedback', async () => {
+  const chats = []
+  const logs = []
+  const outcomes = [
+    { allowed: true, status: 'starting' },
+    { allowed: true, status: 'stopping' },
+    { allowed: true, status: 'already_online' },
+    { allowed: true, status: 'already_offline' },
+    { allowed: false },
+    new Error('platform unavailable')
+  ]
+  const handler = createSmartCommandHandler({ username: 'PlatformBot', chat: message => chats.push(message) }, {
+    commandPrefixes: ['PlatformBot'],
+    platform: {
+      log: message => logs.push(message),
+      request: async action => {
+        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: true, lock: { locked: false, adminLocked: false } }
+        if (action === 'runtime_control') {
+          const outcome = outcomes.shift()
+          if (outcome instanceof Error) throw outcome
+          return outcome
+        }
+        throw new Error(`unexpected action ${action}`)
+      }
+    }
+  })
+
+  for (const command of ['上线', '下线', '上线', '下线', '上线', '下线']) {
+    await handler({ username: 'RootPlayer', message: `PlatformBot${command}` })
+  }
+
+  assert.deepEqual(chats, [])
+  assert.equal(logs.some(message => message.includes('platform unavailable')), true)
+})
+
+test('online smart bots silently relay runtime control for another bot', async () => {
+  const bot = new EventEmitter()
+  bot.username = 'RelayBot'
+  const chats = []
+  const logs = []
+  const outcomes = [
+    { allowed: true, status: 'starting' },
+    { allowed: true, status: 'stopping' },
+    { allowed: true, status: 'already_online' },
+    { allowed: true, status: 'already_offline' },
+    new Error('relay unavailable')
+  ]
+  let finishAttempts
+  const attemptsFinished = new Promise(resolve => { finishAttempts = resolve })
+  const platform = {
+    log: message => logs.push(message),
+    request: async action => {
+      if (action === 'settings') return { commandPrefix: 'RelayBot', messageOverrides: {}, topUp: {} }
+      if (action === 'volatile_schedules_reset') return {}
+      if (action === 'runtime_targets') {
+        return [{
+          id: 'offline-bot',
+          serverHost: String(process.env.BOT_PLATFORM_SERVER_HOST || ''),
+          serverPort: Number(process.env.BOT_PLATFORM_SERVER_PORT || 25565),
+          prefixes: ['OfflineBot']
+        }]
+      }
+      if (action === 'runtime_control') {
+        const outcome = outcomes.shift()
+        if (!outcomes.length) finishAttempts()
+        if (outcome instanceof Error) throw outcome
+        return outcome
+      }
+      throw new Error(`unexpected action ${action}`)
+    }
+  }
+  bot.chat = message => chats.push(message)
+  const inertScheduler = { applySettings: () => {}, start: async () => {}, stop: () => {} }
+  const remove = installSmartCommands(bot, {
+    platform,
+    ominousScheduler: inertScheduler,
+    periodicRightClickScheduler: inertScheduler,
+    fishingController: inertScheduler
+  })
+  try {
+    for (let index = 0; index < 5; index += 1) {
+      bot.emit('botPlatformMessage', { username: `Root${index}`, message: `OfflineBot${index % 2 ? '下线' : '上线'}`, channel: 'public' })
+    }
+    await attemptsFinished
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(chats, [])
+    assert.equal(logs.some(message => message.includes('relay unavailable')), true)
+  } finally {
+    remove()
+  }
+})
+
 test('version command reports the running version before the latest release details', async () => {
   const chats = []
   const handler = createSmartCommandHandler({ username: 'PlatformBot', chat: message => chats.push(message) }, {
@@ -1233,7 +1428,7 @@ test('version command reports the running version before the latest release deta
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.23', release: { summary: '下一版更新说明' } }
+        if (action === 'runtime_version') return { version: '1.0.24', release: { summary: '下一版更新说明' } }
         throw new Error(`unexpected action ${action}`)
       }
     }
@@ -1242,8 +1437,8 @@ test('version command reports the running version before the latest release deta
   await handler({ username: 'White', message: 'PlatformBot版本' })
 
   assert.deepEqual(chats, [
-    '智能 Bot 当前运行版本：v1.0.22',
-    '智能 Bot 最新版本：v1.0.23；更新内容：下一版更新说明'
+    '智能 Bot 当前运行版本：v1.0.23',
+    '智能 Bot 最新版本：v1.0.24；更新内容：下一版更新说明'
   ])
 })
 
@@ -2177,7 +2372,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.22')
+  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.23')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })
