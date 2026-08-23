@@ -104,6 +104,11 @@ const COMMAND_TEXT = Object.freeze({
   forwardHomeDisabled: 'home 命令已禁用。',
   restartLocked: '机器人锁定中，请先确认挂机状态并解锁。',
   restarting: '机器人正在重启。',
+  runtimeStarting: name => `${name} 正在上线。`,
+  runtimeStopping: name => `${name} 正在下线。`,
+  runtimeAlreadyOnline: name => `${name} 已经在线。`,
+  runtimeAlreadyOffline: name => `${name} 已经下线。`,
+  runtimeFailure: reason => `Bot 上下线失败：${reason || '平台暂时不可用'}。`,
   permissionAdded: (player, label) => `玩家 ${player} 已成功加入${label}`,
   permissionExists: (player, label) => `玩家 ${player} 已经在${label}中`,
   permissionRemoved: (player, label) => `玩家 ${player} 已从${label}移除`,
@@ -1181,6 +1186,31 @@ function createSmartCommandHandler (bot, options = {}) {
     const access = await request('access', { username })
     if (access.blacklisted) return
 
+    // Runtime control is deliberately restricted to super-admins. The
+    // request is tied to this Bot's instance by the supervisor and may target
+    // another smart Bot only when it is on the same Minecraft server.
+    if (parsed.command === '上线' || parsed.command === '下线') {
+      if (parsed.args.length || !access.admin) return
+      try {
+        const result = await request('runtime_control', {
+          username,
+          operation: parsed.command === '上线' ? 'start' : 'stop',
+          targetBotId: process.env.BOT_PLATFORM_INSTANCE_ID
+        })
+        if (!result?.allowed) return
+        if (result.duplicate) return
+        const name = String(bot.username || '机器人')
+        if (result.status === 'already_online') reply(COMMAND_TEXT.runtimeAlreadyOnline(name), 'runtimeAlreadyOnline', { bot: name })
+        else if (result.status === 'already_offline') reply(COMMAND_TEXT.runtimeAlreadyOffline(name), 'runtimeAlreadyOffline', { bot: name })
+        // Starting a Bot is intentionally silent; the command only schedules
+        // the runtime transition and should not announce it in chat.
+        else if (result.status === 'stopping') reply(COMMAND_TEXT.runtimeStopping(name), 'runtimeStopping', { bot: name })
+      } catch (error) {
+        reply(COMMAND_TEXT.runtimeFailure(error?.message || error), 'runtimeFailure', { reason: error?.message || error })
+      }
+      return
+    }
+
     if (parsed.command === '版本') {
       if (!access.whitelisted && !access.admin) return
       bot.chat(`智能 Bot 当前运行版本：v${SMART_BOT_VERSION}`)
@@ -1651,6 +1681,7 @@ function formatMomoc (value) {
 
 function installSmartCommands (bot, options = {}) {
   const platform = options.platform || global.botPlatform
+  const request = (action, payload) => platform.request(action, payload)
   const runBotAction = options.runBotAction || createBotActionQueue()
   const ominousScheduler = options.ominousScheduler || createOminousBottleScheduler(bot, { ...options, platform, runBotAction })
   const periodicRightClickScheduler = options.periodicRightClickScheduler || createPeriodicRightClickScheduler(bot, { ...options, platform, runBotAction })
@@ -1706,6 +1737,43 @@ function installSmartCommands (bot, options = {}) {
     })
   }
   bot.on('botPlatformMessage', listener)
+  let runtimeTargets = []
+  let runtimeTargetsExpiresAt = 0
+  let runtimeTargetsRequest = null
+  const refreshRuntimeTargets = () => {
+    if (runtimeTargetsRequest) return runtimeTargetsRequest
+    if (Date.now() < runtimeTargetsExpiresAt) return Promise.resolve(runtimeTargets)
+    runtimeTargetsRequest = request('runtime_targets', {}).then(result => {
+      runtimeTargets = Array.isArray(result) ? result : []
+      runtimeTargetsExpiresAt = Date.now() + 1000
+      return runtimeTargets
+    }).catch(() => runtimeTargets).finally(() => { runtimeTargetsRequest = null })
+    return runtimeTargetsRequest
+  }
+  const remoteRuntimeListener = event => {
+    if (!event?.username || String(event.username).toLowerCase() === String(bot.username || '').toLowerCase()) return
+    refreshRuntimeTargets().then(targets => {
+      const ownId = String(process.env.BOT_PLATFORM_INSTANCE_ID || '')
+      const candidates = targets
+        .filter(target => String(target.id) !== ownId && String(target.serverHost || '') === String(process.env.BOT_PLATFORM_SERVER_HOST || '') && Number(target.serverPort || 0) === Number(process.env.BOT_PLATFORM_SERVER_PORT || 25565))
+        .sort((a, b) => (b.prefixes || []).reduce((n, p) => Math.max(n, String(p).length), 0) - (a.prefixes || []).reduce((n, p) => Math.max(n, String(p).length), 0))
+      for (const target of candidates) {
+        const parsed = parseSmartCommand(event.message, target.prefixes || [])
+        if (!parsed || !['上线', '下线'].includes(parsed.command) || parsed.args.length) continue
+        const operation = parsed.command === '上线' ? 'start' : 'stop'
+        const name = String(target.label || target.prefixes?.[0] || '机器人')
+        request('runtime_control', { username: String(event.username).replace(/^#/, ''), targetBotId: target.id, operation }).then(result => {
+          if (!result?.allowed || result.duplicate) return
+          if (result.status === 'already_online') bot.chat(COMMAND_TEXT.runtimeAlreadyOnline(name))
+          else if (result.status === 'already_offline') bot.chat(COMMAND_TEXT.runtimeAlreadyOffline(name))
+          // Starting a Bot is intentionally silent.
+          else if (result.status === 'stopping') bot.chat(COMMAND_TEXT.runtimeStopping(name))
+        }).catch(error => bot.chat(COMMAND_TEXT.runtimeFailure(error?.message || error)))
+        return
+      }
+    }).catch(() => {})
+  }
+  bot.on('botPlatformMessage', remoteRuntimeListener)
   const teleportListener = event => {
     if (event?.kind === 'to_requester') platform.relatedLog?.(`玩家 ${String(event.username || '').replace(/^#/, '')} 向 Bot 发送了 /tpahere。`)
     handleTeleportRequest(event).catch(error => console.error('[smart-teleport]', error?.stack || error))
@@ -1766,6 +1834,7 @@ function installSmartCommands (bot, options = {}) {
   taskTimer.unref?.()
   return () => {
     bot.removeListener('botPlatformMessage', listener)
+    bot.removeListener('botPlatformMessage', remoteRuntimeListener)
     bot.removeListener('botPlatformTeleportRequest', teleportListener)
     bot.removeListener('botPlatformPeekRequest', peekListener)
     bot.removeListener('botPlatformPaymentMessage', paymentListener)
