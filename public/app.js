@@ -42,7 +42,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp
 const fmt = value => value ? new Date(String(value).replace(' ', 'T') + 'Z').toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '-'
 const formatMomoc = value => Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 6 })
 const balanceText = user => `${formatMomoc(user?.momoc)} momoc${Number(user?.reservedMomoc || 0) > 0 ? ` · 已预留 ${formatMomoc(user.reservedMomoc)}` : ''}`
-const templatePrice = template => `${formatMomoc(template?.priceMomoc)} momoc / ${template?.billingMode === 'once' ? '次' : '1h'}`
+const templatePrice = template => template?.momocExempt ? '免 momoc' : `${formatMomoc(template?.priceMomoc)} momoc / ${template?.billingMode === 'once' ? '次' : '1h'}`
 const commandUsage = command => `${state.botSettings?.commandPrefix || '!'}${String(command || '').replace(/^\s*[!@=]+/, '')}`
 const kindLabel = value => ({ bot_usage: '机器人基础运行', bot_minute: '机器人基础运行', bot_hourly: '机器人基础运行', bot_once: '模板按次执行', module_hourly: '功能模块运行', module_once: '功能模块执行', admin_adjust: '管理员调整', signup_bonus: '新用户初始金', tsl_top_up: 'TSL 充值' })[value] || value
 const TASK_COMMANDS = ['上车', '下车', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '攻击', '移动', '注视', '指令']
@@ -582,7 +582,7 @@ function managedBotCards (rows) {
     const permissions = bot.mode === 'smart' ? `<button data-smart-permissions="${esc(bot.id)}">权限</button>` : ''
     const update = bot.updateAvailable && bot.runtimeState === 'online' ? `<button class="primary" data-update-bot="${esc(bot.id)}">更新</button>` : ''
     return `<article class="managed-bot-card">
-      <div class="managed-bot-card-head"><div><strong>${esc(bot.label)}</strong><span>${esc(bot.ownerUsername || '-')}</span></div><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span></div>
+      <div class="managed-bot-card-head"><div><strong>${esc(bot.label)}</strong><span>${esc(bot.ownerUsername || '-')}</span>${bot.momocExempt ? '<span class="positive">免 momoc · 正版名绑定</span>' : ''}</div><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span></div>
       <dl><div><dt>账号</dt><dd>${esc(bot.accountMinecraftName || bot.microsoftEmail || '-')}</dd></div><div><dt>服务器</dt><dd>${esc(bot.serverHost)}:${esc(bot.serverPort)}</dd></div><div><dt>类型</dt><dd>${bot.mode === 'signin' ? '签到 Bot' : '智能 Bot'}</dd></div><div><dt>版本</dt><dd>${botRuntimeVersionHtml(bot)}</dd></div></dl>
       <div class="managed-bot-schedules"><strong>定时任务</strong>${smartScheduleHtml(bot)}</div>
       ${bot.lastError ? `<p class="managed-bot-error">${esc(bot.lastError)}</p>` : ''}
@@ -747,6 +747,11 @@ async function loadSmartPermissions () {
   $('smartPermissionTitle').textContent = `${data.bot.label} · 智能 Bot 权限`
   $('smartLockState').textContent = smartLockText(data.lock)
   $('smartCommandPrefix').value = data.settings?.commandPrefix || ''
+  $('smartAutoRenewEnabled').checked = Boolean(data.settings?.autoRenewEnabled)
+  const showMomocExemption = Boolean(data.momocExemption && state.user?.role === 'admin' && state.view === 'management')
+  $('smartMomocExemptionForm').classList.toggle('hidden', !showMomocExemption)
+  $('smartMomocExempt').checked = Boolean(data.momocExemption?.enabled)
+  $('smartMomocExemptName').textContent = data.momocExemption?.minecraftName || '尚未取得正版名'
   $('smartPermissionRows').innerHTML = data.rows.length
     ? '<table><thead><tr><th>玩家</th><th>权限</th><th>有效期</th><th></th></tr></thead><tbody>' + data.rows.map(row => `<tr><td><strong>${esc(row.playerName)}</strong></td><td>${esc(smartRoleLabel(row.role))}</td><td>${row.expiresAt ? esc(new Date(Number(row.expiresAt)).toLocaleString('zh-CN')) : '永久'}</td><td><button class="danger" data-remove-smart-player="${esc(row.playerName)}" data-remove-smart-role="${esc(row.role)}">移除</button></td></tr>`).join('') + '</tbody></table>'
     : '<div class="empty">尚未设置游戏内权限。</div>'
@@ -778,10 +783,25 @@ async function saveSmartCommandPrefix () {
   const data = await post('/api/smart/permissions', {
     botId: state.editingPermissionBotId,
     action: 'settings',
-    commandPrefix: $('smartCommandPrefix').value
+    commandPrefix: $('smartCommandPrefix').value,
+    autoRenewEnabled: $('smartAutoRenewEnabled').checked
   })
   $('smartCommandPrefix').value = data.settings.commandPrefix
-  toast('命令前缀已热更新')
+  $('smartAutoRenewEnabled').checked = Boolean(data.settings.autoRenewEnabled)
+  toast('智能 Bot 设置已热更新')
+}
+
+async function saveSmartMomocExemption () {
+  $('smartPermissionError').textContent = ''
+  const data = await post('/api/smart/permissions', {
+    botId: state.editingPermissionBotId,
+    action: 'momoc_exemption',
+    enabled: $('smartMomocExempt').checked
+  })
+  $('smartMomocExempt').checked = Boolean(data.momocExemption.enabled)
+  $('smartMomocExemptName').textContent = data.momocExemption.minecraftName || '尚未取得正版名'
+  await loadManagedBots()
+  toast(data.momocExemption.enabled ? '已按正版名设置免 momoc' : '已恢复 momoc 计费')
 }
 
 function taskArgumentHint (command) {
@@ -1796,6 +1816,7 @@ $('closeSmartPermissionDialog').onclick = closeSmartPermissionDialog
 $('closeSmartPermissionDialogBottom').onclick = closeSmartPermissionDialog
 $('addSmartPermission').onclick = () => addSmartPermission().catch(error => { $('smartPermissionError').textContent = error.message })
 $('saveSmartCommandPrefix').onclick = () => saveSmartCommandPrefix().catch(error => { $('smartPermissionError').textContent = error.message })
+$('saveSmartMomocExemption').onclick = () => saveSmartMomocExemption().catch(error => { $('smartPermissionError').textContent = error.message })
 $('smartPermissionRole').onchange = () => {
   const admin = $('smartPermissionRole').value === 'admin'
   $('smartPermissionMinutes').disabled = admin

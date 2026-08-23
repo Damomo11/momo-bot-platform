@@ -76,6 +76,9 @@ const COMMAND_TEXT = Object.freeze({
   topUpBusy: '上一笔充值仍在等待服务器确认。',
   topUpFailure: '充值指令发送失败，请稍后重试。',
   topUpSuccess: (amount, balance) => `充值成功，已增加 ${amount} momoc，当前余额 ${balance} momoc。`,
+  autoRenewUsage: '正确格式: 自动续费 开，或 自动续费 关。',
+  autoRenewEnabled: '自动续费已开启。',
+  autoRenewDisabled: '自动续费已关闭。',
   tslInsufficient: amount => `tsl余额不足${amount}`,
   moveUsage: '正确格式: 移动 x y z [停止距离]，或 移动 玩家名 [停止距离]，或 移动 东|西|南|北 格数 [停止距离]',
   moveSuccess: '已移动到目标附近。',
@@ -1300,6 +1303,16 @@ function createSmartCommandHandler (bot, options = {}) {
       return
     }
 
+    if (parsed.command === '自动续费') {
+      if (!access.admin) return
+      if (parsed.args.length !== 1 || !['开', '关'].includes(parsed.args[0])) return reply(COMMAND_TEXT.autoRenewUsage, 'autoRenewUsage')
+      const enabled = parsed.args[0] === '开'
+      const result = await request('auto_renew_set', { username, enabled })
+      if (!result?.allowed) return
+      reply(enabled ? COMMAND_TEXT.autoRenewEnabled : COMMAND_TEXT.autoRenewDisabled, enabled ? 'autoRenewEnabled' : 'autoRenewDisabled')
+      return
+    }
+
     const overridableTaskCommands = new Set(['上车', '下车', '开宝库', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '攻击', '移动', '注视'])
     if (overridableTaskCommands.has(parsed.command)) {
       const customTask = await request('task_get', { name: parsed.command })
@@ -1704,6 +1717,9 @@ function installSmartCommands (bot, options = {}) {
       periodicRightClickScheduler.applySettings(message.automation || {})
       fishingController.applySettings(message.automation || {})
     }
+    if (message?.type === 'smart_daily_action' && ['signin', 'auto_renew'].includes(message.action) && String(message.command || '')) {
+      runBotAction(() => bot.chat(String(message.command))).catch(error => console.error('[smart-daily-action]', error?.stack || error))
+    }
   }
   process.on('message', settingsListener)
   platform?.request?.('settings', {}).then(settings => {
@@ -1785,12 +1801,14 @@ function installSmartCommands (bot, options = {}) {
   bot.on('botPlatformPeekRequest', peekListener)
   const paymentListener = event => {
     if (event?.kind === 'insufficient') {
-      platform.request('top_up_cancel', {}).catch(() => {})
-      bot.chat(COMMAND_TEXT.tslInsufficient(String(event.amount || '')))
+      platform.request('top_up_cancel', {}).then(result => {
+        if (!result?.silent) bot.chat(COMMAND_TEXT.tslInsufficient(String(event.amount || '')))
+      }).catch(() => {})
       return
     }
     platform.request('top_up_confirm', { amount: event?.amount }).then(result => {
       if (!result?.confirmed) return
+      if (result.silent) return
       const sender = String(result.sender || '')
       const template = Object.prototype.hasOwnProperty.call(messageOverrides, 'topUpSuccess') ? messageOverrides.topUpSuccess : COMMAND_TEXT.topUpSuccess(result.amount, formatMomoc(result.balance))
       const text = String(template || '').replace(/\{(sender|amount|balance)\}/g, (match, name) => ({ sender, amount: result.amount, balance: formatMomoc(result.balance) })[name])

@@ -40,6 +40,10 @@ class BotManager {
     this.serverCircuits = new Map()
     this.reconnectTimers = new Map()
     this.runtimeControlRequests = new Map()
+    this.accurateTimeOffsetMs = 0
+    this.dailyAutomationTimer = null
+    this.accurateTimeTimer = null
+    this.timeSyncPromise = null
   }
 
   sanitizedLogLines (message) {
@@ -98,6 +102,89 @@ class BotManager {
       if (bot.desiredState === 'running') this.start(bot.id).catch(error => this.setError(bot.id, error))
       this.syncSchedule(bot.id)
     }
+    this.startDailyAutomationScheduler()
+  }
+
+  accurateNow () { return this.now() + this.accurateTimeOffsetMs }
+
+  shanghaiClock (timestamp = this.accurateNow()) {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+    }).formatToParts(new Date(timestamp)).filter(part => part.type !== 'literal').map(part => [part.type, part.value]))
+    return { date: `${parts.year}-${parts.month}-${parts.day}`, minuteOfDay: Number(parts.hour) * 60 + Number(parts.minute) }
+  }
+
+  async syncAccurateTime () {
+    if (this.config.timeSyncEnabled === false || typeof fetch !== 'function') return false
+    if (this.timeSyncPromise) return this.timeSyncPromise
+    const urls = Array.isArray(this.config.accurateTimeUrls) && this.config.accurateTimeUrls.length
+      ? this.config.accurateTimeUrls
+      : ['https://www.cloudflare.com/', 'https://www.baidu.com/']
+    this.timeSyncPromise = (async () => {
+      for (const url of urls) {
+        const startedAt = Date.now()
+        try {
+          const response = await fetch(String(url), { method: 'HEAD', cache: 'no-store', signal: AbortSignal.timeout(5000) })
+          const serverTime = Date.parse(response.headers.get('date') || '')
+          if (!Number.isFinite(serverTime)) continue
+          const finishedAt = Date.now()
+          this.accurateTimeOffsetMs = serverTime + (finishedAt - startedAt) / 2 - finishedAt
+          return true
+        } catch {}
+      }
+      return false
+    })().finally(() => { this.timeSyncPromise = null })
+    return this.timeSyncPromise
+  }
+
+  startDailyAutomationScheduler () {
+    if (this.dailyAutomationTimer) return
+    const run = () => this.runDailyAutomations().catch(error => console.error('[daily-automation]', error))
+    this.syncAccurateTime().finally(run)
+    this.dailyAutomationTimer = setInterval(run, 30_000)
+    this.accurateTimeTimer = setInterval(() => this.syncAccurateTime().catch(() => {}), 10 * 60_000)
+    this.dailyAutomationTimer.unref?.()
+    this.accurateTimeTimer.unref?.()
+  }
+
+  async runDailyAutomations (options = {}) {
+    if (typeof this.db.claimSmartBotDailyAction !== 'function') return
+    const clock = this.shanghaiClock()
+    if (clock.minuteOfDay < 1) return
+    const allowSignin = options.allowSignin !== false && clock.minuteOfDay <= 15
+    for (const [botId, state] of this.processes) {
+      if (!state?.reachedOnline) continue
+      const bot = this.db.getBot(botId)
+      if (!bot || bot.mode !== 'smart') continue
+      if (allowSignin && this.db.claimSmartBotDailyAction(botId, 'signin', clock.date)) {
+        try {
+          state.child.send?.({ type: 'smart_daily_action', action: 'signin', command: '/signin click' })
+          this.appendRelatedLog(botId, 'schedule', `已执行 ${clock.date} 每日签到。`)
+        } catch (error) {
+          console.error(`[daily-signin:${botId}]`, error)
+        }
+      }
+      const settings = this.db.getSmartBotSettings(botId)
+      if (!settings.autoRenewEnabled) continue
+      const pending = this.pendingTopUps.get(botId)
+      if (pending && Date.now() - pending.createdAt < 60_000) continue
+      if (pending) this.pendingTopUps.delete(botId)
+      if (!this.db.claimSmartBotDailyAction(botId, 'auto_renew', clock.date)) continue
+      const topUp = this.db.getSmartTopUpSettings()
+      const amount = '1.00'
+      const command = String(topUp.commandTemplate || '/pay {recipient} {amount}')
+        .replace(/\{recipient\}/g, String(topUp.recipient || 'Damomo1'))
+        .replace(/\{amount\}/g, amount)
+      this.pendingTopUps.set(botId, { cents: 100, amount, sender: '', createdAt: Date.now(), silent: true })
+      try {
+        state.child.send?.({ type: 'smart_daily_action', action: 'auto_renew', command })
+        this.appendRelatedLog(botId, 'schedule', `已执行 ${clock.date} 自动续费 1 C。`)
+      } catch (error) {
+        this.pendingTopUps.delete(botId)
+        console.error(`[daily-auto-renew:${botId}]`, error)
+      }
+    }
   }
 
   publicBot (bot) {
@@ -114,7 +201,8 @@ class BotManager {
     const runtimeVersion = state?.runtimeVersion || this.readPackageVersion(state?.instancePath)
     const latestRuntimeVersion = this.readPackageVersion(path.join(this.config.root || '', bot.mode === 'signin' ? 'signin-runtime' : 'smart-runtime'))
     const updateAvailable = bot.mode === 'smart' && Boolean(state) && isReleaseNewer(latestRuntimeVersion, runtimeVersion)
-    return { ...safe, minecraftVersion: this.protocolVersions(bot)[0], billingMode: bot.mode === 'signin' ? 'once' : 'hourly', priceMomoc: bot.mode === 'signin' ? prices.signinOncePrice : prices.smartHourlyPrice, allowScheduling: bot.mode === 'signin', scheduleEnabled: Boolean(bot.scheduleEnabled), oauth, smartSchedules, runtimeVersion, latestRuntimeVersion, updateAvailable, logs: [] }
+    const momocExempt = bot.mode === 'smart' && typeof this.db.isSmartBotMomocExempt === 'function' ? this.db.isSmartBotMomocExempt(bot.id) : false
+    return { ...safe, minecraftVersion: this.protocolVersions(bot)[0], billingMode: bot.mode === 'signin' ? 'once' : 'hourly', priceMomoc: bot.mode === 'signin' ? prices.signinOncePrice : prices.smartHourlyPrice, momocExempt, allowScheduling: bot.mode === 'signin', scheduleEnabled: Boolean(bot.scheduleEnabled), oauth, smartSchedules, runtimeVersion, latestRuntimeVersion, updateAvailable, logs: [] }
   }
 
   readPackageVersion (directory) {
@@ -368,7 +456,8 @@ class BotManager {
     if (!user) throw new Error('用户不存在。')
     const prices = this.db.getModePrices()
     const price = bot.mode === 'signin' ? prices.signinOncePrice : prices.smartHourlyPrice
-    if (bot.mode === 'smart' && user.availableMomoc < price / 60) throw new Error('momoc 余额不足，无法启动机器人。')
+    const momocExempt = bot.mode === 'smart' && typeof this.db.isSmartBotMomocExempt === 'function' && this.db.isSmartBotMomocExempt(bot.id)
+    if (bot.mode === 'smart' && !momocExempt && user.availableMomoc < price / 60) throw new Error('momoc 余额不足，无法启动机器人。')
     if (bot.mode === 'signin') {
       const reservation = this.db.reserveOnce(id, price)
       if (!reservation.ok) throw new Error(`momoc 余额不足：${reservation.reason}`)
@@ -626,6 +715,7 @@ class BotManager {
         if (state.billingMode === 'hourly') this.startBilling(id)
       }
       this.db.updateBotRuntime(id, fields)
+      if (message.state === 'online') this.runDailyAutomations({ allowSignin: false }).catch(error => console.error(`[daily-online:${id}]`, error))
       if (message.state === 'stopped') this.terminateDisconnectedRuntime(id, state)
       return
     }
@@ -734,6 +824,12 @@ class BotManager {
       return promise
     }
     if (action === 'settings') return { ...this.db.getSmartBotSettings(bot.id), topUp: this.db.getSmartTopUpSettings() }
+    if (action === 'auto_renew_set') {
+      const actor = this.db.getSmartAccess(bot.userId, String(payload.username || ''))
+      if (actor.blacklisted || !actor.admin) return { allowed: false }
+      const settings = this.db.setSmartBotSettings(botId, { autoRenewEnabled: Boolean(payload.enabled) })
+      return { allowed: true, settings }
+    }
     if (action === 'owner_balance') {
       const actor = this.db.getSmartAccess(bot.userId, String(payload.username || ''))
       if (actor.blacklisted || !actor.admin) return { allowed: false }
@@ -755,8 +851,9 @@ class BotManager {
       return { allowed: true, amount: normalized }
     }
     if (action === 'top_up_cancel') {
+      const pending = this.pendingTopUps.get(botId)
       this.pendingTopUps.delete(botId)
-      return { canceled: true }
+      return { canceled: true, silent: Boolean(pending?.silent) }
     }
     if (action === 'top_up_confirm') {
       const pending = this.pendingTopUps.get(botId)
@@ -766,7 +863,7 @@ class BotManager {
       this.pendingTopUps.delete(botId)
       const recipient = this.db.getSmartTopUpSettings().recipient
       const balance = this.db.adjustMomoc(bot.userId, pending.cents / 100, 'tsl_top_up', `TSL 支付给 ${recipient} ${pending.amount} C`, botId)
-      return { confirmed: true, amount: pending.amount, balance, sender: pending.sender }
+      return { confirmed: true, amount: pending.amount, balance, sender: pending.sender, silent: Boolean(pending.silent) }
     }
     if (action === 'runtime_version') {
       const runtime = readRuntimeUpdates(this.config.root, 'smart')
@@ -1213,6 +1310,10 @@ class BotManager {
   }
 
   shutdown () {
+    if (this.dailyAutomationTimer) clearInterval(this.dailyAutomationTimer)
+    if (this.accurateTimeTimer) clearInterval(this.accurateTimeTimer)
+    this.dailyAutomationTimer = null
+    this.accurateTimeTimer = null
     for (const { timer } of this.reconnectTimers.values()) clearTimeout(timer)
     this.reconnectTimers.clear()
     for (const task of this.schedules.values()) task.destroy()

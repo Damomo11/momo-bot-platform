@@ -178,6 +178,7 @@ main { min-width: 0; height: 100vh; overflow-y: auto; padding: 40px; }
 .prefix-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; margin: 14px 0; }
 .prefix-form label { margin: 0; }
 .prefix-form button { min-height: 40px; }
+.momoc-exemption-form { grid-template-columns: minmax(180px, .55fr) minmax(260px, 1fr) auto; align-items: center; }
 .permission-form { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(120px, .7fr) minmax(150px, .8fr) auto; gap: 10px; align-items: end; margin: 14px 0; }
 .permission-form label { margin: 0; }
 .permission-form button { min-height: 40px; }
@@ -330,6 +331,7 @@ td strong { color: #fff; }
   .task-action-row, .task-parameter-row { grid-template-columns: 34px minmax(120px, .7fr) minmax(180px, 1.3fr) auto; }
   .permission-form { grid-template-columns: 1fr; }
   .prefix-form { grid-template-columns: 1fr; }
+  .momoc-exemption-form { grid-template-columns: 1fr; }
   .account-create { grid-template-columns: 1fr; }
   .variable-grid { grid-template-columns: 1fr; }
   .module-select-grid, .module-workspace { grid-template-columns: 1fr; }

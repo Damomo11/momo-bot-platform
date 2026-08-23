@@ -396,7 +396,8 @@ async function api (req, res, url) {
       bot: { id: bot.id, label: bot.label, ownerUsername: bot.ownerUsername },
       rows: db.listSmartPermissions(bot.userId),
       lock: db.getSmartBotLock(bot.id),
-      settings: db.getSmartBotSettings(bot.id)
+      settings: db.getSmartBotSettings(bot.id),
+      momocExemption: user.role === 'admin' ? db.getSmartBotMomocExemption(bot.id) : null
     })
   }
   if (req.method === 'POST' && url.pathname === '/api/smart/permissions') {
@@ -404,8 +405,13 @@ async function api (req, res, url) {
     const input = await body(req)
     const bot = botForUser(input.botId, user)
     if (bot.mode !== 'smart') throw new Error('只有智能 Bot 使用游戏内权限。')
+    if (input.action === 'momoc_exemption') {
+      if (user.role !== 'admin') { const err = new Error('只有平台管理员可以修改免 momoc 设置。'); err.status = 403; throw err }
+      const momocExemption = db.setSmartBotMomocExemption(bot.id, Boolean(input.enabled), user.username)
+      return json(res, 200, { ok: true, momocExemption })
+    }
     if (input.action === 'settings') {
-      const settings = db.setSmartBotSettings(bot.id, { commandPrefix: input.commandPrefix })
+      const settings = db.setSmartBotSettings(bot.id, { commandPrefix: input.commandPrefix, autoRenewEnabled: input.autoRenewEnabled })
       await bots.syncSmartSettings(bot.id)
       return json(res, 200, { ok: true, settings })
     }
