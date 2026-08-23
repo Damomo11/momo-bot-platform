@@ -1329,6 +1329,98 @@ test('in-game restart command prepares the supervisor before scheduling process 
   assert.equal(scheduled, 1)
 })
 
+test('in-game runtime control commands never send chat feedback', async () => {
+  const chats = []
+  const logs = []
+  const outcomes = [
+    { allowed: true, status: 'starting' },
+    { allowed: true, status: 'stopping' },
+    { allowed: true, status: 'already_online' },
+    { allowed: true, status: 'already_offline' },
+    { allowed: false },
+    new Error('platform unavailable')
+  ]
+  const handler = createSmartCommandHandler({ username: 'PlatformBot', chat: message => chats.push(message) }, {
+    commandPrefixes: ['PlatformBot'],
+    platform: {
+      log: message => logs.push(message),
+      request: async action => {
+        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: true, lock: { locked: false, adminLocked: false } }
+        if (action === 'runtime_control') {
+          const outcome = outcomes.shift()
+          if (outcome instanceof Error) throw outcome
+          return outcome
+        }
+        throw new Error(`unexpected action ${action}`)
+      }
+    }
+  })
+
+  for (const command of ['上线', '下线', '上线', '下线', '上线', '下线']) {
+    await handler({ username: 'RootPlayer', message: `PlatformBot${command}` })
+  }
+
+  assert.deepEqual(chats, [])
+  assert.equal(logs.some(message => message.includes('platform unavailable')), true)
+})
+
+test('online smart bots silently relay runtime control for another bot', async () => {
+  const bot = new EventEmitter()
+  bot.username = 'RelayBot'
+  const chats = []
+  const logs = []
+  const outcomes = [
+    { allowed: true, status: 'starting' },
+    { allowed: true, status: 'stopping' },
+    { allowed: true, status: 'already_online' },
+    { allowed: true, status: 'already_offline' },
+    new Error('relay unavailable')
+  ]
+  let finishAttempts
+  const attemptsFinished = new Promise(resolve => { finishAttempts = resolve })
+  const platform = {
+    log: message => logs.push(message),
+    request: async action => {
+      if (action === 'settings') return { commandPrefix: 'RelayBot', messageOverrides: {}, topUp: {} }
+      if (action === 'volatile_schedules_reset') return {}
+      if (action === 'runtime_targets') {
+        return [{
+          id: 'offline-bot',
+          serverHost: String(process.env.BOT_PLATFORM_SERVER_HOST || ''),
+          serverPort: Number(process.env.BOT_PLATFORM_SERVER_PORT || 25565),
+          prefixes: ['OfflineBot']
+        }]
+      }
+      if (action === 'runtime_control') {
+        const outcome = outcomes.shift()
+        if (!outcomes.length) finishAttempts()
+        if (outcome instanceof Error) throw outcome
+        return outcome
+      }
+      throw new Error(`unexpected action ${action}`)
+    }
+  }
+  bot.chat = message => chats.push(message)
+  const inertScheduler = { applySettings: () => {}, start: async () => {}, stop: () => {} }
+  const remove = installSmartCommands(bot, {
+    platform,
+    ominousScheduler: inertScheduler,
+    periodicRightClickScheduler: inertScheduler,
+    fishingController: inertScheduler
+  })
+  try {
+    for (let index = 0; index < 5; index += 1) {
+      bot.emit('botPlatformMessage', { username: `Root${index}`, message: `OfflineBot${index % 2 ? '下线' : '上线'}`, channel: 'public' })
+    }
+    await attemptsFinished
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(chats, [])
+    assert.equal(logs.some(message => message.includes('relay unavailable')), true)
+  } finally {
+    remove()
+  }
+})
+
 test('version command reports the running version before the latest release details', async () => {
   const chats = []
   const handler = createSmartCommandHandler({ username: 'PlatformBot', chat: message => chats.push(message) }, {

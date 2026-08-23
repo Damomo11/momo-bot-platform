@@ -1195,21 +1195,13 @@ function createSmartCommandHandler (bot, options = {}) {
     if (parsed.command === '上线' || parsed.command === '下线') {
       if (parsed.args.length || !access.admin) return
       try {
-        const result = await request('runtime_control', {
+        await request('runtime_control', {
           username,
           operation: parsed.command === '上线' ? 'start' : 'stop',
           targetBotId: process.env.BOT_PLATFORM_INSTANCE_ID
         })
-        if (!result?.allowed) return
-        if (result.duplicate) return
-        const name = String(bot.username || '机器人')
-        if (result.status === 'already_online') reply(COMMAND_TEXT.runtimeAlreadyOnline(name), 'runtimeAlreadyOnline', { bot: name })
-        else if (result.status === 'already_offline') reply(COMMAND_TEXT.runtimeAlreadyOffline(name), 'runtimeAlreadyOffline', { bot: name })
-        // Starting a Bot is intentionally silent; the command only schedules
-        // the runtime transition and should not announce it in chat.
-        else if (result.status === 'stopping') reply(COMMAND_TEXT.runtimeStopping(name), 'runtimeStopping', { bot: name })
       } catch (error) {
-        reply(COMMAND_TEXT.runtimeFailure(error?.message || error), 'runtimeFailure', { reason: error?.message || error })
+        platform.log?.(`Bot 上下线请求失败: ${error?.message || error}`)
       }
       return
     }
@@ -1777,14 +1769,8 @@ function installSmartCommands (bot, options = {}) {
         const parsed = parseSmartCommand(event.message, target.prefixes || [])
         if (!parsed || !['上线', '下线'].includes(parsed.command) || parsed.args.length) continue
         const operation = parsed.command === '上线' ? 'start' : 'stop'
-        const name = String(target.label || target.prefixes?.[0] || '机器人')
-        request('runtime_control', { username: String(event.username).replace(/^#/, ''), targetBotId: target.id, operation }).then(result => {
-          if (!result?.allowed || result.duplicate) return
-          if (result.status === 'already_online') bot.chat(COMMAND_TEXT.runtimeAlreadyOnline(name))
-          else if (result.status === 'already_offline') bot.chat(COMMAND_TEXT.runtimeAlreadyOffline(name))
-          // Starting a Bot is intentionally silent.
-          else if (result.status === 'stopping') bot.chat(COMMAND_TEXT.runtimeStopping(name))
-        }).catch(error => bot.chat(COMMAND_TEXT.runtimeFailure(error?.message || error)))
+        request('runtime_control', { username: String(event.username).replace(/^#/, ''), targetBotId: target.id, operation })
+          .catch(error => platform.log?.(`代收 Bot 上下线请求失败: ${error?.message || error}`))
         return
       }
     }).catch(() => {})
