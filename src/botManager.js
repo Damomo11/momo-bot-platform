@@ -39,6 +39,7 @@ class BotManager {
     this.serverFailureWindows = new Map()
     this.serverCircuits = new Map()
     this.reconnectTimers = new Map()
+    this.runtimeControlRequests = new Map()
   }
 
   sanitizedLogLines (message) {
@@ -350,7 +351,7 @@ class BotManager {
     const bot = this.db.getBot(id)
     if (!bot) throw new Error('机器人不存在。')
     if (actorUserId && bot.userId !== actorUserId) throw new Error('无权操作这个机器人。')
-    if (this.processes.has(id)) return this.publicBot(bot)
+    if (this.processes.has(id) || bot.desiredState === 'running' || (bot.runtimeState && bot.runtimeState !== 'stopped')) return this.publicBot(bot)
     const now = this.now()
     const accountReconnect = this.accountReconnects.get(String(bot.accountId || bot.id))
     if (accountReconnect?.nextRetryAt > now) throw new Error(`这个微软账号连接失败次数过多，请在 ${this.reconnectWaitText(accountReconnect.nextRetryAt - now)}后重试。`)
@@ -658,7 +659,13 @@ class BotManager {
     if (!requestId) return
     try {
       const result = this.executeSmartRequest(id, String(message.action || ''), message.payload || {})
-      state.child.send?.({ type: 'smart_response', requestId, ok: true, result })
+      if (result && typeof result.then === 'function') {
+        result.then(value => state.child.send?.({ type: 'smart_response', requestId, ok: true, result: value })).catch(error => {
+          state.child.send?.({ type: 'smart_response', requestId, ok: false, error: error.message || String(error) })
+        })
+      } else {
+        state.child.send?.({ type: 'smart_response', requestId, ok: true, result })
+      }
     } catch (error) {
       state.child.send?.({ type: 'smart_response', requestId, ok: false, error: error.message || String(error) })
     }
@@ -667,6 +674,65 @@ class BotManager {
   executeSmartRequest (botId, action, payload) {
     const bot = this.db.getBot(botId)
     if (!bot || bot.mode !== 'smart') throw new Error('智能 Bot 不存在。')
+    if (action === 'runtime_targets') {
+      // Prefixes are intentionally exposed to running smart runtimes so an
+      // online Bot can act as the in-game receiver for an offline Bot.
+      return this.db.listBots().filter(row => row.mode === 'smart').map(row => {
+        const settings = this.db.getSmartBotSettings(row.id)
+        const prefixes = []
+        for (const value of [settings.commandPrefix, row.minecraftName, row.accountMinecraftName]) {
+          const prefix = String(value || '').trim()
+          if (prefix && !prefixes.some(item => item.toLowerCase() === prefix.toLowerCase())) prefixes.push(prefix)
+        }
+        return {
+          id: row.id,
+          label: row.label,
+          serverHost: row.serverHost,
+          serverPort: row.serverPort,
+          prefixes,
+          runtimeState: row.runtimeState,
+          desiredState: row.desiredState
+        }
+      }).filter(row => row.prefixes.length)
+    }
+    if (action === 'runtime_control') {
+      const targetId = String(payload.targetBotId || botId)
+      const target = this.db.getBot(targetId)
+      if (!target || target.mode !== 'smart') throw new Error('目标智能 Bot 不存在。')
+      if (String(target.serverHost || '') !== String(bot.serverHost || '') || Number(target.serverPort || 0) !== Number(bot.serverPort || 0)) return { allowed: false, reason: 'different_server', silent: true }
+      const username = String(payload.username || '')
+      const access = this.db.getSmartAccess(target.userId, username)
+      if (access.blacklisted || !access.admin) return { allowed: false, silent: true }
+      const operation = String(payload.operation || '').toLowerCase()
+      if (!['start', 'stop'].includes(operation)) throw new Error('无效的 Bot 上下线操作。')
+      const running = ['starting', 'connecting', 'authenticated', 'logging_in', 'online', 'reconnecting', 'restarting', 'resource_pack', 'auth_required', 'auth_refresh', 'circuit_open'].includes(String(target.runtimeState || '')) || target.desiredState === 'running'
+      if (operation === 'start') {
+        if (running) return { allowed: true, status: 'already_online', bot: this.publicBot(target) }
+        const key = `${target.id}:start`
+        const duplicate = this.runtimeControlRequests.get(key)
+        if (duplicate && Date.now() - duplicate.createdAt < 1000) return duplicate.promise.then(result => ({ ...result, duplicate: true }))
+        const promise = this.start(target.id).then(started => ({ allowed: true, status: 'starting', bot: started }))
+        this.runtimeControlRequests.set(key, { createdAt: Date.now(), promise })
+        promise.then(() => setTimeout(() => {
+          if (this.runtimeControlRequests.get(key)?.promise === promise) this.runtimeControlRequests.delete(key)
+        }, 1000).unref?.(), () => setTimeout(() => {
+          if (this.runtimeControlRequests.get(key)?.promise === promise) this.runtimeControlRequests.delete(key)
+        }, 1000).unref?.())
+        return promise
+      }
+      if (!running) return { allowed: true, status: 'already_offline', bot: this.publicBot(target) }
+      const key = `${target.id}:stop`
+      const duplicate = this.runtimeControlRequests.get(key)
+      if (duplicate && Date.now() - duplicate.createdAt < 1000) return duplicate.promise.then(result => ({ ...result, duplicate: true }))
+      const promise = this.stop(target.id).then(stopped => ({ allowed: true, status: 'stopping', bot: stopped }))
+      this.runtimeControlRequests.set(key, { createdAt: Date.now(), promise })
+      promise.then(() => setTimeout(() => {
+        if (this.runtimeControlRequests.get(key)?.promise === promise) this.runtimeControlRequests.delete(key)
+      }, 1000).unref?.(), () => setTimeout(() => {
+        if (this.runtimeControlRequests.get(key)?.promise === promise) this.runtimeControlRequests.delete(key)
+      }, 1000).unref?.())
+      return promise
+    }
     if (action === 'settings') return { ...this.db.getSmartBotSettings(bot.id), topUp: this.db.getSmartTopUpSettings() }
     if (action === 'owner_balance') {
       const actor = this.db.getSmartAccess(bot.userId, String(payload.username || ''))
