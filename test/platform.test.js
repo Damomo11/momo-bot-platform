@@ -732,37 +732,61 @@ test('smart daily settings persist and claim each action at most once per date',
   } finally { f.close() }
 })
 
-test('daily scheduler signs in online smart bots and catches up silent renewal after login', async () => {
+test('server chat signs in online smart bots once from 00:00 through 00:05 Beijing time', async () => {
   const f = fixture()
   try {
     const user = f.db.createUser('daily_scheduler_owner', 'password-123')
     const first = f.db.createBot(user.id, { mode: 'smart', label: 'Online', microsoftEmail: 'daily-online@example.com', serverHost: 'localhost' })
-    const second = f.db.createBot(user.id, { mode: 'smart', label: 'Offline', microsoftEmail: 'daily-offline@example.com', serverHost: 'localhost' })
-    f.db.setSmartBotSettings(first.id, { autoRenewEnabled: true })
-    f.db.setSmartBotSettings(second.id, { autoRenewEnabled: true })
-    let now = Date.parse('2026-08-22T16:01:00Z')
+    const offline = f.db.createBot(user.id, { mode: 'smart', label: 'Offline', microsoftEmail: 'daily-offline@example.com', serverHost: 'localhost' })
+    const signin = f.db.createBot(user.id, { mode: 'signin', label: 'Signin', microsoftEmail: 'daily-signin@example.com', serverHost: 'localhost' })
+    let now = Date.parse('2026-08-22T16:00:00Z')
     const manager = new BotManager(f.db, { now: () => now, timeSyncEnabled: false })
     const firstMessages = []
+    const offlineMessages = []
+    const signinMessages = []
     manager.processes.set(first.id, { reachedOnline: true, child: { send: message => firstMessages.push(message) } })
+    manager.processes.set(offline.id, { reachedOnline: false, child: { send: message => offlineMessages.push(message) } })
+    manager.processes.set(signin.id, { reachedOnline: true, child: { send: message => signinMessages.push(message) } })
 
-    await manager.runDailyAutomations()
+    manager.handleMessage(first.id, { type: 'server_message', message: '玩家聊天' })
+    await new Promise(resolve => setImmediate(resolve))
     assert.deepEqual(firstMessages, [
       { type: 'smart_daily_action', action: 'signin', command: '/signin click' }
     ])
-    now = Date.parse('2026-08-22T16:02:00Z')
-    await manager.runDailyAutomations()
-    assert.deepEqual(firstMessages, [
-      { type: 'smart_daily_action', action: 'signin', command: '/signin click' },
-      { type: 'smart_daily_action', action: 'auto_renew', command: '/pay Damomo1 1.00' }
-    ])
-    assert.equal(manager.pendingTopUps.get(first.id).silent, true)
+    assert.deepEqual(offlineMessages, [])
+    assert.deepEqual(signinMessages, [])
 
-    const secondMessages = []
-    manager.processes.set(second.id, { reachedOnline: true, child: { send: message => secondMessages.push(message) } })
-    await manager.runDailyAutomations({ allowSignin: false })
-    assert.deepEqual(secondMessages, [
+    now = Date.parse('2026-08-22T16:03:00Z')
+    await manager.runDailySignin(now)
+    now = Date.parse('2026-08-22T16:05:00Z')
+    await manager.runDailySignin(now)
+    assert.equal(firstMessages.length, 1)
+
+    const late = f.db.createBot(user.id, { mode: 'smart', label: 'Late', microsoftEmail: 'daily-late@example.com', serverHost: 'localhost' })
+    const lateMessages = []
+    manager.processes.set(late.id, { reachedOnline: true, child: { send: message => lateMessages.push(message) } })
+    now = Date.parse('2026-08-22T16:06:00Z')
+    await manager.runDailySignin(now)
+    assert.deepEqual(lateMessages, [])
+  } finally { f.close() }
+})
+
+test('daily scheduler renews online smart bots after 00:02', async () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('daily_renew_owner', 'password-123')
+    const bot = f.db.createBot(user.id, { mode: 'smart', label: 'Online', microsoftEmail: 'daily-renew@example.com', serverHost: 'localhost' })
+    f.db.setSmartBotSettings(bot.id, { autoRenewEnabled: true })
+    const now = Date.parse('2026-08-22T16:02:00Z')
+    const manager = new BotManager(f.db, { now: () => now, timeSyncEnabled: false })
+    const messages = []
+    manager.processes.set(bot.id, { reachedOnline: true, child: { send: message => messages.push(message) } })
+
+    await manager.runDailyAutomations()
+    assert.deepEqual(messages, [
       { type: 'smart_daily_action', action: 'auto_renew', command: '/pay Damomo1 1.00' }
     ])
+    assert.equal(manager.pendingTopUps.get(bot.id).silent, true)
   } finally { f.close() }
 })
 

@@ -148,24 +148,32 @@ class BotManager {
     this.accurateTimeTimer.unref?.()
   }
 
-  async runDailyAutomations (options = {}) {
+  async runDailySignin (timestamp = this.now()) {
     if (typeof this.db.claimSmartBotDailyAction !== 'function') return
-    const clock = this.shanghaiClock()
-    if (clock.minuteOfDay < 1) return
-    const allowSignin = options.allowSignin !== false && clock.minuteOfDay <= 15
+    const clock = this.shanghaiClock(timestamp)
+    if (clock.minuteOfDay > 5) return
     for (const [botId, state] of this.processes) {
       if (!state?.reachedOnline) continue
       const bot = this.db.getBot(botId)
       if (!bot || bot.mode !== 'smart') continue
-      if (allowSignin && this.db.claimSmartBotDailyAction(botId, 'signin', clock.date)) {
-        try {
-          state.child.send?.({ type: 'smart_daily_action', action: 'signin', command: '/signin click' })
-          this.appendRelatedLog(botId, 'schedule', `已执行 ${clock.date} 每日签到。`)
-        } catch (error) {
-          console.error(`[daily-signin:${botId}]`, error)
-        }
+      if (!this.db.claimSmartBotDailyAction(botId, 'signin', clock.date)) continue
+      try {
+        state.child.send?.({ type: 'smart_daily_action', action: 'signin', command: '/signin click' })
+        this.appendRelatedLog(botId, 'schedule', `已执行 ${clock.date} 每日签到。`)
+      } catch (error) {
+        console.error(`[daily-signin:${botId}]`, error)
       }
-      if (clock.minuteOfDay < 2) continue
+    }
+  }
+
+  async runDailyAutomations () {
+    if (typeof this.db.claimSmartBotDailyAction !== 'function') return
+    const clock = this.shanghaiClock()
+    if (clock.minuteOfDay < 2) return
+    for (const [botId, state] of this.processes) {
+      if (!state?.reachedOnline) continue
+      const bot = this.db.getBot(botId)
+      if (!bot || bot.mode !== 'smart') continue
       const settings = this.db.getSmartBotSettings(botId)
       if (!settings.autoRenewEnabled) continue
       const pending = this.pendingTopUps.get(botId)
@@ -716,7 +724,6 @@ class BotManager {
         if (state.billingMode === 'hourly') this.startBilling(id)
       }
       this.db.updateBotRuntime(id, fields)
-      if (message.state === 'online') this.runDailyAutomations({ allowSignin: false }).catch(error => console.error(`[daily-online:${id}]`, error))
       if (message.state === 'stopped') this.terminateDisconnectedRuntime(id, state)
       return
     }
@@ -731,6 +738,7 @@ class BotManager {
     }
     if (message?.type === 'server_message') {
       this.appendLog(id, 'server', message.message)
+      this.runDailySignin(this.now()).catch(error => console.error(`[daily-signin:${id}]`, error))
     }
   }
 
