@@ -67,6 +67,8 @@ const COMMAND_TEXT = Object.freeze({
   attackSuccess: '已攻击准星指向的目标。',
   attackMiss: '准星方向没有可攻击目标，已挥动主手。',
   attackFailure: '攻击失败，请确认机器人已进入服务器。',
+  breakUsage: '正确格式: 破坏 准星，或 破坏 x y z。',
+  breakSuccess: '破坏成功。',
   fishingUsage: '正确格式: 钓鱼 开 [间隔gt]，或 钓鱼 关；默认间隔 10gt。',
   fishingEnabled: ticks => `自动钓鱼已开启；主手持钓鱼竿时会朝准星方向抛竿，收竿后 ${ticks}gt 重抛。`,
   fishingDisabled: '自动钓鱼已关闭。',
@@ -403,6 +405,19 @@ async function attackAtCursor (bot, maxDistance = 3.5) {
   if (typeof bot.attack !== 'function') throw new Error('机器人无法攻击目标。')
   await bot.attack(target)
   return { status: 'attacked', target }
+}
+
+async function breakBlockTarget (bot, args) {
+  let block = null
+  if (args.length === 1 && args[0] === '准星') block = blockAtCursorTarget(bot).block
+  else {
+    const point = parseCoordinates(args)
+    block = point && bot.blockAt?.(new Vec3(point.x, point.y, point.z))
+  }
+  if (!block || block.name === 'air') throw new Error('目标位置没有可破坏的方块。')
+  if (block.diggable === false) throw new Error('该方块无法被破坏。')
+  if (typeof bot.dig !== 'function') throw new Error('机器人尚未进入服务器。')
+  await bot.dig(block)
 }
 
 function parseCoordinates (args) {
@@ -774,6 +789,7 @@ async function executeCustomTask (bot, task, options = {}) {
         }
         else if (step.command === '右键') await rightClickTarget(bot, args)
         else if (step.command === '攻击') await attackAtCursor(bot)
+        else if (step.command === '破坏') await breakBlockTarget(bot, args)
         else if (step.command === '移动') {
           const plan = resolveMovePlan(bot, args)
           if (!plan) throw new Error('移动命令参数无效。')
@@ -808,6 +824,7 @@ function validateCustomTaskCommand (command, args) {
   if (['拿出', '丢弃'].includes(command) && (args.length !== 1 || !normalizeItemId(args[0]) || /\s/.test(args[0]))) throw new Error(`${command}命令需要一个物品中文名或 id。`)
   if (command === '切换' && (args.length !== 1 || !/^[1-9]$/.test(args[0]))) throw new Error('切换命令参数必须为 1-9。')
   if (command === '放置' && !(args.length === 1 && args[0] === '准星') && !parseCoordinates(args)) throw new Error('放置命令需要“准星”或三个有效整数坐标。')
+  if (command === '破坏' && !(args.length === 1 && args[0] === '准星') && !parseCoordinates(args)) throw new Error('破坏命令需要“准星”或三个有效整数坐标。')
   if (command === '右键' && !((args.length === 1 && args[0].length <= 32 && !/\s/.test(args[0])) || parseCoordinates(args))) throw new Error('右键命令需要“准星”、玩家名或三个有效整数坐标。')
   if (command === '移动' && !isValidMoveSyntax(args)) throw new Error('移动命令需要坐标、玩家名或方向与距离。')
   if (command === '注视' && (args.length !== 1 || !args[0].length)) throw new Error('注视命令需要一个玩家名。')
@@ -1305,7 +1322,7 @@ function createSmartCommandHandler (bot, options = {}) {
       return
     }
 
-    const overridableTaskCommands = new Set(['上车', '下车', '开宝库', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '攻击', '移动', '注视'])
+    const overridableTaskCommands = new Set(['上车', '下车', '开宝库', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '攻击', '破坏', '移动', '注视'])
     if (overridableTaskCommands.has(parsed.command)) {
       const customTask = await request('task_get', { name: parsed.command })
       if (customTask?.task) {
@@ -1491,6 +1508,17 @@ function createSmartCommandHandler (bot, options = {}) {
       } catch {
         reply(COMMAND_TEXT.attackFailure, 'attackFailure')
       }
+      return
+    }
+
+    if (parsed.command === '破坏') {
+      const point = parseCoordinates(parsed.args)
+      const cursor = parsed.args.length === 1 && parsed.args[0] === '准星'
+      if (!point && !cursor) return reply(COMMAND_TEXT.breakUsage, 'breakUsage')
+      try {
+        await runBotAction(() => breakBlockTarget(bot, parsed.args))
+        reply(COMMAND_TEXT.breakSuccess, 'breakSuccess')
+      } catch (error) { const reason = error?.message || '未知错误'; reply(reason, 'breakFailure', { reason }) }
       return
     }
 

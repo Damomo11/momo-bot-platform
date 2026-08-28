@@ -1452,7 +1452,7 @@ test('version command reports the running version before the latest release deta
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.24', release: { summary: '下一版更新说明' } }
+        if (action === 'runtime_version') return { version: '1.0.25', release: { summary: '下一版更新说明' } }
         throw new Error(`unexpected action ${action}`)
       }
     }
@@ -1461,8 +1461,8 @@ test('version command reports the running version before the latest release deta
   await handler({ username: 'White', message: 'PlatformBot版本' })
 
   assert.deepEqual(chats, [
-    '智能 Bot 当前运行版本：v1.0.23',
-    '智能 Bot 最新版本：v1.0.24；更新内容：下一版更新说明'
+    '智能 Bot 当前运行版本：v1.0.24',
+    '智能 Bot 最新版本：v1.0.25；更新内容：下一版更新说明'
   ])
 })
 
@@ -1727,6 +1727,23 @@ test('custom task attacks the entity under the crosshair and a miss swings once'
   assert.deepEqual(calls, [{ type: 'cursor', distance: 3.5 }, { type: 'swing', hand: 'right' }])
 })
 
+test('custom task breaks the block under the crosshair', async () => {
+  const block = { name: 'stone', position: new Vec3(3, 64, 3), face: 1, intersect: new Vec3(3.5, 64.5, 3.5) }
+  const calls = []
+  const bot = {
+    entity: {},
+    blockAtCursor: distance => { calls.push({ type: 'cursor', distance }); return block },
+    dig: async dug => calls.push({ type: 'dig', block: dug })
+  }
+
+  const result = await executeCustomTask(bot, {
+    name: '挖矿',
+    steps: [{ type: 'command', command: '破坏', args: ['准星'] }]
+  })
+  assert.deepEqual(result.failures, [])
+  assert.deepEqual(calls, [{ type: 'cursor', distance: 4.5 }, { type: 'dig', block }])
+})
+
 test('smart attack command performs one native crosshair attack', async () => {
   const target = { id: 31, type: 'player', username: 'Target' }
   const chats = []
@@ -1766,6 +1783,56 @@ test('smart attack command performs one native crosshair attack', async () => {
   await handler({ username: 'White', message: 'PlatformBot攻击' })
   assert.deepEqual(swings, ['right'])
   assert.equal(chats.pop(), '准星方向没有可攻击目标，已挥动主手。')
+})
+
+test('smart break command digs the crosshair block or a coordinate block', async () => {
+  const chats = []
+  const dug = []
+  const cursorBlock = { name: 'stone', position: new Vec3(10, 64, 20), face: 1, intersect: new Vec3(10.5, 64.5, 20.5) }
+  const coordinateBlock = { name: 'dirt', position: new Vec3(0, 64, 0), diggable: true }
+  const undiggableBlock = { name: 'bedrock', position: new Vec3(1, 64, 1), diggable: false }
+  const bot = {
+    username: 'PlatformBot',
+    entity: {},
+    chat: message => chats.push(message),
+    blockAtCursor: distance => { assert.equal(distance, 4.5); return cursorBlock },
+    blockAt: position => {
+      const key = `${position.x},${position.y},${position.z}`
+      if (key === '0,64,0') return coordinateBlock
+      if (key === '1,64,1') return undiggableBlock
+      return null
+    },
+    dig: async block => dug.push(block)
+  }
+  const handler = createSmartCommandHandler(bot, {
+    commandPrefixes: ['PlatformBot'],
+    platform: {
+      request: async action => {
+        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
+        if (action === 'task_get') return { task: null }
+        throw new Error(`unexpected action ${action}`)
+      }
+    },
+    scheduleRestart: () => {}
+  })
+
+  await handler({ username: 'White', message: 'PlatformBot破坏 多余参数' })
+  assert.equal(chats.pop(), '正确格式: 破坏 准星，或 破坏 x y z。')
+  assert.deepEqual(dug, [])
+
+  await handler({ username: 'White', message: 'PlatformBot破坏 准星' })
+  assert.deepEqual(dug, [cursorBlock])
+  assert.equal(chats.pop(), '破坏成功。')
+
+  await handler({ username: 'White', message: 'PlatformBot破坏 0 64 0' })
+  assert.deepEqual(dug, [cursorBlock, coordinateBlock])
+  assert.equal(chats.pop(), '破坏成功。')
+
+  await handler({ username: 'White', message: 'PlatformBot破坏 1 64 1' })
+  assert.equal(chats.pop(), '该方块无法被破坏。')
+
+  await handler({ username: 'White', message: 'PlatformBot破坏 2 64 2' })
+  assert.equal(chats.pop(), '目标位置没有可破坏的方块。')
 })
 
 test('editing a custom task updates and renames it without overwriting another task', () => {
@@ -2396,7 +2463,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.23')
+  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.24')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })
