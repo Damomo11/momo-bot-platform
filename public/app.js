@@ -606,7 +606,8 @@ function managedBotRows (rows) {
     const permissions = bot.mode === 'smart' ? `<button data-smart-permissions="${esc(bot.id)}">权限</button>` : ''
     const update = bot.updateAvailable && bot.runtimeState === 'online' ? `<button class="primary" data-update-bot="${esc(bot.id)}">更新</button>` : ''
     const error = bot.lastError ? `<div class="muted managed-error" title="${esc(bot.lastError)}">${esc(bot.lastError)}</div>` : ''
-    return `<tr><td><strong>${esc(bot.label)}</strong><div class="muted">${esc(bot.ownerUsername || '-')}${bot.momocExempt ? ' · 免 momoc' : ''}</div></td><td>${esc(bot.serverHost)}:${esc(bot.serverPort)}</td><td><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span>${error}</td><td>${managedVersionHtml(bot)}</td><td>${managedScheduleChips(bot)}</td><td><div class="actions">${update}${action}${permissions}<button data-bot-logs="${esc(bot.id)}">日志</button><button class="danger" data-delete="${esc(bot.id)}">删除</button></div></td></tr>`
+    const minecraftName = bot.accountMinecraftName || bot.minecraftName || ''
+    return `<tr><td><strong>${esc(minecraftName || bot.label)}</strong><div class="muted">${minecraftName ? `${esc(bot.label)} · ` : ''}${esc(bot.ownerUsername || '-')}${bot.momocExempt ? ' · 免 momoc' : ''}</div></td><td>${esc(bot.serverHost)}:${esc(bot.serverPort)}</td><td><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span>${error}</td><td>${managedVersionHtml(bot)}</td><td>${managedScheduleChips(bot)}</td><td><div class="actions">${update}${action}${permissions}<button data-bot-logs="${esc(bot.id)}">日志</button><button class="danger" data-delete="${esc(bot.id)}">删除</button></div></td></tr>`
   }).join('') + '</tbody></table>'
 }
 
