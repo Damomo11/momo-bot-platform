@@ -4,6 +4,7 @@ const state = {
   authMode: 'login',
   view: 'bots',
   managementTab: 'overview',
+  managedModeFilter: 'smart',
   templates: [],
   modules: [],
   baseHourlyPrice: 0,
@@ -45,7 +46,7 @@ const balanceText = user => `${formatMomoc(user?.momoc)} momoc${Number(user?.res
 const templatePrice = template => template?.momocExempt ? '免 momoc' : `${formatMomoc(template?.priceMomoc)} momoc / ${template?.billingMode === 'once' ? '次' : '1h'}`
 const commandUsage = command => `${state.botSettings?.commandPrefix || '!'}${String(command || '').replace(/^\s*[!@=]+/, '')}`
 const kindLabel = value => ({ bot_usage: '机器人基础运行', bot_minute: '机器人基础运行', bot_hourly: '机器人基础运行', bot_once: '模板按次执行', module_hourly: '功能模块运行', module_once: '功能模块执行', admin_adjust: '管理员调整', signup_bonus: '新用户初始金', tsl_top_up: 'TSL 充值' })[value] || value
-const TASK_COMMANDS = ['上车', '下车', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '攻击', '破坏', '移动', '注视', '指令']
+const TASK_COMMANDS = ['上车', '下车', '清空', '拿出', '丢弃', '副手', '切换', '放置', '右键', '攻击', '挖掘', '移动', '注视', '指令']
 const MESSAGE_DEFAULTS = {
   permissionUsage: '正确格式: {command} 玩家名', permissionResult: '玩家 {player} {status}{label}中{remaining}',
   openBoxUsage: '正确格式: 开盒 玩家名', openBoxSuccess: '开盒成功！玩家 {player} 的坐标为 ({x},{z}) {dimension}', openBoxFailure: '开盒失败！未找到该玩家或地图服务暂时不可用。',
@@ -57,7 +58,7 @@ const MESSAGE_DEFAULTS = {
   switchUsage: '正确格式: 切换 1-9', switchSuccess: '快捷栏已切换到第 {slot} 格。',
   ominousUsage: '正确格式: 定时灾厄之瓶 开|关', ominousEnabled: '定时灾厄之瓶已开启，将立即饮用一瓶；成功后每 31 分钟执行一次。', ominousDisabled: '定时灾厄之瓶已关闭。', ominousStatusOn: '定时灾厄之瓶: 开，下次执行: {nextTime}', ominousStatusOff: '定时灾厄之瓶: 关。',
   periodicRightClickUsage: '正确格式: 定时放置 x y z ngt，例如 定时放置 100 64 200 20。', periodicRightClickEnabled: '定时放置已开启: ({x},{y},{z})，每 {ticks} 游戏刻执行。', periodicRightClickDisabled: '定时放置已关闭。', periodicRightClickStatusOff: '定时放置: 关。', periodicRightClickStatusOn: '定时放置: 开，坐标 ({x},{y},{z})，间隔 {ticks} 游戏刻。',
-  rightClickUsage: '正确格式: 右键 准星、右键 玩家名，或 右键 x y z。', rightClickSuccess: '右键交互成功。', rightClickFailure: '右键交互失败，请确认目标存在且在交互距离内。', attackUsage: '正确格式: 攻击', attackSuccess: '已攻击准星指向的目标。', attackMiss: '准星方向没有可攻击目标，已挥动主手。', attackFailure: '攻击失败，请确认机器人已进入服务器。', balanceResult: 'Bot 所有者当前拥有 {balance} momoc。', topUpUsage: '正确格式: 充值 金额，例如 充值 50。', topUpPending: '正在支付 {amount} C，等待服务器确认。', topUpBusy: '上一笔充值仍在等待服务器确认。', topUpFailure: '充值指令发送失败，请稍后重试。', topUpSuccess: '充值成功，已增加 {amount} momoc，当前余额 {balance} momoc。', moveUsage: '正确格式: 移动 x y z [停止距离]，或 移动 玩家名 [停止距离]，或 移动 东|西|南|北 格数 [停止距离]', moveSuccess: '已移动到目标附近。', moveFailure: '移动失败，请确认目标可达。', lookUsage: '正确格式: 注视 玩家名', lookSuccess: '已调整视角。', lookFailure: '注视失败，请确认目标存在。', placeUsage: '正确格式: 放置 准星，或 放置 x y z。', placeSuccess: '放置成功。', placeFailure: '{reason}', breakUsage: '正确格式: 破坏 准星，或 破坏 x y z。', breakSuccess: '破坏成功。', breakFailure: '{reason}',
+  rightClickUsage: '正确格式: 右键 准星、右键 玩家名，或 右键 x y z。', rightClickSuccess: '右键交互成功。', rightClickFailure: '右键交互失败，请确认目标存在且在交互距离内。', attackUsage: '正确格式: 攻击', attackSuccess: '已攻击准星指向的目标。', attackMiss: '准星方向没有可攻击目标，已挥动主手。', attackFailure: '攻击失败，请确认机器人已进入服务器。', balanceResult: 'Bot 所有者当前拥有 {balance} momoc。', topUpUsage: '正确格式: 充值 金额，例如 充值 50。', topUpPending: '正在支付 {amount} C，等待服务器确认。', topUpBusy: '上一笔充值仍在等待服务器确认。', topUpFailure: '充值指令发送失败，请稍后重试。', topUpSuccess: '充值成功，已增加 {amount} momoc，当前余额 {balance} momoc。', moveUsage: '正确格式: 移动 x y z [停止距离]，或 移动 玩家名 [停止距离]，或 移动 东|西|南|北 格数 [停止距离]', moveSuccess: '已移动到目标附近。', moveFailure: '移动失败，请确认目标可达。', lookUsage: '正确格式: 注视 玩家名', lookSuccess: '已调整视角。', lookFailure: '注视失败，请确认目标存在。', placeUsage: '正确格式: 放置 准星，或 放置 x y z。', placeSuccess: '放置成功。', placeFailure: '{reason}', digUsage: '正确格式: 挖掘 准星，或 挖掘 x y z。', digSuccess: '挖掘成功。', digFailure: '{reason}',
   fishingUsage: '正确格式: 钓鱼 开 [间隔gt]，或 钓鱼 关；默认间隔 10gt。', fishingEnabled: '自动钓鱼已开启；主手持钓鱼竿时会朝准星方向抛竿，收竿后 {ticks}gt 重抛。', fishingDisabled: '自动钓鱼已关闭。',
   taskUsage: '正确格式: 定时任务 任务名 5 [参数...]；关闭时使用 定时任务 任务名 关。', taskScheduled: '定时任务 {task} 已开启，每 {ticks} 游戏刻执行一次。', taskStopped: '定时任务 {task} 已关闭。', scheduleStatus: '定时：{schedules}',
   locked: '机器人已被 {player} {label}，备注: {reason}', lockUsage: '正确格式: 锁定 备注', alreadyLocked: '机器人已被锁定，请勿重复锁定。', lockSuccess: '锁定成功，由于发消息会取消 afk，请寻找安全地方挂机。', notLocked: '机器人没有被锁定。', adminUnlockRequired: '机器人处于超级锁定，请由超管使用“超级解锁”。', unlockSuccess: '机器人已解锁。',
@@ -78,9 +79,9 @@ MESSAGE_LABELS.attackUsage = '攻击格式'
 MESSAGE_LABELS.attackSuccess = '攻击命中'
 MESSAGE_LABELS.attackMiss = '攻击未命中'
 MESSAGE_LABELS.attackFailure = '攻击失败'
-MESSAGE_LABELS.breakUsage = '破坏格式'
-MESSAGE_LABELS.breakSuccess = '破坏成功'
-MESSAGE_LABELS.breakFailure = '破坏失败'
+MESSAGE_LABELS.digUsage = '挖掘格式'
+MESSAGE_LABELS.digSuccess = '挖掘成功'
+MESSAGE_LABELS.digFailure = '挖掘失败'
 MESSAGE_LABELS.fishingUsage = '钓鱼格式'
 MESSAGE_LABELS.fishingEnabled = '自动钓鱼开启'
 MESSAGE_LABELS.fishingDisabled = '自动钓鱼关闭'
@@ -108,7 +109,7 @@ const MESSAGE_GROUPS = [
   { command: '定时灾厄之瓶', note: '定时饮用与状态反馈', keys: ['ominousUsage', 'ominousEnabled', 'ominousDisabled', 'ominousStatusOn', 'ominousStatusOff'] },
   { command: '右键', note: '实体或方块交互反馈', keys: ['rightClickUsage', 'rightClickSuccess', 'rightClickFailure'] },
   { command: '攻击', note: '准星方向单次攻击反馈', keys: ['attackUsage', 'attackSuccess', 'attackMiss', 'attackFailure'] },
-  { command: '破坏', note: '破坏方块反馈', keys: ['breakUsage', 'breakSuccess', 'breakFailure'] },
+  { command: '挖掘', note: '挖掘方块反馈', keys: ['digUsage', 'digSuccess', 'digFailure'] },
   { command: '钓鱼', note: '自动抛竿与重抛反馈', keys: ['fishingUsage', 'fishingEnabled', 'fishingDisabled'] },
   { command: '余额 / 充值', note: '所有者余额与 TSL 充值反馈', keys: ['balanceResult', 'topUpUsage', 'topUpPending', 'topUpBusy', 'topUpFailure', 'topUpSuccess'] },
   { command: '移动', note: '移动与寻路反馈', keys: ['moveUsage', 'moveSuccess', 'moveFailure'] },
@@ -577,35 +578,56 @@ async function loadBots (forceUpdates = false) {
   renderRuntimeReleasePanel()
 }
 
-function managedBotCards (rows) {
+function managedScheduleChips (bot) {
+  if (bot.mode !== 'smart') return '<span class="muted">-</span>'
+  const schedules = bot.smartSchedules || {}
+  const automation = schedules.automation || {}
+  const chips = []
+  if (automation.ominousBottleEnabled) chips.push({ label: '灾厄之瓶', action: 'stop_ominous' })
+  if (automation.fishingEnabled) chips.push({ label: `钓鱼 ${automation.fishingIntervalTicks || 10}gt`, action: 'stop_fishing' })
+  for (const task of schedules.tasks || []) chips.push({ label: `${task.name} ${task.intervalTicks}gt`, action: 'stop_task', name: task.name })
+  if (!chips.length) return '<span class="muted">-</span>'
+  return `<div class="schedule-chips">${chips.map(chip => `<span class="schedule-chip">${esc(chip.label)}<button type="button" class="danger" data-stop-smart-schedule="${esc(chip.action)}" data-smart-schedule-bot="${esc(bot.id)}"${chip.name ? ` data-smart-schedule-name="${esc(chip.name)}"` : ''} title="停止">×</button></span>`).join('')}</div>`
+}
+
+function managedVersionHtml (bot) {
+  const current = String(bot.runtimeVersion || '')
+  const latest = String(bot.latestRuntimeVersion || '')
+  if (!current) return latest ? '<span class="muted">未运行</span>' : '<span class="muted">-</span>'
+  return `<code>v${esc(current)}</code>${bot.updateAvailable ? `<span class="version-update">可更新 v${esc(latest)}</span>` : ''}`
+}
+
+function managedBotRows (rows) {
   if (!rows.length) return '<div class="empty managed-empty">当前没有机器人。</div>'
-  return rows.map(bot => {
+  return '<table><thead><tr><th>机器人</th><th>服务器</th><th>状态</th><th>版本</th><th>定时任务</th><th>操作</th></tr></thead><tbody>' + rows.map(bot => {
     const action = bot.desiredState === 'running'
-      ? `<button data-stop="${esc(bot.id)}">停止</button>`
+      ? `<button data-stop="${esc(bot.id)}">停止</button><button data-restart-bot="${esc(bot.id)}">重启</button>`
       : `<button class="primary" data-start="${esc(bot.id)}">启动</button>`
     const permissions = bot.mode === 'smart' ? `<button data-smart-permissions="${esc(bot.id)}">权限</button>` : ''
     const update = bot.updateAvailable && bot.runtimeState === 'online' ? `<button class="primary" data-update-bot="${esc(bot.id)}">更新</button>` : ''
-    return `<article class="managed-bot-card">
-      <div class="managed-bot-card-head"><div><strong>${esc(bot.label)}</strong><span>${esc(bot.ownerUsername || '-')}</span>${bot.momocExempt ? '<span class="positive">免 momoc · 正版名绑定</span>' : ''}</div><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span></div>
-      <dl><div><dt>账号</dt><dd>${esc(bot.accountMinecraftName || bot.microsoftEmail || '-')}</dd></div><div><dt>服务器</dt><dd>${esc(bot.serverHost)}:${esc(bot.serverPort)}</dd></div><div><dt>类型</dt><dd>${bot.mode === 'signin' ? '签到 Bot' : '智能 Bot'}</dd></div><div><dt>版本</dt><dd>${botRuntimeVersionHtml(bot)}</dd></div></dl>
-      <div class="managed-bot-schedules"><strong>定时任务</strong>${smartScheduleHtml(bot)}</div>
-      ${bot.lastError ? `<p class="managed-bot-error">${esc(bot.lastError)}</p>` : ''}
-      <div class="actions">${update}${action}${permissions}<button data-bot-logs="${esc(bot.id)}">日志</button><button class="danger" data-delete="${esc(bot.id)}">删除</button></div>
-    </article>`
-  }).join('')
+    const error = bot.lastError ? `<div class="muted managed-error" title="${esc(bot.lastError)}">${esc(bot.lastError)}</div>` : ''
+    return `<tr><td><strong>${esc(bot.label)}</strong><div class="muted">${esc(bot.ownerUsername || '-')}${bot.momocExempt ? ' · 免 momoc' : ''}</div></td><td>${esc(bot.serverHost)}:${esc(bot.serverPort)}</td><td><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span>${error}</td><td>${managedVersionHtml(bot)}</td><td>${managedScheduleChips(bot)}</td><td><div class="actions">${update}${action}${permissions}<button data-bot-logs="${esc(bot.id)}">日志</button><button class="danger" data-delete="${esc(bot.id)}">删除</button></div></td></tr>`
+  }).join('') + '</tbody></table>'
+}
+
+function renderManagedBots () {
+  const modeName = state.managedModeFilter === 'signin' ? '签到 Bot' : '智能 Bot'
+  const rows = state.managedBots.filter(row => state.managedModeFilter === 'signin' ? row.mode === 'signin' : row.mode === 'smart')
+  const running = rows.filter(row => row.desiredState === 'running')
+  const stopped = rows.filter(row => row.desiredState !== 'running')
+  document.querySelectorAll('[data-managed-mode]').forEach(btn => btn.classList.toggle('active', btn.dataset.managedMode === state.managedModeFilter))
+  $('managedBotSummary').textContent = `${modeName}：${rows.length} 个 · ${running.length} 个运行中 · ${stopped.length} 个已停止`
+  $('managedRunningCount').textContent = running.length
+  $('managedStoppedCount').textContent = stopped.length
+  $('managedRunningBots').innerHTML = managedBotRows(running)
+  $('managedStoppedBots').innerHTML = managedBotRows(stopped)
+  bindBotActions()
 }
 
 async function loadManagedBots () {
   const data = await request('/api/bots?all=1')
   state.managedBots = data.rows
-  const running = data.rows.filter(row => row.desiredState === 'running')
-  const stopped = data.rows.filter(row => row.desiredState !== 'running')
-  $('managedBotSummary').textContent = `${data.rows.length} 个机器人 · ${running.length} 个运行中 · ${stopped.length} 个已停止`
-  $('managedRunningCount').textContent = running.length
-  $('managedStoppedCount').textContent = stopped.length
-  $('managedRunningBots').innerHTML = managedBotCards(running)
-  $('managedStoppedBots').innerHTML = managedBotCards(stopped)
-  bindBotActions()
+  renderManagedBots()
 }
 
 const findBot = id => state.view === 'management'
@@ -615,6 +637,13 @@ const findBot = id => state.view === 'management'
 function bindBotActions () {
   document.querySelectorAll('[data-start]').forEach(btn => { btn.onclick = () => botAction('/api/bots/start', btn.dataset.start) })
   document.querySelectorAll('[data-stop]').forEach(btn => { btn.onclick = () => botAction('/api/bots/stop', btn.dataset.stop) })
+  document.querySelectorAll('[data-restart-bot]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('重启会断开并重新连接服务器，正在执行的动作会中断。确认重启？')) return
+      await botAction('/api/bots/restart', btn.dataset.restartBot)
+      toast('机器人正在重启')
+    }
+  })
   document.querySelectorAll('[data-update-bot]').forEach(btn => {
     btn.onclick = async () => {
       if (!confirm('更新会重启机器人。机器人将短暂掉线，并重新连接服务器；重启期间正在执行的动作会中断。确认现在更新？')) return
@@ -809,7 +838,7 @@ async function saveSmartMomocExemption () {
 }
 
 function taskArgumentHint (command) {
-  return { 上车: '无需参数', 下车: '无需参数', 清空: '无需参数', 拿出: '石头 / minecraft:stone / stone', 丢弃: '石头 / minecraft:stone / stone', 副手: '无需参数', 切换: '1-9', 放置: '准星 或 x y z', 右键: '准星 / 玩家名 / x y z', 攻击: '无需参数', 破坏: '准星 或 x y z', 移动: 'x y z [停止距离] / 玩家名 / 东 5', 注视: '玩家名', 指令: '服务器指令' }[command] || ''
+  return { 上车: '无需参数', 下车: '无需参数', 清空: '无需参数', 拿出: '石头 / minecraft:stone / stone', 丢弃: '石头 / minecraft:stone / stone', 副手: '无需参数', 切换: '1-9', 放置: '准星 或 x y z', 右键: '准星 / 玩家名 / x y z', 攻击: '无需参数', 挖掘: '准星 或 x y z', 移动: 'x y z [停止距离] / 玩家名 / 东 5', 注视: '玩家名', 指令: '服务器指令' }[command] || ''
 }
 
 function renderTaskParameters (parameters = []) {
@@ -1761,6 +1790,12 @@ $('refreshAccounts').onclick = loadAccounts
 $('botTemplate').onchange = renderCreateVariables
 $('refreshBots').onclick = () => loadBots(true).catch(error => toast(error.message))
 $('refreshManagedBots').onclick = () => loadManagedBots().catch(error => toast(error.message))
+document.querySelectorAll('[data-managed-mode]').forEach(btn => {
+  btn.onclick = () => {
+    state.managedModeFilter = btn.dataset.managedMode
+    renderManagedBots()
+  }
+})
 $('refreshTasks').onclick = () => loadTasks().catch(error => toast(error.message))
 $('taskBot').onchange = () => { resetTaskEditor(); state.editingTaskBotId = $('taskBot').value; loadTasks().catch(error => toast(error.message)) }
 $('saveTask').onclick = () => saveTask().catch(error => toast(error.message))

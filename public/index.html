@@ -213,14 +213,18 @@
       </section>
 
       <section id="managedBotsView" class="view hidden">
-        <div class="toolbar"><div><h1>机器人管理</h1><p id="managedBotSummary">0 个机器人</p></div><button id="refreshManagedBots">刷新</button></div>
+        <div class="toolbar">
+          <div><h1>机器人管理</h1><p id="managedBotSummary">0 个机器人</p></div>
+          <div class="segmented managed-mode-filter"><button data-managed-mode="smart" class="active">智能 Bot</button><button data-managed-mode="signin">签到 Bot</button></div>
+          <button id="refreshManagedBots">刷新</button>
+        </div>
         <section class="managed-bot-section">
           <div class="managed-bot-heading"><div><span class="managed-bot-dot running"></span><h2>运行中</h2></div><strong id="managedRunningCount">0</strong></div>
-          <div id="managedRunningBots" class="managed-bot-grid"></div>
+          <div id="managedRunningBots" class="panel table-wrap managed-table-wrap"></div>
         </section>
         <section class="managed-bot-section">
           <div class="managed-bot-heading"><div><span class="managed-bot-dot stopped"></span><h2>已停止</h2></div><strong id="managedStoppedCount">0</strong></div>
-          <div id="managedStoppedBots" class="managed-bot-grid"></div>
+          <div id="managedStoppedBots" class="panel table-wrap managed-table-wrap"></div>
         </section>
       </section>
 

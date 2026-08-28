@@ -1738,7 +1738,7 @@ test('custom task breaks the block under the crosshair', async () => {
 
   const result = await executeCustomTask(bot, {
     name: '挖矿',
-    steps: [{ type: 'command', command: '破坏', args: ['准星'] }]
+    steps: [{ type: 'command', command: '挖掘', args: ['准星'] }]
   })
   assert.deepEqual(result.failures, [])
   assert.deepEqual(calls, [{ type: 'cursor', distance: 4.5 }, { type: 'dig', block }])
@@ -1785,7 +1785,7 @@ test('smart attack command performs one native crosshair attack', async () => {
   assert.equal(chats.pop(), '准星方向没有可攻击目标，已挥动主手。')
 })
 
-test('smart break command digs the crosshair block or a coordinate block', async () => {
+test('smart dig command digs the crosshair block or a coordinate block', async () => {
   const chats = []
   const dug = []
   const cursorBlock = { name: 'stone', position: new Vec3(10, 64, 20), face: 1, intersect: new Vec3(10.5, 64.5, 20.5) }
@@ -1816,22 +1816,22 @@ test('smart break command digs the crosshair block or a coordinate block', async
     scheduleRestart: () => {}
   })
 
-  await handler({ username: 'White', message: 'PlatformBot破坏 多余参数' })
-  assert.equal(chats.pop(), '正确格式: 破坏 准星，或 破坏 x y z。')
+  await handler({ username: 'White', message: 'PlatformBot挖掘 多余参数' })
+  assert.equal(chats.pop(), '正确格式: 挖掘 准星，或 挖掘 x y z。')
   assert.deepEqual(dug, [])
 
-  await handler({ username: 'White', message: 'PlatformBot破坏 准星' })
+  await handler({ username: 'White', message: 'PlatformBot挖掘 准星' })
   assert.deepEqual(dug, [cursorBlock])
-  assert.equal(chats.pop(), '破坏成功。')
+  assert.equal(chats.pop(), '挖掘成功。')
 
-  await handler({ username: 'White', message: 'PlatformBot破坏 0 64 0' })
+  await handler({ username: 'White', message: 'PlatformBot挖掘 0 64 0' })
   assert.deepEqual(dug, [cursorBlock, coordinateBlock])
-  assert.equal(chats.pop(), '破坏成功。')
+  assert.equal(chats.pop(), '挖掘成功。')
 
-  await handler({ username: 'White', message: 'PlatformBot破坏 1 64 1' })
+  await handler({ username: 'White', message: 'PlatformBot挖掘 1 64 1' })
   assert.equal(chats.pop(), '该方块无法被破坏。')
 
-  await handler({ username: 'White', message: 'PlatformBot破坏 2 64 2' })
+  await handler({ username: 'White', message: 'PlatformBot挖掘 2 64 2' })
   assert.equal(chats.pop(), '目标位置没有可破坏的方块。')
 })
 
