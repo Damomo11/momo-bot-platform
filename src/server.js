@@ -476,12 +476,14 @@ async function api (req, res, url) {
     const action = String(input.action || '')
     if (action === 'stop_ominous') db.setSmartBotOminousBottle(bot.id, false)
     else if (action === 'stop_fishing') db.setSmartBotFishing(bot.id, false)
+    else if (action === 'stop_anti_afk') db.setSmartBotAntiAfk(bot.id, false)
     else if (action === 'stop_periodic_right_click') db.setSmartBotPeriodicRightClick(bot.id, { enabled: false })
     else if (action === 'stop_task') db.scheduleSmartBotTask(bot.id, input.name, null)
     else throw new Error('未知的定时任务操作。')
     const scheduleName = {
       stop_ominous: '定时灾厄之瓶',
       stop_fishing: '自动钓鱼',
+      stop_anti_afk: '防AFK',
       stop_periodic_right_click: '定时放置',
       stop_task: String(input.name || '')
     }[action]

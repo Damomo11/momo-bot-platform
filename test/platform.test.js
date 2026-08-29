@@ -20,7 +20,7 @@ const { verifyCloudStoreToken } = require('../src/cloudStoreSso')
 const { LoginAttemptLimiter, clientIp } = require('../src/security')
 const { invalidateMinecraftAccessTokenCache, isMinecraftProfileAuthError } = require('../src/authCache')
 const { upgradeObjectState } = require('../src/supervisorHotReload')
-const { activateNearestVault, attackAtCursor, bindTaskArguments, createFishingController, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, installSmartCommands, isVersionNewer, mountNearestMinecart, normalizeItemId, parsePeriodicRightClickArgs, parseSmartCommand, placeAtCursor, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
+const { activateNearestVault, attackAtCursor, bindTaskArguments, createAntiAfkController, createFishingController, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, installSmartCommands, isVersionNewer, mountNearestMinecart, normalizeItemId, parsePeriodicRightClickArgs, parseSmartCommand, placeAtCursor, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
 
 test('login attempts are blocked by IP after repeated failures', () => {
   const limiter = new LoginAttemptLimiter({ maxFailures: 3, windowMs: 1000, blockMs: 2000 })
@@ -1452,7 +1452,7 @@ test('version command reports the running version before the latest release deta
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.25', release: { summary: '下一版更新说明' } }
+        if (action === 'runtime_version') return { version: '1.0.26', release: { summary: '下一版更新说明' } }
         throw new Error(`unexpected action ${action}`)
       }
     }
@@ -1461,8 +1461,8 @@ test('version command reports the running version before the latest release deta
   await handler({ username: 'White', message: 'PlatformBot版本' })
 
   assert.deepEqual(chats, [
-    '智能 Bot 当前运行版本：v1.0.24',
-    '智能 Bot 最新版本：v1.0.25；更新内容：下一版更新说明'
+    '智能 Bot 当前运行版本：v1.0.25',
+    '智能 Bot 最新版本：v1.0.26；更新内容：下一版更新说明'
   ])
 })
 
@@ -2173,6 +2173,71 @@ test('smart fishing command persists and applies the requested state', async () 
   assert.equal(chats.pop(), '自动钓鱼已关闭。')
 })
 
+test('smart anti-afk command persists and applies the requested state', async () => {
+  const bot = new EventEmitter()
+  bot.username = 'PlatformBot'
+  const chats = []
+  const settings = { antiAfkEnabled: false }
+  bot.chat = message => chats.push(message)
+  const handler = createSmartCommandHandler(bot, {
+    commandPrefixes: ['PlatformBot'],
+    platform: {
+      request: async (action, payload) => {
+        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
+        if (action === 'anti_afk_set') {
+          settings.antiAfkEnabled = Boolean(payload.enabled)
+          return { allowed: true, settings }
+        }
+        throw new Error(`unexpected action ${action}`)
+      }
+    },
+    applyAntiAfkSettings: next => next
+  })
+
+  await handler({ username: 'White', message: 'PlatformBot防afk' })
+  assert.match(chats.pop(), /正确格式: 防afk 开，或 防afk 关。/)
+  await handler({ username: 'White', message: 'PlatformBot防afk 立刻' })
+  assert.match(chats.pop(), /正确格式: 防afk 开，或 防afk 关。/)
+  await handler({ username: 'White', message: 'PlatformBot防afk 开' })
+  assert.equal(settings.antiAfkEnabled, true)
+  assert.match(chats.pop(), /防AFK已开启/)
+  await handler({ username: 'White', message: 'PlatformBot防afk 关' })
+  assert.equal(settings.antiAfkEnabled, false)
+  assert.equal(chats.pop(), '防AFK已关闭。')
+})
+
+test('anti-afk controller messages the bot itself every minute until disabled', () => {
+  const chats = []
+  const bot = { username: 'PlatformBot', chat: message => chats.push(message) }
+  const timers = []
+  let now = 0
+  const controller = createAntiAfkController(bot, {
+    setTimer: (fn, ms) => { const timer = { fn, ms, at: now + ms, cleared: false }; timers.push(timer); return timer },
+    clearTimer: timer => { timer.cleared = true }
+  })
+
+  controller.applySettings({ antiAfkEnabled: true })
+  assert.deepEqual(chats, [])
+  const tick = () => {
+    now += 1000
+    for (const timer of timers) {
+      if (!timer.cleared && !timer.done && timer.at <= now) { timer.done = true; timer.fn() }
+    }
+  }
+  tick()
+  assert.deepEqual(chats, [])
+  while (now < 60000) tick()
+  assert.deepEqual(chats, ['/msg PlatformBot 1'])
+  while (now < 120000) tick()
+  assert.deepEqual(chats, ['/msg PlatformBot 1', '/msg PlatformBot 1'])
+
+  controller.applySettings({ antiAfkEnabled: false })
+  const countAfterDisable = chats.length
+  while (now < 240000) tick()
+  assert.equal(chats.length, countAfterDisable)
+  controller.stop()
+})
+
 test('automatic fishing restores its state, uses the configured tick interval, and retracts when disabled', async () => {
   const timers = []
   let casts = 0
@@ -2463,7 +2528,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.24')
+  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.25')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })

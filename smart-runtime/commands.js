@@ -72,6 +72,9 @@ const COMMAND_TEXT = Object.freeze({
   fishingUsage: '正确格式: 钓鱼 开 [间隔gt]，或 钓鱼 关；默认间隔 10gt。',
   fishingEnabled: ticks => `自动钓鱼已开启；主手持钓鱼竿时会朝准星方向抛竿，收竿后 ${ticks}gt 重抛。`,
   fishingDisabled: '自动钓鱼已关闭。',
+  antiAfkUsage: '正确格式: 防afk 开，或 防afk 关。',
+  antiAfkEnabled: '防AFK已开启，每 60 秒自动发送一次 /msg 保持在线。',
+  antiAfkDisabled: '防AFK已关闭。',
   balanceResult: balance => `Bot 所有者当前拥有 ${balance} momoc。`,
   topUpUsage: '正确格式: 充值 金额，例如 充值 50。',
   topUpPending: amount => `正在支付 ${amount} C，等待服务器确认。`,
@@ -755,11 +758,75 @@ function createFishingController (bot, options = {}) {
   return { applySettings, getState: () => ({ enabled, intervalTicks, running: lineActive }), runNow: run, setEnabled, start, stop }
 }
 
+const ANTI_AFK_INTERVAL_MS = 60000
+
+function createAntiAfkController (bot, options = {}) {
+  const platform = options.platform || global.botPlatform
+  const setTimer = options.setTimer || setTimeout
+  const clearTimer = options.clearTimer || clearTimeout
+  const logger = options.logger || console
+  const intervalMs = Number(options.antiAfkIntervalMs) > 0 ? Number(options.antiAfkIntervalMs) : ANTI_AFK_INTERVAL_MS
+  let timer = null
+  let enabled = false
+  let stopped = false
+
+  function cancelTimer () {
+    if (timer) clearTimer(timer)
+    timer = null
+  }
+
+  function arm () {
+    cancelTimer()
+    if (stopped || !enabled) return
+    timer = setTimer(run, intervalMs)
+    timer?.unref?.()
+  }
+
+  function run () {
+    timer = null
+    if (stopped || !enabled) return
+    const name = String(bot.username || '')
+    if (!name || typeof bot.chat !== 'function') {
+      logger.warn?.('[smart-anti-afk] 机器人尚未进入服务器，跳过本次防挂机消息。')
+    } else {
+      try { bot.chat(`/msg ${name} 1`) } catch (error) { logger.warn?.(`[smart-anti-afk] ${error?.message || error}`) }
+    }
+    arm()
+  }
+
+  function setEnabled (next) {
+    const value = Boolean(next)
+    if (value === enabled) return { antiAfkEnabled: enabled }
+    enabled = value
+    if (enabled) arm()
+    else cancelTimer()
+    return { antiAfkEnabled: enabled }
+  }
+
+  function applySettings (next) {
+    return setEnabled(Boolean(next?.antiAfkEnabled))
+  }
+
+  async function start () {
+    if (!platform?.request) return applySettings({ antiAfkEnabled: false })
+    return applySettings(await platform.request('anti_afk_get', {}))
+  }
+
+  function stop () {
+    stopped = true
+    enabled = false
+    cancelTimer()
+  }
+
+  return { applySettings, getState: () => ({ enabled }), setEnabled, start, stop }
+}
+
 function formatScheduleStatus (status = {}) {
   const automation = status.automation || {}
   const entries = []
   if (automation.ominousBottleEnabled) entries.push('灾厄之瓶')
   if (automation.fishingEnabled) entries.push(`自动钓鱼(${automation.fishingIntervalTicks || FISHING_DEFAULT_INTERVAL_TICKS}gt)`)
+  if (automation.antiAfkEnabled) entries.push('防AFK')
   for (const task of status.tasks || []) entries.push(`定时任务 ${task.name}(${task.intervalTicks}gt)`)
   return entries.join('；') || '无'
 }
@@ -1159,6 +1226,7 @@ function createSmartCommandHandler (bot, options = {}) {
   const applyOminousSettings = options.applyOminousSettings || (() => {})
   const applyPeriodicRightClickSettings = options.applyPeriodicRightClickSettings || (() => {})
   const applyFishingSettings = options.applyFishingSettings || (() => ({ fishingEnabled: false }))
+  const applyAntiAfkSettings = options.applyAntiAfkSettings || (() => ({ antiAfkEnabled: false }))
   const scheduleRestart = options.scheduleRestart || (callback => {
     const timer = setTimeout(callback, 600)
     timer.unref?.()
@@ -1538,6 +1606,15 @@ function createSmartCommandHandler (bot, options = {}) {
       return
     }
 
+    if (parsed.command === '防afk') {
+      if (parsed.args.length !== 1 || !['开', '关'].includes(parsed.args[0])) return reply(COMMAND_TEXT.antiAfkUsage, 'antiAfkUsage')
+      const result = await request('anti_afk_set', { username, enabled: parsed.args[0] === '开' })
+      if (!result.allowed) return
+      const settings = applyAntiAfkSettings(result.settings)
+      reply(settings.antiAfkEnabled ? COMMAND_TEXT.antiAfkEnabled : COMMAND_TEXT.antiAfkDisabled, settings.antiAfkEnabled ? 'antiAfkEnabled' : 'antiAfkDisabled')
+      return
+    }
+
     if (parsed.command === '定时任务') {
       if (parsed.args.length === 2 && parsed.args[1] === '关') {
         const result = await request('task_schedule_set', { username, name: parsed.args[0], intervalTicks: null })
@@ -1719,6 +1796,7 @@ function installSmartCommands (bot, options = {}) {
   const ominousScheduler = options.ominousScheduler || createOminousBottleScheduler(bot, { ...options, platform, runBotAction })
   const periodicRightClickScheduler = options.periodicRightClickScheduler || createPeriodicRightClickScheduler(bot, { ...options, platform, runBotAction })
   const fishingController = options.fishingController || createFishingController(bot, { ...options, runBotAction })
+  const antiAfkController = options.antiAfkController || createAntiAfkController(bot, { ...options, runBotAction })
   let commandPrefix = String(options.commandPrefix ?? '')
   let messageOverrides = {}
   let topUpSettings = { recipient: 'Damomo1', commandTemplate: '/pay {recipient} {amount}' }
@@ -1736,6 +1814,7 @@ function installSmartCommands (bot, options = {}) {
       ominousScheduler.applySettings(message.automation || {})
       periodicRightClickScheduler.applySettings(message.automation || {})
       fishingController.applySettings(message.automation || {})
+      antiAfkController.applySettings(message.automation || {})
     }
     if (message?.type === 'smart_daily_action' && ['signin', 'auto_renew'].includes(message.action) && String(message.command || '')) {
       runBotAction(() => bot.chat(String(message.command))).catch(error => console.error('[smart-daily-action]', error?.stack || error))
@@ -1756,6 +1835,7 @@ function installSmartCommands (bot, options = {}) {
     applyOminousSettings: settings => ominousScheduler.applySettings(settings),
     applyPeriodicRightClickSettings: settings => periodicRightClickScheduler.applySettings(settings),
     applyFishingSettings: settings => fishingController.applySettings(settings),
+    applyAntiAfkSettings: settings => antiAfkController.applySettings(settings),
     getCommandPrefixes: () => [commandPrefix, bot.username],
     getMessageOverrides: () => messageOverrides,
     getTopUpSettings: () => topUpSettings
@@ -1836,6 +1916,7 @@ function installSmartCommands (bot, options = {}) {
   startup.then(() => ominousScheduler.start()).catch(error => console.error('[smart-ominous]', error?.stack || error))
   startup.then(() => periodicRightClickScheduler.start()).catch(error => console.error('[smart-periodic-right-click]', error?.stack || error))
   startup.then(() => fishingController.start()).catch(error => console.error('[smart-fishing]', error?.stack || error))
+  startup.then(() => antiAfkController.start()).catch(error => console.error('[smart-anti-afk]', error?.stack || error))
   const runningScheduledTasks = new Set()
   const taskRetryAfter = new Map()
   let schedulerRetryAfter = 0
@@ -1874,6 +1955,7 @@ function installSmartCommands (bot, options = {}) {
     ominousScheduler.stop()
     periodicRightClickScheduler.stop()
     fishingController.stop()
+    antiAfkController.stop()
     clearInterval(taskTimer)
   }
 }
@@ -1885,6 +1967,7 @@ module.exports = {
   clearInventory,
   clearStaleVehicleReference,
   createBotActionQueue,
+  createAntiAfkController,
   createFishingController,
   createOminousBottleScheduler,
   createPeriodicRightClickScheduler,
