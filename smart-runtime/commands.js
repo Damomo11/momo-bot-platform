@@ -30,9 +30,9 @@ const COMMAND_TEXT = Object.freeze({
   dismountMissing: '机器人当前没有乘坐矿车。',
   dismountSuccess: '机器人已下车。',
   dismountFailure: '下车失败，请稍后重试。',
-  vaultSuccess: '已右键附近的宝库。',
-  vaultMissing: '附近 6 格内没有找到宝库。',
-  vaultFailure: '开启宝库失败，请确认宝库在交互距离内。',
+  vaultUsage: '正确格式: 开宝库 开，或 开宝库 关。',
+  vaultEnabled: '自动开宝库已开启：被 /tpahere 传送到玩家身边时会自动开启附近的不祥宝库。',
+  vaultDisabled: '自动开宝库已关闭。',
   clearEmpty: '机器人背包已经是空的。',
   clearSuccess: (stacks, items) => `背包已清空，共丢出 ${stacks} 组、${items} 个物品。`,
   clearFailure: (stacks, error) => `清空背包中断，已丢出 ${stacks} 组。原因: ${error}`,
@@ -274,11 +274,18 @@ function isVaultBlock (block) {
   return /vault|宝库/i.test(`${block?.name || ''} ${block?.displayName || ''}`)
 }
 
-async function activateNearestVault (bot, maxDistance = 6) {
-  if (typeof bot.findBlock !== 'function' || typeof bot.activateBlock !== 'function') return { status: 'failed' }
-  const vault = bot.findBlock({ matching: isVaultBlock, maxDistance })
+function isOminousVault (block) {
+  if (!isVaultBlock(block)) return false
+  const ominous = block.properties?.ominous
+  if (ominous != null) return ominous === true || ominous === 'true'
+  return /ominous|不祥/i.test(`${block?.name || ''} ${block?.displayName || ''}`)
+}
+
+async function activateNearestOminousVault (bot, maxDistance = 6) {
+  if (typeof bot.findBlock !== 'function') return { status: 'failed' }
+  const vault = bot.findBlock({ matching: isOminousVault, maxDistance })
   if (!vault) return { status: 'missing' }
-  await bot.activateBlock(vault)
+  activateBlockWithoutLook(bot, vault)
   return { status: 'activated', block: vault }
 }
 
@@ -347,35 +354,35 @@ function blockAtCursorTarget (bot, maxDistance = 4.5) {
   return { block, face, faceId, cursor }
 }
 
-function activateBlockAtCursorWithoutLook (bot, target) {
-  if (typeof bot.supportFeature !== 'function' || typeof bot._client?.write !== 'function' || typeof bot.swingArm !== 'function') throw new Error('机器人尚未进入服务器。')
-  const base = { location: target.block.position, direction: target.faceId }
+function activateBlockWithoutLook (bot, block, faceId = 1, cursor = new Vec3(0.5, 1, 0.5)) {
+  if (!block?.position || typeof bot.supportFeature !== 'function' || typeof bot._client?.write !== 'function' || typeof bot.swingArm !== 'function') throw new Error('机器人尚未进入服务器。')
+  const base = { location: block.position, direction: faceId }
   if (bot.supportFeature('blockPlaceHasHeldItem')) {
     const Item = require('prismarine-item')(bot.registry)
     bot._client.write('block_place', {
       ...base,
       heldItem: Item.toNotch(bot.heldItem),
-      cursorX: target.cursor.scaled(16).x,
-      cursorY: target.cursor.scaled(16).y,
-      cursorZ: target.cursor.scaled(16).z
+      cursorX: cursor.scaled(16).x,
+      cursorY: cursor.scaled(16).y,
+      cursorZ: cursor.scaled(16).z
     })
   } else if (bot.supportFeature('blockPlaceHasHandAndIntCursor')) {
     bot._client.write('block_place', {
       ...base,
       hand: 0,
-      cursorX: target.cursor.scaled(16).x,
-      cursorY: target.cursor.scaled(16).y,
-      cursorZ: target.cursor.scaled(16).z
+      cursorX: cursor.scaled(16).x,
+      cursorY: cursor.scaled(16).y,
+      cursorZ: cursor.scaled(16).z
     })
   } else if (bot.supportFeature('blockPlaceHasHandAndFloatCursor')) {
-    bot._client.write('block_place', { ...base, hand: 0, cursorX: target.cursor.x, cursorY: target.cursor.y, cursorZ: target.cursor.z })
+    bot._client.write('block_place', { ...base, hand: 0, cursorX: cursor.x, cursorY: cursor.y, cursorZ: cursor.z })
   } else if (bot.supportFeature('blockPlaceHasInsideBlock')) {
     bot._client.write('block_place', {
       ...base,
       hand: 0,
-      cursorX: target.cursor.x,
-      cursorY: target.cursor.y,
-      cursorZ: target.cursor.z,
+      cursorX: cursor.x,
+      cursorY: cursor.y,
+      cursorZ: cursor.z,
       insideBlock: false,
       sequence: 0,
       worldBorderHit: false
@@ -384,6 +391,10 @@ function activateBlockAtCursorWithoutLook (bot, target) {
     throw new Error('当前服务器版本不支持准星方块交互。')
   }
   bot.swingArm('right')
+}
+
+function activateBlockAtCursorWithoutLook (bot, target) {
+  return activateBlockWithoutLook(bot, target.block, target.faceId, target.cursor)
 }
 
 async function placeAtCursor (bot, maxDistance = 4.5) {
@@ -755,11 +766,86 @@ function createFishingController (bot, options = {}) {
   return { applySettings, getState: () => ({ enabled, intervalTicks, running: lineActive }), runNow: run, setEnabled, start, stop }
 }
 
+const VAULT_OPEN_SCAN_INTERVAL_MS = 500
+const VAULT_OPEN_MAX_ATTEMPTS = 60
+
+function createVaultAutoOpenController (bot, options = {}) {
+  const platform = options.platform || global.botPlatform
+  const runBotAction = options.runBotAction || (task => task())
+  const setTimer = options.setTimer || setTimeout
+  const clearTimer = options.clearTimer || clearTimeout
+  const logger = options.logger || console
+  const maxDistance = Number(options.vaultMaxDistance) > 0 ? Number(options.vaultMaxDistance) : 6
+  const scanIntervalMs = Number(options.vaultScanIntervalMs) > 0 ? Number(options.vaultScanIntervalMs) : VAULT_OPEN_SCAN_INTERVAL_MS
+  const maxAttempts = Number(options.vaultMaxAttempts) > 0 ? Number(options.vaultMaxAttempts) : VAULT_OPEN_MAX_ATTEMPTS
+  let timer = null
+  let enabled = false
+  let stopped = false
+  let attempts = 0
+
+  function cancelTimer () {
+    if (timer) clearTimer(timer)
+    timer = null
+  }
+
+  function poll () {
+    timer = null
+    if (stopped || !enabled) return
+    runBotAction(async () => {
+      if (stopped || !enabled) return null
+      return activateNearestOminousVault(bot, maxDistance)
+    }).then(result => {
+      if (stopped || !enabled || result?.status === 'activated') return
+      if (result?.status === 'failed') throw new Error('当前服务器版本不支持隔方块开宝库。')
+      attempts += 1
+      if (attempts >= maxAttempts) {
+        logger.warn?.(`[smart-vault] 传送后约 ${Math.round(maxAttempts * scanIntervalMs / 1000)} 秒内未发现不祥宝库，停止本次扫描。`)
+        return
+      }
+      timer = setTimer(poll, scanIntervalMs)
+      timer?.unref?.()
+    }).catch(error => logger.warn?.(`[smart-vault] ${error?.message || error}`))
+  }
+
+  function scheduleOpen () {
+    if (stopped || !enabled) return
+    cancelTimer()
+    attempts = 0
+    poll()
+  }
+
+  function setEnabled (next) {
+    const value = Boolean(next)
+    if (value === enabled) return { vaultAutoOpenEnabled: enabled }
+    enabled = value
+    if (!enabled) cancelTimer()
+    return { vaultAutoOpenEnabled: enabled }
+  }
+
+  function applySettings (next) {
+    return setEnabled(Boolean(next?.vaultAutoOpenEnabled))
+  }
+
+  async function start () {
+    if (!platform?.request) return applySettings({ vaultAutoOpenEnabled: false })
+    return applySettings(await platform.request('vault_auto_open_get', {}))
+  }
+
+  function stop () {
+    stopped = true
+    enabled = false
+    cancelTimer()
+  }
+
+  return { applySettings, getState: () => ({ enabled }), scheduleOpen, setEnabled, start, stop }
+}
+
 function formatScheduleStatus (status = {}) {
   const automation = status.automation || {}
   const entries = []
   if (automation.ominousBottleEnabled) entries.push('灾厄之瓶')
   if (automation.fishingEnabled) entries.push(`自动钓鱼(${automation.fishingIntervalTicks || FISHING_DEFAULT_INTERVAL_TICKS}gt)`)
+  if (automation.vaultAutoOpenEnabled) entries.push('自动开宝库')
   for (const task of status.tasks || []) entries.push(`定时任务 ${task.name}(${task.intervalTicks}gt)`)
   return entries.join('；') || '无'
 }
@@ -1159,6 +1245,7 @@ function createSmartCommandHandler (bot, options = {}) {
   const applyOminousSettings = options.applyOminousSettings || (() => {})
   const applyPeriodicRightClickSettings = options.applyPeriodicRightClickSettings || (() => {})
   const applyFishingSettings = options.applyFishingSettings || (() => ({ fishingEnabled: false }))
+  const applyVaultAutoOpenSettings = options.applyVaultAutoOpenSettings || (() => ({ vaultAutoOpenEnabled: false }))
   const scheduleRestart = options.scheduleRestart || (callback => {
     const timer = setTimeout(callback, 600)
     timer.unref?.()
@@ -1364,15 +1451,11 @@ function createSmartCommandHandler (bot, options = {}) {
     }
 
     if (parsed.command === '开宝库') {
-      if (parsed.args.length) return reply(COMMAND_TEXT.vaultFailure, 'vaultFailure')
-      try {
-        const result = await runBotAction(() => activateNearestVault(bot))
-        if (result.status === 'missing') reply(COMMAND_TEXT.vaultMissing, 'vaultMissing')
-        else if (result.status === 'failed') reply(COMMAND_TEXT.vaultFailure, 'vaultFailure')
-        else reply(COMMAND_TEXT.vaultSuccess, 'vaultSuccess')
-      } catch {
-        reply(COMMAND_TEXT.vaultFailure, 'vaultFailure')
-      }
+      if (parsed.args.length !== 1 || !['开', '关'].includes(parsed.args[0])) return reply(COMMAND_TEXT.vaultUsage, 'vaultUsage')
+      const result = await request('vault_auto_open_set', { username, enabled: parsed.args[0] === '开' })
+      if (!result.allowed) return
+      const settings = applyVaultAutoOpenSettings(result.settings)
+      reply(settings.vaultAutoOpenEnabled ? COMMAND_TEXT.vaultEnabled : COMMAND_TEXT.vaultDisabled, settings.vaultAutoOpenEnabled ? 'vaultEnabled' : 'vaultDisabled')
       return
     }
 
@@ -1689,6 +1772,7 @@ function createTeleportRequestHandler (bot, options = {}) {
       if (access.lock?.adminLocked && !access.admin) return
     } else if (access.lock?.locked || access.lock?.adminLocked) return
     await runBotAction(() => bot.chat(`/tpaccept ${username}`))
+    if (event?.kind === 'to_requester') options.onTeleported?.(username)
   }
 }
 
@@ -1719,6 +1803,7 @@ function installSmartCommands (bot, options = {}) {
   const ominousScheduler = options.ominousScheduler || createOminousBottleScheduler(bot, { ...options, platform, runBotAction })
   const periodicRightClickScheduler = options.periodicRightClickScheduler || createPeriodicRightClickScheduler(bot, { ...options, platform, runBotAction })
   const fishingController = options.fishingController || createFishingController(bot, { ...options, runBotAction })
+  const vaultAutoOpenController = options.vaultAutoOpenController || createVaultAutoOpenController(bot, { ...options, runBotAction })
   let commandPrefix = String(options.commandPrefix ?? '')
   let messageOverrides = {}
   let topUpSettings = { recipient: 'Damomo1', commandTemplate: '/pay {recipient} {amount}' }
@@ -1736,6 +1821,7 @@ function installSmartCommands (bot, options = {}) {
       ominousScheduler.applySettings(message.automation || {})
       periodicRightClickScheduler.applySettings(message.automation || {})
       fishingController.applySettings(message.automation || {})
+      vaultAutoOpenController.applySettings(message.automation || {})
     }
     if (message?.type === 'smart_daily_action' && ['signin', 'auto_renew'].includes(message.action) && String(message.command || '')) {
       runBotAction(() => bot.chat(String(message.command))).catch(error => console.error('[smart-daily-action]', error?.stack || error))
@@ -1756,11 +1842,12 @@ function installSmartCommands (bot, options = {}) {
     applyOminousSettings: settings => ominousScheduler.applySettings(settings),
     applyPeriodicRightClickSettings: settings => periodicRightClickScheduler.applySettings(settings),
     applyFishingSettings: settings => fishingController.applySettings(settings),
+    applyVaultAutoOpenSettings: settings => vaultAutoOpenController.applySettings(settings),
     getCommandPrefixes: () => [commandPrefix, bot.username],
     getMessageOverrides: () => messageOverrides,
     getTopUpSettings: () => topUpSettings
   })
-  const handleTeleportRequest = createTeleportRequestHandler(bot, { ...options, platform, runBotAction })
+  const handleTeleportRequest = createTeleportRequestHandler(bot, { ...options, platform, runBotAction, onTeleported: () => vaultAutoOpenController.scheduleOpen() })
   const handlePeekRequest = createPeekRequestHandler(bot, { ...options, platform, runBotAction })
   const playerQueues = new Map()
   const listener = event => {
@@ -1836,6 +1923,7 @@ function installSmartCommands (bot, options = {}) {
   startup.then(() => ominousScheduler.start()).catch(error => console.error('[smart-ominous]', error?.stack || error))
   startup.then(() => periodicRightClickScheduler.start()).catch(error => console.error('[smart-periodic-right-click]', error?.stack || error))
   startup.then(() => fishingController.start()).catch(error => console.error('[smart-fishing]', error?.stack || error))
+  startup.then(() => vaultAutoOpenController.start()).catch(error => console.error('[smart-vault]', error?.stack || error))
   const runningScheduledTasks = new Set()
   const taskRetryAfter = new Map()
   let schedulerRetryAfter = 0
@@ -1874,18 +1962,20 @@ function installSmartCommands (bot, options = {}) {
     ominousScheduler.stop()
     periodicRightClickScheduler.stop()
     fishingController.stop()
+    vaultAutoOpenController.stop()
     clearInterval(taskTimer)
   }
 }
 
 module.exports = {
   COMMAND_TEXT,
-  activateNearestVault,
+  activateNearestOminousVault,
   attackAtCursor,
   clearInventory,
   clearStaleVehicleReference,
   createBotActionQueue,
   createFishingController,
+  createVaultAutoOpenController,
   createOminousBottleScheduler,
   createPeriodicRightClickScheduler,
   createPlayerMapClient,

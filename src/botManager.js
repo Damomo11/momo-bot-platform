@@ -881,6 +881,7 @@ class BotManager {
     if (action === 'ominous_schedule_get') return this.db.getSmartBotAutomation(botId)
     if (action === 'ominous_schedule_complete') return this.db.completeSmartBotOminousBottle(botId)
     if (action === 'fishing_schedule_get') return this.db.getSmartBotAutomation(botId)
+    if (action === 'vault_auto_open_get') return this.db.getSmartBotAutomation(botId)
     if (action === 'periodic_right_click_get') return this.db.getSmartBotAutomation(botId)
     if (action === 'periodic_right_click_complete') return this.db.completeSmartBotPeriodicRightClick(botId)
     if (action === 'task_get') return { task: this.db.getSmartBotTask(botId, payload.name) }
@@ -952,6 +953,14 @@ class BotManager {
       const enabled = Boolean(payload.enabled)
       const settings = this.db.setSmartBotFishing(botId, enabled, payload.intervalTicks)
       this.appendRelatedLog(botId, 'schedule', `玩家 ${actor.playerName || username.replace(/^#/, '')} ${enabled ? '开启' : '关闭'}了定时任务「自动钓鱼」。`)
+      return { allowed: true, settings }
+    }
+
+    if (action === 'vault_auto_open_set') {
+      if (!actor.whitelisted || lock.adminLocked) return { allowed: false, silent: true }
+      const enabled = Boolean(payload.enabled)
+      const settings = this.db.setSmartBotVaultAutoOpen(botId, enabled)
+      this.appendRelatedLog(botId, 'schedule', `玩家 ${actor.playerName || username.replace(/^#/, '')} ${enabled ? '开启' : '关闭'}了定时任务「自动开宝库」。`)
       return { allowed: true, settings }
     }
 

@@ -20,7 +20,7 @@ const { verifyCloudStoreToken } = require('../src/cloudStoreSso')
 const { LoginAttemptLimiter, clientIp } = require('../src/security')
 const { invalidateMinecraftAccessTokenCache, isMinecraftProfileAuthError } = require('../src/authCache')
 const { upgradeObjectState } = require('../src/supervisorHotReload')
-const { activateNearestVault, attackAtCursor, bindTaskArguments, createFishingController, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, dismountVehicle, executeCustomTask, installSmartCommands, isVersionNewer, mountNearestMinecart, normalizeItemId, parsePeriodicRightClickArgs, parseSmartCommand, placeAtCursor, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
+const { activateNearestOminousVault, attackAtCursor, bindTaskArguments, createFishingController, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, createVaultAutoOpenController, dismountVehicle, executeCustomTask, installSmartCommands, isVersionNewer, mountNearestMinecart, normalizeItemId, parsePeriodicRightClickArgs, parseSmartCommand, placeAtCursor, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
 
 test('login attempts are blocked by IP after repeated failures', () => {
   const limiter = new LoginAttemptLimiter({ maxFailures: 3, windowMs: 1000, blockMs: 2000 })
@@ -991,15 +991,85 @@ test('vehicle state left behind by death is cleared before mount and dismount', 
   assert.equal(bot.vehicle, minecart)
 })
 
-test('open vault activates the nearest vault block exactly once', async () => {
-  const vault = { name: 'vault', displayName: 'Vault' }
-  const activated = []
+test('open vault finds only ominous vaults and activates them through blocks via protocol', async () => {
+  const written = []
+  const swings = []
+  const plainVault = { name: 'vault', displayName: 'Vault' }
+  const ominousVault = { name: 'vault', displayName: 'Vault', properties: { ominous: 'true' }, position: new Vec3(5, 64, 5) }
   const bot = {
-    findBlock: options => options.maxDistance === 6 && options.matching(vault) ? vault : null,
-    activateBlock: async block => activated.push(block)
+    findBlock: options => [plainVault, ominousVault].find(options.matching) || null,
+    supportFeature: feature => feature === 'blockPlaceHasHandAndFloatCursor',
+    _client: { write: (name, data) => written.push({ name, data }) },
+    swingArm: hand => swings.push(hand)
   }
-  assert.equal((await activateNearestVault(bot)).status, 'activated')
-  assert.deepEqual(activated, [vault])
+  const result = await activateNearestOminousVault(bot)
+  assert.equal(result.status, 'activated')
+  assert.equal(result.block, ominousVault)
+  assert.deepEqual(written, [{ name: 'block_place', data: { location: ominousVault.position, direction: 1, hand: 0, cursorX: 0.5, cursorY: 1, cursorZ: 0.5 } }])
+  assert.deepEqual(swings, ['right'])
+})
+
+test('vault auto-open controller keeps scanning until the ominous vault loads', async () => {
+  const written = []
+  const ominousVault = { name: 'vault', displayName: 'Vault', properties: { ominous: 'true' }, position: new Vec3(2, 64, 2) }
+  let findCalls = 0
+  const bot = {
+    findBlock: options => { findCalls += 1; return findCalls >= 3 && options.matching(ominousVault) ? ominousVault : null },
+    supportFeature: feature => feature === 'blockPlaceHasHandAndFloatCursor',
+    _client: { write: (name, data) => written.push({ name, data }) },
+    swingArm: () => {}
+  }
+  const timers = []
+  let now = 0
+  const controller = createVaultAutoOpenController(bot, {
+    runBotAction: task => task(),
+    setTimer: (fn, ms) => { const timer = { fn, at: now + ms, cleared: false }; timers.push(timer); return timer },
+    clearTimer: timer => { timer.cleared = true },
+    vaultScanIntervalMs: 500
+  })
+
+  const tick = async ms => {
+    now += ms
+    for (const timer of timers) {
+      if (!timer.cleared && !timer.done && timer.at <= now) { timer.done = true; timer.fn() }
+    }
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  controller.applySettings({ vaultAutoOpenEnabled: true })
+  controller.scheduleOpen()
+  await tick(0)
+  assert.deepEqual(written, [])
+  await tick(500)
+  assert.deepEqual(written, [])
+  await tick(500)
+  assert.deepEqual(written, [{ name: 'block_place', data: { location: ominousVault.position, direction: 1, hand: 0, cursorX: 0.5, cursorY: 1, cursorZ: 0.5 } }])
+
+  const scansAfterFound = findCalls
+  await tick(5000)
+  assert.equal(findCalls, scansAfterFound)
+  assert.equal(written.length, 1)
+
+  controller.applySettings({ vaultAutoOpenEnabled: false })
+  controller.scheduleOpen()
+  await tick(5000)
+  assert.equal(findCalls, scansAfterFound)
+  controller.stop()
+})
+
+test('teleport handler triggers onTeleported only for tpahere requests', async () => {
+  const chats = []
+  const bot = { username: 'PlatformBot', chat: message => chats.push(message) }
+  const teleported = []
+  const handler = createTeleportRequestHandler(bot, {
+    platform: { request: async action => action === 'access' ? { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } } : null },
+    onTeleported: name => teleported.push(name)
+  })
+
+  await handler({ username: 'White', kind: 'to_bot' })
+  await handler({ username: 'White', kind: 'to_requester' })
+  assert.deepEqual(chats, ['/tpaccept White', '/tpaccept White'])
+  assert.deepEqual(teleported, ['White'])
 })
 
 test('admin overview aggregates accounts, bots and precise user consumption', () => {
@@ -1452,7 +1522,7 @@ test('version command reports the running version before the latest release deta
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.25', release: { summary: '下一版更新说明' } }
+        if (action === 'runtime_version') return { version: '1.0.26', release: { summary: '下一版更新说明' } }
         throw new Error(`unexpected action ${action}`)
       }
     }
@@ -1461,8 +1531,8 @@ test('version command reports the running version before the latest release deta
   await handler({ username: 'White', message: 'PlatformBot版本' })
 
   assert.deepEqual(chats, [
-    '智能 Bot 当前运行版本：v1.0.24',
-    '智能 Bot 最新版本：v1.0.25；更新内容：下一版更新说明'
+    '智能 Bot 当前运行版本：v1.0.25',
+    '智能 Bot 最新版本：v1.0.26；更新内容：下一版更新说明'
   ])
 })
 
@@ -2365,10 +2435,6 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   bot.nearestEntity = predicate => predicate(minecart) ? minecart : null
   bot.mount = entity => { bot.vehicle = entity }
   bot.dismount = () => { bot.vehicle = null }
-  const vault = { name: 'vault', displayName: 'Vault' }
-  let vaultActivations = 0
-  bot.findBlock = options => options.matching(vault) ? vault : null
-  bot.activateBlock = async block => { if (block === vault) vaultActivations += 1 }
   let inventoryItems = [{ name: 'stone', count: 32, slot: 9 }, { name: 'dirt', count: 5, slot: 10 }]
   bot.inventory = { items: () => inventoryItems }
   bot.tossStack = async item => { inventoryItems = inventoryItems.filter(row => row !== item) }
@@ -2384,6 +2450,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   const requests = []
   let ominousSettings = { ominousBottleEnabled: false, ominousBottleLastUsedAt: null, ominousBottleNextDueAt: null }
   let periodicSettings = { periodicRightClickEnabled: false, periodicRightClickX: null, periodicRightClickY: null, periodicRightClickZ: null, periodicRightClickIntervalTicks: 20, periodicRightClickNextDueAt: null }
+  let vaultAutoOpenSettings = { vaultAutoOpenEnabled: false }
   let mapFetches = 0
   let mapUrl = ''
   const mapPlayers = [
@@ -2412,6 +2479,10 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
         return { allowed: true, settings: ominousSettings }
       }
       if (action === 'periodic_right_click_get') return periodicSettings
+      if (action === 'vault_auto_open_set') {
+        vaultAutoOpenSettings = { ...vaultAutoOpenSettings, vaultAutoOpenEnabled: payload.enabled }
+        return { allowed: true, settings: vaultAutoOpenSettings }
+      }
       if (action === 'task_get') {
         if (payload.name === '单次任务') return { task: { name: '单次任务', parameters: ['格'], steps: [{ type: 'command', command: '切换', args: ['{格}'] }] } }
         if (payload.name === '放置') return { task: { name: '放置', parameters: ['x', 'y', 'z'], steps: [{ type: 'command', command: '指令', args: ['say', '当前放置点在({x},{y},{z})'] }] } }
@@ -2455,7 +2526,8 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
         })
       }
     },
-    scheduleRestart: () => {}
+    scheduleRestart: () => {},
+    applyVaultAutoOpenSettings: next => next
   })
 
   await handler({ username: 'Guest', message: '@near' })
@@ -2463,7 +2535,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.24')
+  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.25')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })
@@ -2485,8 +2557,13 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'White', message: 'PlatformBot下车' })
   assert.match(chats.pop(), /已下车/)
   await handler({ username: 'White', message: 'PlatformBot开宝库' })
-  assert.equal(vaultActivations, 1)
-  assert.match(chats.pop(), /已右键附近的宝库/)
+  assert.match(chats.pop(), /正确格式: 开宝库 开，或 开宝库 关。/)
+  await handler({ username: 'White', message: 'PlatformBot开宝库 开' })
+  assert.equal(vaultAutoOpenSettings.vaultAutoOpenEnabled, true)
+  assert.match(chats.pop(), /自动开宝库已开启/)
+  await handler({ username: 'White', message: 'PlatformBot开宝库 关' })
+  assert.equal(vaultAutoOpenSettings.vaultAutoOpenEnabled, false)
+  assert.equal(chats.pop(), '自动开宝库已关闭。')
   await handler({ username: 'White', message: 'PlatformBot切换 9' })
   assert.equal(quickBarSlot, 8)
   assert.match(chats.pop(), /第 9 格/)
