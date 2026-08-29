@@ -276,15 +276,27 @@ function isVaultBlock (block) {
 
 function isOminousVault (block) {
   if (!isVaultBlock(block)) return false
-  const ominous = block.properties?.ominous
+  const props = block.properties || block._properties || (typeof block.getProperties === 'function' ? block.getProperties() : null) || {}
+  const ominous = props.ominous
   if (ominous != null) return ominous === true || ominous === 'true'
   return /ominous|不祥/i.test(`${block?.name || ''} ${block?.displayName || ''}`)
+}
+
+const OMINOUS_TRIAL_KEY_ID = 'minecraft:ominous_trial_key'
+
+function hasOminousTrialKey (bot) {
+  if (bot.heldItem && normalizeItemId(bot.heldItem.name) === OMINOUS_TRIAL_KEY_ID) return true
+  return Boolean(findInventoryItem(bot, OMINOUS_TRIAL_KEY_ID))
 }
 
 async function activateNearestOminousVault (bot, maxDistance = 6) {
   if (typeof bot.findBlock !== 'function') return { status: 'failed' }
   const vault = bot.findBlock({ matching: isOminousVault, maxDistance })
   if (!vault) return { status: 'missing' }
+  if (!hasOminousTrialKey(bot)) return { status: 'missing_key' }
+  if (!(bot.heldItem && normalizeItemId(bot.heldItem.name) === OMINOUS_TRIAL_KEY_ID)) {
+    await collectItemToHand(bot, OMINOUS_TRIAL_KEY_ID)
+  }
   activateBlockWithoutLook(bot, vault)
   return { status: 'activated', block: vault }
 }
@@ -768,6 +780,8 @@ function createFishingController (bot, options = {}) {
 
 const VAULT_OPEN_SCAN_INTERVAL_MS = 500
 const VAULT_OPEN_MAX_ATTEMPTS = 60
+const VAULT_LANDING_CHECK_MS = 250
+const VAULT_LANDING_TIMEOUT_MS = 5000
 
 function createVaultAutoOpenController (bot, options = {}) {
   const platform = options.platform || global.botPlatform
@@ -778,47 +792,84 @@ function createVaultAutoOpenController (bot, options = {}) {
   const maxDistance = Number(options.vaultMaxDistance) > 0 ? Number(options.vaultMaxDistance) : 6
   const scanIntervalMs = Number(options.vaultScanIntervalMs) > 0 ? Number(options.vaultScanIntervalMs) : VAULT_OPEN_SCAN_INTERVAL_MS
   const maxAttempts = Number(options.vaultMaxAttempts) > 0 ? Number(options.vaultMaxAttempts) : VAULT_OPEN_MAX_ATTEMPTS
-  let timer = null
+  let scanTimer = null
+  let landingTimer = null
   let enabled = false
   let stopped = false
   let attempts = 0
 
-  function cancelTimer () {
-    if (timer) clearTimer(timer)
-    timer = null
+  function cancelTimers () {
+    if (scanTimer) clearTimer(scanTimer)
+    scanTimer = null
+    if (landingTimer) clearTimer(landingTimer)
+    landingTimer = null
+  }
+
+  function continueScanning () {
+    if (stopped || !enabled) return
+    attempts += 1
+    if (attempts >= maxAttempts) {
+      logger.warn?.(`[smart-vault] 传送后约 ${Math.round(maxAttempts * scanIntervalMs / 1000)} 秒内未发现不祥宝库，停止本次扫描。`)
+      return
+    }
+    scanTimer = setTimer(poll, scanIntervalMs)
+    scanTimer?.unref?.()
   }
 
   function poll () {
-    timer = null
+    scanTimer = null
     if (stopped || !enabled) return
     runBotAction(async () => {
       if (stopped || !enabled) return null
       return activateNearestOminousVault(bot, maxDistance)
     }).then(result => {
-      if (stopped || !enabled || result?.status === 'activated') return
-      if (result?.status === 'failed') throw new Error('当前服务器版本不支持隔方块开宝库。')
-      attempts += 1
-      if (attempts >= maxAttempts) {
-        logger.warn?.(`[smart-vault] 传送后约 ${Math.round(maxAttempts * scanIntervalMs / 1000)} 秒内未发现不祥宝库，停止本次扫描。`)
+      if (stopped || !enabled) return
+      if (result?.status === 'activated') {
+        logger.log?.(`[smart-vault] 已隔方块开启不祥宝库 ${result.block?.position || ''}`)
         return
       }
-      timer = setTimer(poll, scanIntervalMs)
-      timer?.unref?.()
-    }).catch(error => logger.warn?.(`[smart-vault] ${error?.message || error}`))
+      if (result?.status === 'missing_key') {
+        logger.warn?.('[smart-vault] 背包中没有不祥试炼钥匙，本次传送不再尝试开宝库。')
+        return
+      }
+      if (result?.status === 'failed') throw new Error('当前服务器版本不支持隔方块开宝库。')
+      continueScanning()
+    }).catch(error => {
+      logger.warn?.(`[smart-vault] ${error?.message || error}`)
+      continueScanning()
+    })
   }
 
-  function scheduleOpen () {
+  function scheduleOpen (beforePosition = null) {
     if (stopped || !enabled) return
-    cancelTimer()
+    cancelTimers()
     attempts = 0
-    poll()
+    const position = bot.entity?.position
+    if (!beforePosition || !position || typeof position.distanceTo !== 'function') {
+      poll()
+      return
+    }
+    const startedAt = Date.now()
+    const waitLanding = () => {
+      landingTimer = setTimer(() => {
+        landingTimer = null
+        if (stopped || !enabled) return
+        if (position.distanceTo(beforePosition) > 1 || Date.now() - startedAt >= VAULT_LANDING_TIMEOUT_MS) {
+          poll()
+          return
+        }
+        waitLanding()
+      }, VAULT_LANDING_CHECK_MS)
+      landingTimer?.unref?.()
+    }
+    waitLanding()
   }
 
   function setEnabled (next) {
     const value = Boolean(next)
     if (value === enabled) return { vaultAutoOpenEnabled: enabled }
     enabled = value
-    if (!enabled) cancelTimer()
+    if (!enabled) cancelTimers()
     return { vaultAutoOpenEnabled: enabled }
   }
 
@@ -834,7 +885,7 @@ function createVaultAutoOpenController (bot, options = {}) {
   function stop () {
     stopped = true
     enabled = false
-    cancelTimer()
+    cancelTimers()
   }
 
   return { applySettings, getState: () => ({ enabled }), scheduleOpen, setEnabled, start, stop }
@@ -1771,8 +1822,9 @@ function createTeleportRequestHandler (bot, options = {}) {
     if (event?.kind === 'to_bot') {
       if (access.lock?.adminLocked && !access.admin) return
     } else if (access.lock?.locked || access.lock?.adminLocked) return
+    const beforePosition = typeof bot.entity?.position?.clone === 'function' ? bot.entity.position.clone() : null
     await runBotAction(() => bot.chat(`/tpaccept ${username}`))
-    if (event?.kind === 'to_requester') options.onTeleported?.(username)
+    if (event?.kind === 'to_requester') options.onTeleported?.(username, beforePosition)
   }
 }
 
@@ -1847,7 +1899,7 @@ function installSmartCommands (bot, options = {}) {
     getMessageOverrides: () => messageOverrides,
     getTopUpSettings: () => topUpSettings
   })
-  const handleTeleportRequest = createTeleportRequestHandler(bot, { ...options, platform, runBotAction, onTeleported: () => vaultAutoOpenController.scheduleOpen() })
+  const handleTeleportRequest = createTeleportRequestHandler(bot, { ...options, platform, runBotAction, onTeleported: (username, beforePosition) => vaultAutoOpenController.scheduleOpen(beforePosition) })
   const handlePeekRequest = createPeekRequestHandler(bot, { ...options, platform, runBotAction })
   const playerQueues = new Map()
   const listener = event => {

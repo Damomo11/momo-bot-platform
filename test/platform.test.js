@@ -994,10 +994,16 @@ test('vehicle state left behind by death is cleared before mount and dismount', 
 test('open vault finds only ominous vaults and activates them through blocks via protocol', async () => {
   const written = []
   const swings = []
+  const equipped = []
   const plainVault = { name: 'vault', displayName: 'Vault' }
-  const ominousVault = { name: 'vault', displayName: 'Vault', properties: { ominous: 'true' }, position: new Vec3(5, 64, 5) }
+  const ominousVault = { name: 'vault', displayName: 'Vault', getProperties: () => ({ ominous: true, vault_state: 'inactive' }), position: new Vec3(5, 64, 5) }
+  const trialKey = { name: 'ominous_trial_key', count: 1, slot: 3 }
   const bot = {
+    entity: {},
     findBlock: options => [plainVault, ominousVault].find(options.matching) || null,
+    heldItem: null,
+    inventory: { items: () => [trialKey] },
+    equip: async (item, destination) => equipped.push({ item, destination }),
     supportFeature: feature => feature === 'blockPlaceHasHandAndFloatCursor',
     _client: { write: (name, data) => written.push({ name, data }) },
     swingArm: hand => swings.push(hand)
@@ -1005,16 +1011,35 @@ test('open vault finds only ominous vaults and activates them through blocks via
   const result = await activateNearestOminousVault(bot)
   assert.equal(result.status, 'activated')
   assert.equal(result.block, ominousVault)
+  assert.deepEqual(equipped, [{ item: trialKey, destination: 'hand' }])
   assert.deepEqual(written, [{ name: 'block_place', data: { location: ominousVault.position, direction: 1, hand: 0, cursorX: 0.5, cursorY: 1, cursorZ: 0.5 } }])
   assert.deepEqual(swings, ['right'])
+
+  const noKeyBot = {
+    entity: {},
+    findBlock: options => options.matching(ominousVault) ? ominousVault : null,
+    heldItem: null,
+    inventory: { items: () => [] },
+    supportFeature: () => true,
+    _client: { write: () => {} },
+    swingArm: () => {}
+  }
+  assert.equal((await activateNearestOminousVault(noKeyBot)).status, 'missing_key')
 })
 
-test('vault auto-open controller keeps scanning until the ominous vault loads', async () => {
+test('vault auto-open controller waits for the teleport to land, then keeps scanning until the ominous vault loads', async () => {
   const written = []
-  const ominousVault = { name: 'vault', displayName: 'Vault', properties: { ominous: 'true' }, position: new Vec3(2, 64, 2) }
+  const ominousVault = { name: 'vault', displayName: 'Vault', getProperties: () => ({ ominous: true, vault_state: 'inactive' }), position: new Vec3(2, 64, 2) }
   let findCalls = 0
+  const position = {
+    x: 0, y: 64, z: 0,
+    distanceTo (other) { return Math.abs(this.x - other.x) + Math.abs(this.y - other.y) + Math.abs(this.z - other.z) },
+    clone () { return { x: this.x, y: this.y, z: this.z, distanceTo: this.distanceTo.bind(this) } }
+  }
   const bot = {
-    findBlock: options => { findCalls += 1; return findCalls >= 3 && options.matching(ominousVault) ? ominousVault : null },
+    entity: { position },
+    heldItem: { name: 'ominous_trial_key' },
+    findBlock: options => { findCalls += 1; return findCalls >= 4 && options.matching(ominousVault) ? ominousVault : null },
     supportFeature: feature => feature === 'blockPlaceHasHandAndFloatCursor',
     _client: { write: (name, data) => written.push({ name, data }) },
     swingArm: () => {}
@@ -1037,39 +1062,91 @@ test('vault auto-open controller keeps scanning until the ominous vault loads', 
   }
 
   controller.applySettings({ vaultAutoOpenEnabled: true })
-  controller.scheduleOpen()
+  controller.scheduleOpen(position.clone())
   await tick(0)
+  await tick(250)
+  await tick(250)
+  assert.equal(findCalls, 0, 'teleport not landed yet, no scanning')
+
+  position.x = 50
+  await tick(250)
+  assert.equal(findCalls, 1, 'first scan right after landing')
   assert.deepEqual(written, [])
   await tick(500)
-  assert.deepEqual(written, [])
+  assert.equal(findCalls, 2)
   await tick(500)
+  await tick(500)
+  assert.equal(findCalls, 4)
   assert.deepEqual(written, [{ name: 'block_place', data: { location: ominousVault.position, direction: 1, hand: 0, cursorX: 0.5, cursorY: 1, cursorZ: 0.5 } }])
 
   const scansAfterFound = findCalls
-  await tick(5000)
-  assert.equal(findCalls, scansAfterFound)
-  assert.equal(written.length, 1)
-
-  controller.applySettings({ vaultAutoOpenEnabled: false })
-  controller.scheduleOpen()
-  await tick(5000)
+  await tick(2000)
   assert.equal(findCalls, scansAfterFound)
   controller.stop()
 })
 
-test('teleport handler triggers onTeleported only for tpahere requests', async () => {
+test('vault auto-open controller keeps scanning when a scan attempt throws', async () => {
+  const written = []
+  const ominousVault = { name: 'vault', displayName: 'Vault', getProperties: () => ({ ominous: true }), position: new Vec3(2, 64, 2) }
+  let findCalls = 0
+  const position = {
+    x: 0, y: 64, z: 0,
+    distanceTo () { return 10 },
+    clone () { return { distanceTo: this.distanceTo.bind(this) } }
+  }
+  const bot = {
+    entity: { position },
+    heldItem: { name: 'ominous_trial_key' },
+    findBlock: options => { findCalls += 1; if (findCalls === 1) throw new Error('Chunk not loaded'); return options.matching(ominousVault) ? ominousVault : null },
+    supportFeature: feature => feature === 'blockPlaceHasHandAndFloatCursor',
+    _client: { write: (name, data) => written.push({ name, data }) },
+    swingArm: () => {}
+  }
+  const timers = []
+  let now = 0
+  const controller = createVaultAutoOpenController(bot, {
+    runBotAction: task => task(),
+    setTimer: (fn, ms) => { const timer = { fn, at: now + ms, cleared: false }; timers.push(timer); return timer },
+    clearTimer: timer => { timer.cleared = true },
+    vaultScanIntervalMs: 500
+  })
+  const tick = async ms => {
+    now += ms
+    for (const timer of timers) {
+      if (!timer.cleared && !timer.done && timer.at <= now) { timer.done = true; timer.fn() }
+    }
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  controller.applySettings({ vaultAutoOpenEnabled: true })
+  controller.scheduleOpen(position.clone())
+  await tick(250)
+  assert.equal(findCalls, 1)
+  assert.deepEqual(written, [])
+  await tick(500)
+  assert.equal(findCalls, 2, 'scan resumed after the failed attempt')
+  assert.deepEqual(written, [{ name: 'block_place', data: { location: ominousVault.position, direction: 1, hand: 0, cursorX: 0.5, cursorY: 1, cursorZ: 0.5 } }])
+  controller.stop()
+})
+
+test('teleport handler triggers onTeleported only for tpahere requests with the pre-teleport position', async () => {
   const chats = []
-  const bot = { username: 'PlatformBot', chat: message => chats.push(message) }
+  const position = {
+    x: 5, y: 64, z: 5,
+    distanceTo (other) { return Math.abs(this.x - other.x) },
+    clone () { return { x: this.x, y: this.y, z: this.z } }
+  }
+  const bot = { username: 'PlatformBot', entity: { position }, chat: message => chats.push(message) }
   const teleported = []
   const handler = createTeleportRequestHandler(bot, {
     platform: { request: async action => action === 'access' ? { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } } : null },
-    onTeleported: name => teleported.push(name)
+    onTeleported: (name, beforePosition) => teleported.push([name, beforePosition])
   })
 
   await handler({ username: 'White', kind: 'to_bot' })
   await handler({ username: 'White', kind: 'to_requester' })
   assert.deepEqual(chats, ['/tpaccept White', '/tpaccept White'])
-  assert.deepEqual(teleported, ['White'])
+  assert.deepEqual(teleported, [['White', { x: 5, y: 64, z: 5 }]])
 })
 
 test('admin overview aggregates accounts, bots and precise user consumption', () => {
