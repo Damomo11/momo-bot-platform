@@ -1316,6 +1316,7 @@ function createSmartCommandHandler (bot, options = {}) {
       const note = summary ? ` 更新内容: ${summary}` : ''
       bot.chat(`/msg ${username} bot已有新版本，可在游戏内使用“重启”命令，重启后自动更新。${note}`.slice(0, 256))
       versionNotifiedPlayers.add(key)
+      if (versionNotifiedPlayers.size > 512) versionNotifiedPlayers.clear()
     } catch (error) {
       platform.log?.(`检查智能 Bot 版本失败: ${error?.message || error}`)
     }
@@ -1979,13 +1980,19 @@ function installSmartCommands (bot, options = {}) {
   const runningScheduledTasks = new Set()
   const taskRetryAfter = new Map()
   let schedulerRetryAfter = 0
+  let tasksCache = []
+  let tasksNextFetchAt = 0
   const taskTimer = setInterval(async () => {
     if (Date.now() < schedulerRetryAfter) return
     try {
       await startup
-      const result = await platform.request('task_list', {})
       const now = Date.now()
-      for (const task of result.tasks || []) {
+      if (now >= tasksNextFetchAt) {
+        const result = await platform.request('task_list', {})
+        tasksCache = result.tasks || []
+        tasksNextFetchAt = now + 1000
+      }
+      for (const task of tasksCache) {
         const key = String(task.name).toLowerCase()
         if (!task.intervalTicks || !task.nextDueAt || task.nextDueAt > now || runningScheduledTasks.has(key) || Number(taskRetryAfter.get(key) || 0) > now) continue
         runningScheduledTasks.add(key)

@@ -1599,7 +1599,7 @@ test('version command reports the running version before the latest release deta
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.26', release: { summary: '下一版更新说明' } }
+        if (action === 'runtime_version') return { version: '1.0.27', release: { summary: '下一版更新说明' } }
         throw new Error(`unexpected action ${action}`)
       }
     }
@@ -1608,8 +1608,8 @@ test('version command reports the running version before the latest release deta
   await handler({ username: 'White', message: 'PlatformBot版本' })
 
   assert.deepEqual(chats, [
-    '智能 Bot 当前运行版本：v1.0.25',
-    '智能 Bot 最新版本：v1.0.26；更新内容：下一版更新说明'
+    '智能 Bot 当前运行版本：v1.0.26',
+    '智能 Bot 最新版本：v1.0.27；更新内容：下一版更新说明'
   ])
 })
 
@@ -2612,7 +2612,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.25')
+  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.26')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })
