@@ -159,6 +159,33 @@ test('runtime update restart waits for process exit and keeps the bot desired st
   }
 })
 
+test('restart falls back to a fresh start when the process is already gone', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-platform-restart-stopped-'))
+  const bot = { id: 'bot-1', userId: 'user-1', accountId: 'account-1', mode: 'smart', desiredState: 'running', runtimeState: 'stopped', accountAuthState: 'authorized', oauthJson: '', templateVarsJson: '', serverHost: 'mc.zenoxs.cn', serverPort: 25565 }
+  try {
+    fs.mkdirSync(path.join(root, 'smart-runtime'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'smart-runtime', 'package.json'), JSON.stringify({ version: '1.2.0' }))
+    const db = {
+      getBot: () => ({ ...bot }),
+      updateBotRuntime: (id, fields) => Object.assign(bot, fields),
+      getModePrices: () => ({ smartHourlyPrice: 0.03, signinOncePrice: 0.01 }),
+      getSmartBotScheduleStatus: () => ({ automation: {}, tasks: [] }),
+      getUser: () => ({ availableMomoc: 100 }),
+      getRuntimeSettings: () => ({ maxRunningBots: 0 })
+    }
+    const manager = new BotManager(db, { root })
+    let launched = null
+    manager.launchAttempt = current => { launched = current }
+
+    await manager.restart(bot.id, bot.userId)
+    assert.equal(bot.desiredState, 'running')
+    assert.equal(bot.runtimeState, 'starting')
+    assert.equal(launched.id, bot.id)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('Zenox connections always use only Minecraft 1.21.11', () => {
   const manager = new BotManager({}, {})
   assert.deepEqual(manager.protocolVersions({ serverHost: 'mc.zenoxs.cn', minecraftVersion: '1.21.8' }), ['1.21.11'])

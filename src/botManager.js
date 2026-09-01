@@ -1170,7 +1170,12 @@ class BotManager {
     if (actorUserId && bot.userId !== actorUserId) throw new Error('无权操作这个机器人。')
     if (bot.mode !== 'smart') throw new Error('只有智能 Bot 支持版本更新重启。')
     const state = this.processes.get(id)
-    if (!state) throw new Error('机器人当前没有运行，请直接启动。')
+    if (!state) {
+      // 进程已不在（异常停止后的残留状态）：归一化后走启动流程，避免卡死在 desiredState=running
+      this.cancelReconnect(id)
+      this.db.updateBotRuntime(id, { desiredState: 'stopped', runtimeState: 'stopped', startedAt: null })
+      return this.start(id, actorUserId)
+    }
     if (state.restartPending) return this.publicBot(bot)
     state.restartPending = true
     this.clearStateTimers(state)
