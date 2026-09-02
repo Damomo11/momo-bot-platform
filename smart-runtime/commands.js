@@ -1297,6 +1297,16 @@ function createSmartCommandHandler (bot, options = {}) {
   const applyPeriodicRightClickSettings = options.applyPeriodicRightClickSettings || (() => {})
   const applyFishingSettings = options.applyFishingSettings || (() => ({ fishingEnabled: false }))
   const applyVaultAutoOpenSettings = options.applyVaultAutoOpenSettings || (() => ({ vaultAutoOpenEnabled: false }))
+  // 默认按 Bot 自身防重入；installSmartCommands 会传入与定时调度器共享的守卫，覆盖手动与定时重叠
+  const handlerRunningTasks = new Map()
+  const runTaskExclusive = options.runTaskExclusive || (async (task, args) => {
+    const key = String(task?.name || '').toLowerCase()
+    if (handlerRunningTasks.has(key)) return false
+    const promise = (options.runBotAction || (inner => inner()))(() => executeCustomTask(bot, task, { args })).finally(() => handlerRunningTasks.delete(key))
+    handlerRunningTasks.set(key, promise)
+    await promise
+    return true
+  })
   const scheduleRestart = options.scheduleRestart || (callback => {
     const timer = setTimeout(callback, 600)
     timer.unref?.()
@@ -1471,7 +1481,7 @@ function createSmartCommandHandler (bot, options = {}) {
           reply(COMMAND_TEXT.customTaskUsage(customTask.task), 'customTaskUsage')
           return
         }
-        await runBotAction(() => executeCustomTask(bot, customTask.task, { args: parsed.args }))
+        await runTaskExclusive(customTask.task, parsed.args)
         return
       }
     }
@@ -1749,7 +1759,7 @@ function createSmartCommandHandler (bot, options = {}) {
           reply(COMMAND_TEXT.customTaskUsage(customTask.task), 'customTaskUsage')
           return
         }
-        await runBotAction(() => executeCustomTask(bot, customTask.task, { args: parsed.args }))
+        await runTaskExclusive(customTask.task, parsed.args)
         return
       }
     }
@@ -1853,6 +1863,16 @@ function installSmartCommands (bot, options = {}) {
   const platform = options.platform || global.botPlatform
   const request = (action, payload) => platform.request(action, payload)
   const runBotAction = options.runBotAction || createBotActionQueue()
+  // 同名任务执行期间忽略重复触发（聊天重发/玩家连发/定时重叠），并与调度器共享防重入
+  const runningTasks = new Map()
+  const runTaskExclusive = async (task, args) => {
+    const key = String(task?.name || '').toLowerCase()
+    if (runningTasks.has(key)) return false
+    const promise = runBotAction(() => executeCustomTask(bot, task, { args })).finally(() => runningTasks.delete(key))
+    runningTasks.set(key, promise)
+    await promise
+    return true
+  }
   const ominousScheduler = options.ominousScheduler || createOminousBottleScheduler(bot, { ...options, platform, runBotAction })
   const periodicRightClickScheduler = options.periodicRightClickScheduler || createPeriodicRightClickScheduler(bot, { ...options, platform, runBotAction })
   const fishingController = options.fishingController || createFishingController(bot, { ...options, runBotAction })
@@ -1892,6 +1912,7 @@ function installSmartCommands (bot, options = {}) {
     ...options,
     platform,
     runBotAction,
+    runTaskExclusive,
     applyOminousSettings: settings => ominousScheduler.applySettings(settings),
     applyPeriodicRightClickSettings: settings => periodicRightClickScheduler.applySettings(settings),
     applyFishingSettings: settings => fishingController.applySettings(settings),
@@ -1977,7 +1998,6 @@ function installSmartCommands (bot, options = {}) {
   startup.then(() => periodicRightClickScheduler.start()).catch(error => console.error('[smart-periodic-right-click]', error?.stack || error))
   startup.then(() => fishingController.start()).catch(error => console.error('[smart-fishing]', error?.stack || error))
   startup.then(() => vaultAutoOpenController.start()).catch(error => console.error('[smart-vault]', error?.stack || error))
-  const runningScheduledTasks = new Set()
   const taskRetryAfter = new Map()
   let schedulerRetryAfter = 0
   let tasksCache = []
@@ -1994,16 +2014,18 @@ function installSmartCommands (bot, options = {}) {
       }
       for (const task of tasksCache) {
         const key = String(task.name).toLowerCase()
-        if (!task.intervalTicks || !task.nextDueAt || task.nextDueAt > now || runningScheduledTasks.has(key) || Number(taskRetryAfter.get(key) || 0) > now) continue
-        runningScheduledTasks.add(key)
+        if (!task.intervalTicks || !task.nextDueAt || task.nextDueAt > now || runningTasks.has(key) || Number(taskRetryAfter.get(key) || 0) > now) continue
         try {
-          await runBotAction(() => executeCustomTask(bot, task, { args: task.scheduleArgs || [] }))
+          const ran = await runTaskExclusive(task, task.scheduleArgs || [])
+          if (!ran) continue
           await platform.request('task_schedule_complete', { name: task.name })
+          // 同步推进缓存里的 nextDueAt：否则 50ms tick 会拿着 1 秒内的旧缓存反复执行同一任务（连打攻击等步骤）
+          task.nextDueAt = Date.now() + task.intervalTicks * 50
           taskRetryAfter.delete(key)
         } catch (error) {
           taskRetryAfter.set(key, Date.now() + 5000)
           console.error('[smart-task-scheduler]', error?.message || error)
-        } finally { runningScheduledTasks.delete(key) }
+        }
       }
     } catch (error) {
       schedulerRetryAfter = Date.now() + 5000

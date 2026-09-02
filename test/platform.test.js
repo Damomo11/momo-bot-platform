@@ -1279,6 +1279,33 @@ test('smart runtime reports command callers and tpahere senders to related logs'
   } finally { remove() }
 })
 
+test('scheduled task fires once per due cycle even while the task list cache is stale', async () => {
+  const attacks = []
+  const bot = new EventEmitter()
+  bot.username = 'PlatformBot'
+  bot.entity = {}
+  bot.chat = () => {}
+  bot.entityAtCursor = () => ({ id: 1, type: 'armor_stand' })
+  bot.attack = target => attacks.push(target)
+  const scheduledTask = { name: '打怪', intervalTicks: 40, nextDueAt: Date.now() - 10, scheduleArgs: [], steps: [{ type: 'command', command: '攻击', args: [] }] }
+  const platform = {
+    request: async (action, payload) => {
+      if (action === 'settings') return { commandPrefix: '', messageOverrides: {}, topUp: {} }
+      if (action === 'volatile_schedules_reset') return { automation: {}, tasks: [] }
+      if (['ominous_schedule_get', 'fishing_schedule_get', 'periodic_right_click_get', 'anti_afk_get', 'vault_auto_open_get'].includes(action)) return {}
+      if (action === 'task_list') return { tasks: [{ ...scheduledTask }] }
+      if (action === 'task_schedule_complete') { scheduledTask.nextDueAt = Date.now() + scheduledTask.intervalTicks * 50; return {} }
+      if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
+      throw new Error(`unexpected action ${action}`)
+    }
+  }
+  const remove = installSmartCommands(bot, { platform, commandPrefixes: ['PlatformBot'] })
+  try {
+    await new Promise(resolve => setTimeout(resolve, 400))
+    assert.equal(attacks.length, 1, `expected exactly one scheduled attack, got ${attacks.length}`)
+  } finally { remove() }
+})
+
 test('smart teleport acceptance permits a locked bot to receive whitelisted players', async () => {
   const bot = new EventEmitter()
   bot.username = 'PlatformBot'
@@ -1626,7 +1653,7 @@ test('version command reports the running version before the latest release deta
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.27', release: { summary: '下一版更新说明' } }
+        if (action === 'runtime_version') return { version: '1.0.28', release: { summary: '下一版更新说明' } }
         throw new Error(`unexpected action ${action}`)
       }
     }
@@ -1635,8 +1662,8 @@ test('version command reports the running version before the latest release deta
   await handler({ username: 'White', message: 'PlatformBot版本' })
 
   assert.deepEqual(chats, [
-    '智能 Bot 当前运行版本：v1.0.26',
-    '智能 Bot 最新版本：v1.0.27；更新内容：下一版更新说明'
+    '智能 Bot 当前运行版本：v1.0.27',
+    '智能 Bot 最新版本：v1.0.28；更新内容：下一版更新说明'
   ])
 })
 
@@ -2526,6 +2553,38 @@ test('smart command database requests recheck roles before mutations', () => {
   } finally { f.close() }
 })
 
+test('game-invoked custom tasks ignore re-triggers while the same task is still running', async () => {
+  const chats = []
+  const attacks = []
+  const bot = { username: 'PlatformBot', entity: {}, chat: message => chats.push(message), attack: target => attacks.push(target) }
+  let resolveFirstAttack = null
+  const entityAtCursor = () => ({ id: 1, type: 'armor_stand' })
+  bot.entityAtCursor = distance => { assert.equal(distance, 3.5); return entityAtCursor() }
+  bot.attack = target => {
+    attacks.push(target)
+    if (attacks.length === 1) return new Promise(resolve => { resolveFirstAttack = resolve })
+  }
+  const handler = createSmartCommandHandler(bot, {
+    commandPrefixes: ['PlatformBot'],
+    platform: {
+      request: async (action, payload) => {
+        if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
+        if (action === 'task_get') return { task: { name: '打怪', steps: [{ type: 'command', command: '攻击', args: [] }] } }
+        throw new Error(`unexpected action ${action}`)
+      }
+    },
+    scheduleRestart: () => {}
+  })
+
+  const first = handler({ username: 'White', message: 'PlatformBot打怪' })
+  const duplicate = handler({ username: 'White', message: 'PlatformBot打怪' })
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal(attacks.length, 1, 'the duplicate trigger must not start a second run')
+  resolveFirstAttack()
+  await Promise.all([first, duplicate])
+  assert.equal(attacks.length, 1)
+})
+
 test('smart command handler enforces prefixes, access, locks, forwarding, and map lookup', async () => {
   assert.deepEqual(parseSmartCommand('NanKinz2查白 Alice', ['NanKinz2']), { prefix: 'NanKinz2', command: '查白', args: ['Alice'], body: '查白 Alice' })
   assert.equal(parseSmartCommand('查白 Alice', ['NanKinz2']), null)
@@ -2639,7 +2698,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.26')
+  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.27')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })
