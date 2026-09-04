@@ -430,6 +430,40 @@ async function attackAtCursor (bot, maxDistance = 3.5) {
   return { status: 'attacked', target }
 }
 
+// prismarine-item 在 1.20.5+ 组件物品上，enchants 返回的是组件原始对象
+// （{ enchantments: [{id, level}], showTooltip }）而不是 {name, lvl} 数组，
+// mineflayer 的 digTime 拿到后直接遍历，会抛 “enchantments is not iterable”。
+// 这里先把附魔归一化成 prismarine-block 期望的数组，再替换 bot.digTime。
+function normalizeItemEnchants (bot, item) {
+  const enchants = item?.enchants
+  if (Array.isArray(enchants)) return enchants
+  const list = Array.isArray(enchants?.enchantments) ? enchants.enchantments : []
+  return list.map(ench => ({
+    name: ench.name ?? bot.registry?.enchantments?.[ench.id]?.name ?? null,
+    lvl: ench.lvl ?? ench.level ?? 0
+  }))
+}
+
+function hardenDigTime (bot) {
+  if (typeof bot.digTime !== 'function' || bot.digTime.enchantsSafe) return
+  const safeDigTime = block => {
+    const heldItem = bot.heldItem
+    let enchantments = normalizeItemEnchants(bot, heldItem)
+    const helmet = bot.inventory?.slots?.[bot.getEquipmentDestSlot?.('head')]
+    if (helmet) enchantments = enchantments.concat(normalizeItemEnchants(bot, helmet))
+    return block.digTime(
+      heldItem?.type ?? null,
+      bot.game?.gameMode === 'creative',
+      ['water', 'flowing_water'].includes(bot._getBlockAtEyeLevel?.()?.name),
+      !bot.entity?.onGround,
+      enchantments,
+      bot.entity?.effects || {}
+    )
+  }
+  safeDigTime.enchantsSafe = true
+  bot.digTime = safeDigTime
+}
+
 async function digBlockTarget (bot, args) {
   let block = null
   if (args.length === 1 && args[0] === '准星') block = blockAtCursorTarget(bot).block
@@ -1860,6 +1894,7 @@ function formatMomoc (value) {
 }
 
 function installSmartCommands (bot, options = {}) {
+  hardenDigTime(bot)
   const platform = options.platform || global.botPlatform
   const request = (action, payload) => platform.request(action, payload)
   const runBotAction = options.runBotAction || createBotActionQueue()
@@ -2070,6 +2105,7 @@ module.exports = {
   executeCustomTask,
   findPlayerPosition,
   fishAtCursor,
+  hardenDigTime,
   installSmartCommands,
   hasValidVehicleAttachment,
   isVersionNewer,
@@ -2080,6 +2116,7 @@ module.exports = {
   moveHeldItemToOffhand,
   normalizeItemId,
   normalizeCommandPrefixes,
+  normalizeItemEnchants,
   parseSmartCommand,
   parsePeriodicRightClickArgs,
   parseCoordinates,

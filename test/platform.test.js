@@ -20,7 +20,7 @@ const { verifyCloudStoreToken } = require('../src/cloudStoreSso')
 const { LoginAttemptLimiter, clientIp } = require('../src/security')
 const { invalidateMinecraftAccessTokenCache, isMinecraftProfileAuthError } = require('../src/authCache')
 const { upgradeObjectState } = require('../src/supervisorHotReload')
-const { activateNearestOminousVault, attackAtCursor, bindTaskArguments, createFishingController, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, createVaultAutoOpenController, dismountVehicle, executeCustomTask, installSmartCommands, isVersionNewer, mountNearestMinecart, normalizeItemId, parsePeriodicRightClickArgs, parseSmartCommand, placeAtCursor, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
+const { activateNearestOminousVault, attackAtCursor, bindTaskArguments, createFishingController, createOminousBottleScheduler, createPeriodicRightClickScheduler, createSmartCommandHandler, createTeleportRequestHandler, createVaultAutoOpenController, dismountVehicle, executeCustomTask, hardenDigTime, installSmartCommands, isVersionNewer, mountNearestMinecart, normalizeItemId, normalizeItemEnchants, parsePeriodicRightClickArgs, parseSmartCommand, placeAtCursor, placePeriodicRightClick, rightClickTarget } = require('../smart-runtime/commands')
 
 test('login attempts are blocked by IP after repeated failures', () => {
   const limiter = new LoginAttemptLimiter({ maxFailures: 3, windowMs: 1000, blockMs: 2000 })
@@ -2855,4 +2855,63 @@ test('smart command can take and discard Chinese-named items, move, and look at 
   await handler({ username: 'White', message: 'PlatformBot注视 Steve' })
   assert.equal(chats.pop(), '已调整视角。')
   assert.equal(looks.at(-1).point.x, 4)
+})
+
+test('dig time normalizes component enchantments from enchanted held tools', () => {
+  const bot = new EventEmitter()
+  bot.username = 'PlatformBot'
+  bot.entity = { onGround: true, effects: {} }
+  bot.game = { gameMode: 'survival' }
+  bot.registry = { enchantments: { 8: { name: 'efficiency' }, 9: { name: 'aqua_affinity' } } }
+  bot.heldItem = { type: 745, enchants: { enchantments: [{ id: 8, level: 5 }], showTooltip: true } }
+  bot.inventory = { slots: [] }
+  bot.getEquipmentDestSlot = () => 5
+  bot._getBlockAtEyeLevel = () => ({ name: 'air' })
+  bot.digTime = () => 0
+
+  // 复现 prismarine-block 的遍历方式：1.20.5+ 组件物品未归一化时这里抛 “enchantments is not iterable”
+  const block = {
+    digTime (heldItemType, creative, inWater, notOnGround, enchantments, effects) {
+      assert.equal(heldItemType, 745)
+      assert.equal(creative, false)
+      assert.equal(inWater, false)
+      assert.equal(notOnGround, false)
+      assert.deepEqual(effects, {})
+      assert.ok(Array.isArray(enchantments), 'enchantments should be a normalized array')
+      return enchantments.reduce((time, ench) => (ench.name === 'efficiency' ? time / 36 : time), 500)
+    }
+  }
+
+  hardenDigTime(bot)
+  assert.equal(bot.digTime.enchantsSafe, true)
+  assert.equal(bot.digTime(block), 500 / 36)
+
+  // 头盔组件附魔并入后同样可遍历，不影响效率计算
+  bot.inventory.slots[5] = { enchants: { enchantments: [{ id: 9, level: 1 }], showTooltip: true } }
+  assert.equal(bot.digTime(block), 500 / 36)
+
+  // 旧版本（NBT）enchants 已是归一化数组，原样传递
+  bot.inventory.slots[5] = null
+  bot.heldItem = { type: 745, enchants: [{ name: 'efficiency', lvl: 3 }] }
+  assert.deepEqual(normalizeItemEnchants(bot, bot.heldItem), [{ name: 'efficiency', lvl: 3 }])
+})
+
+test('installSmartCommands hardens digTime against component enchantments', async () => {
+  const bot = new EventEmitter()
+  bot.username = 'PlatformBot'
+  bot.entity = { onGround: true, effects: {} }
+  bot.game = { gameMode: 'survival' }
+  bot.digTime = () => 0
+  const platform = {
+    request: async action => {
+      if (action === 'settings') return { commandPrefix: '', messageOverrides: {}, topUp: {} }
+      if (['volatile_schedules_reset', 'ominous_schedule_get', 'fishing_schedule_get', 'periodic_right_click_get', 'anti_afk_get', 'vault_auto_open_get'].includes(action)) return {}
+      if (action === 'task_list') return { tasks: [] }
+      throw new Error(`unexpected action ${action}`)
+    }
+  }
+  const remove = installSmartCommands(bot, { platform, commandPrefixes: ['PlatformBot'] })
+  try {
+    assert.equal(bot.digTime.enchantsSafe, true)
+  } finally { remove() }
 })
