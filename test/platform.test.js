@@ -1653,7 +1653,7 @@ test('version command reports the running version before the latest release deta
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.28', release: { summary: '下一版更新说明' } }
+        if (action === 'runtime_version') return { version: '1.0.29', release: { summary: '下一版更新说明' } }
         throw new Error(`unexpected action ${action}`)
       }
     }
@@ -1662,8 +1662,8 @@ test('version command reports the running version before the latest release deta
   await handler({ username: 'White', message: 'PlatformBot版本' })
 
   assert.deepEqual(chats, [
-    '智能 Bot 当前运行版本：v1.0.27',
-    '智能 Bot 最新版本：v1.0.28；更新内容：下一版更新说明'
+    '智能 Bot 当前运行版本：v1.0.28',
+    '智能 Bot 最新版本：v1.0.29；更新内容：下一版更新说明'
   ])
 })
 
@@ -1926,6 +1926,34 @@ test('custom task attacks the entity under the crosshair and a miss swings once'
   calls.length = 0
   assert.deepEqual(await attackAtCursor(bot), { status: 'miss', target: null })
   assert.deepEqual(calls, [{ type: 'cursor', distance: 3.5 }, { type: 'swing', hand: 'right' }])
+})
+
+test('attack beyond server interaction range or invalid entity swings instead of attacking', async () => {
+  const bot = {
+    entity: { position: new Vec3(0.5, 64, 0.5), eyeHeight: 1.62 },
+    entityAtCursor: () => cursorTarget,
+    attack: () => calls.push('attack'),
+    swingArm: () => calls.push('swing')
+  }
+  const calls = []
+  let cursorTarget = null
+
+  // 距离 5 格：entityAtCursor 粗筛放行，但服务端按眼睛到碰撞箱算超范围
+  cursorTarget = { id: 1, type: 'mob', name: 'zombie', position: new Vec3(0.5, 64, 5.5), width: 0.6, height: 1.8 }
+  assert.deepEqual(await attackAtCursor(bot), { status: 'miss', target: null })
+  assert.deepEqual(calls, ['swing'])
+
+  // 距离 2 格：正常攻击
+  calls.length = 0
+  cursorTarget = { id: 2, type: 'mob', name: 'zombie', position: new Vec3(0.5, 64, 2.5), width: 0.6, height: 1.8 }
+  assert.deepEqual(await attackAtCursor(bot), { status: 'attacked', target: cursorTarget })
+  assert.deepEqual(calls, ['attack'])
+
+  // 已收到销毁包的实体（isValid=false）：攻击会被服务端以 invalid_entity_attacked 踢出
+  calls.length = 0
+  cursorTarget = { id: 3, type: 'mob', name: 'zombie', isValid: false, position: new Vec3(0.5, 64, 1.5), width: 0.6, height: 1.8 }
+  assert.deepEqual(await attackAtCursor(bot), { status: 'miss', target: null })
+  assert.deepEqual(calls, ['swing'])
 })
 
 test('custom task breaks the block under the crosshair', async () => {
@@ -2698,7 +2726,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.27')
+  assert.equal(chats.pop(), '智能 Bot 当前运行版本：v1.0.28')
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })

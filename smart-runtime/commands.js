@@ -417,10 +417,35 @@ async function placeAtCursor (bot, maxDistance = 4.5) {
   return { placed: true }
 }
 
+// 原版服务端 1.20.5+ 会对攻击做服务端校验：玩家眼睛到目标碰撞箱最近点超出实体交互范围
+// （默认 3 格），或攻击包引用的实体在服务端已不存在，都会以 multiplayer.disconnect.
+// invalid_entity_attacked 直接踢出。entityAtCursor 只按“脚底位置到实体位置 ≤3.5”粗筛，
+// 且实体位置同步有滞后，挂机连点时偶发被踢。这里按服务端同样的几何（眼睛→碰撞箱最近点）
+// 复核后再发攻击包，超范围或已失效的目标按未命中处理只挥手。
+const SERVER_ENTITY_INTERACTION_RANGE = 3.0
+
+function eyeDistanceToEntityHitbox (bot, target) {
+  const eyeHeight = Number(bot.entity.eyeHeight) || 1.62
+  const eye = bot.entity.position
+  const halfWidth = Math.max(0, Number(target.width) / 2 || 0.3)
+  const height = Math.max(0, Number(target.height) || 1.8)
+  const dx = Math.max(target.position.x - halfWidth, Math.min(eye.x, target.position.x + halfWidth)) - eye.x
+  const dy = Math.max(target.position.y, Math.min(eye.y + eyeHeight, target.position.y + height)) - (eye.y + eyeHeight)
+  const dz = Math.max(target.position.z - halfWidth, Math.min(eye.z, target.position.z + halfWidth)) - eye.z
+  return Math.hypot(dx, dy, dz)
+}
+
+function isEntityWithinAttackReach (bot, target) {
+  if (target.isValid === false) return false
+  // 拿不到位置信息时无法判定，保持放行，由服务端兜底
+  if (!bot.entity?.position || !target.position) return true
+  return eyeDistanceToEntityHitbox(bot, target) <= SERVER_ENTITY_INTERACTION_RANGE
+}
+
 async function attackAtCursor (bot, maxDistance = 3.5) {
   if (!bot.entity || typeof bot.entityAtCursor !== 'function') throw new Error('机器人尚未进入服务器。')
   const target = bot.entityAtCursor(maxDistance)
-  if (!target) {
+  if (!target || !isEntityWithinAttackReach(bot, target)) {
     if (typeof bot.swingArm !== 'function') throw new Error('机器人无法挥动主手。')
     bot.swingArm('right')
     return { status: 'miss', target: null }
