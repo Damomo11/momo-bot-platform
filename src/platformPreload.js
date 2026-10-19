@@ -1,6 +1,7 @@
 const Module = require('node:module')
 const { installZenoxChatParser } = require('./zenoxChatParser')
 const { isAllowedPlayer, commandTextFor } = require('./botAccess')
+const { installClientTickEndPatch } = require('./tickEndPatch')
 const originalLoad = Module._load
 let patched = false
 
@@ -226,6 +227,7 @@ Module._load = function (request, parent, isMain) {
     let spawned = false
     let protocolFailureReported = false
 
+    installClientTickEndPatch(bot)
     installResourcePackHandling(bot)
     installZenoxChatParser(bot)
     bot.on('messagestr', message => {
