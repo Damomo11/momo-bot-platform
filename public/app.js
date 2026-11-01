@@ -1772,27 +1772,55 @@ async function loadView () {
   if (targetView === 'code') await loadPlatformFiles()
 }
 
-// 管理区「平台日志」页：把所有 Bot 的「与我相关」审计合并展示，
-// 另加一栏只看充值成功的流水。两个数据源都是管理员接口。
+// 管理区「平台日志」页：全 Bot 审计 + 充值流水，带筛选与分页。
+// Bot 显示名用正版 ID（minecraft_name），不是内部 label。
+const platformLogState = { auditPage: 0, topupPage: 0, botFilter: '', search: '', topupBotFilter: '', bots: [] }
+const PLATFORM_LOG_PAGE_SIZE = 100
+const TOPUP_LOG_PAGE_SIZE = 50
+
+async function loadPlatformLogFilters () {
+  if (platformLogState.bots.length) return
+  const [bots] = await Promise.all([request('/api/bots?all=1')])
+  platformLogState.bots = (bots.rows || []).map(bot => ({ id: bot.id, name: bot.minecraftName || bot.label || bot.id }))
+  for (const select of [$('platformLogBotFilter'), $('topupLogBotFilter')]) {
+    const current = select.value
+    select.innerHTML = '<option value="">全部 Bot</option>' + platformLogState.bots.map(bot => `<option value="${esc(bot.id)}">${esc(bot.name)}</option>`).join('')
+    select.value = current
+  }
+}
+
 async function loadPlatformLogs () {
+  await loadPlatformLogFilters()
   const [audit, topUps] = await Promise.all([
-    request('/api/admin/platform-logs'),
-    request('/api/admin/topup-ledger')
+    request(`/api/admin/platform-logs?limit=${PLATFORM_LOG_PAGE_SIZE}&offset=${platformLogState.auditPage * PLATFORM_LOG_PAGE_SIZE}&botId=${encodeURIComponent(platformLogState.botFilter)}&search=${encodeURIComponent(platformLogState.search)}`),
+    request(`/api/admin/topup-ledger?limit=${TOPUP_LOG_PAGE_SIZE}&offset=${platformLogState.topupPage * TOPUP_LOG_PAGE_SIZE}&botId=${encodeURIComponent(platformLogState.topupBotFilter)}`)
   ])
-  const auditRows = (audit.rows || []).slice().reverse()
   const timeText = at => new Date(Number(at) || 0).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
+  const auditRows = audit.rows || []
   $('platformLogTable').innerHTML = auditRows.length
     ? '<table><thead><tr><th>时间</th><th>Bot</th><th>级别</th><th>内容</th></tr></thead><tbody>' +
-      auditRows.map(row => `<tr><td>${esc(timeText(row.at))}</td><td><strong>${esc(row.botLabel || row.botId || '-')}</strong></td><td>${esc(row.level || 'info')}</td><td class="wrap">${esc(row.message)}</td></tr>`).join('') +
+      auditRows.map(row => `<tr><td>${esc(timeText(row.at))}</td><td><strong>${esc(row.botName || '-')}</strong></td><td>${esc(row.level || 'info')}</td><td class="wrap">${esc(row.message)}</td></tr>`).join('') +
       '</tbody></table>'
-    : '<div class="empty">还没有审计记录：玩家调用 Bot 指令或充值成功后会出现在这里。</div>'
+    : '<div class="empty">没有符合条件的审计记录。</div>'
+  const auditTotal = Number(audit.total || 0)
+  const auditPages = Math.max(1, Math.ceil(auditTotal / PLATFORM_LOG_PAGE_SIZE))
+  $('platformLogPage').textContent = `第 ${platformLogState.auditPage + 1} / ${auditPages} 页 · 共 ${auditTotal} 条`
+  $('platformLogPrev').disabled = platformLogState.auditPage === 0
+  $('platformLogNext').disabled = platformLogState.auditPage + 1 >= auditPages
+
   const topUpRows = topUps.rows || []
   $('topupLogTable').innerHTML = topUpRows.length
     ? '<table><thead><tr><th>时间</th><th>充值人</th><th>Bot</th><th>金额（momoc）</th><th>充值后余额</th><th>备注</th></tr></thead><tbody>' +
-      topUpRows.map(row => `<tr><td>${esc(fmt(row.createdAt))}</td><td><strong>${esc(row.username || row.userId || '-')}</strong></td><td>${esc(row.botLabel || row.botId || '-')}</td><td>${esc(formatMomoc(row.delta))}</td><td>${esc(formatMomoc(row.balanceAfter))}</td><td class="wrap">${esc(row.note || '')}</td></tr>`).join('') +
+      topUpRows.map(row => `<tr><td>${esc(fmt(row.createdAt))}</td><td><strong>${esc(row.username || row.userId || '-')}</strong></td><td>${esc(row.botName || '-')}</td><td>${esc(formatMomoc(row.delta))}</td><td>${esc(formatMomoc(row.balanceAfter))}</td><td class="wrap">${esc(row.note || '')}</td></tr>`).join('') +
       '</tbody></table>'
-    : '<div class="empty">还没有充值成功的记录。</div>'
-  $('platformLogSummary').textContent = `调用审计 ${auditRows.length} 条 · 充值成功 ${topUpRows.length} 笔`
+    : '<div class="empty">没有符合条件的充值记录。</div>'
+  const topupTotal = Number(topUps.total || 0)
+  const topupPages = Math.max(1, Math.ceil(topupTotal / TOPUP_LOG_PAGE_SIZE))
+  $('topupLogPage').textContent = `第 ${platformLogState.topupPage + 1} / ${topupPages} 页 · 共 ${topupTotal} 笔`
+  $('topupLogPrev').disabled = platformLogState.topupPage === 0
+  $('topupLogNext').disabled = platformLogState.topupPage + 1 >= topupPages
+
+  $('platformLogSummary').textContent = `调用审计 ${auditTotal} 条 · 充值成功 ${topupTotal} 笔`
 }
 
 document.querySelectorAll('[data-auth]').forEach(btn => {
@@ -1831,7 +1859,24 @@ $('refreshAccounts').onclick = loadAccounts
 $('botTemplate').onchange = renderCreateVariables
 $('refreshBots').onclick = () => loadBots(true).catch(error => toast(error.message))
 $('refreshManagedBots').onclick = () => loadManagedBots().catch(error => toast(error.message))
-$('refreshPlatformLogs').onclick = () => loadPlatformLogs().catch(error => toast(error.message))
+$('refreshPlatformLogs').onclick = () => { platformLogState.bots = []; loadPlatformLogs().catch(error => toast(error.message)) }
+$('platformLogPrev').onclick = () => { if (platformLogState.auditPage > 0) { platformLogState.auditPage--; loadPlatformLogs().catch(error => toast(error.message)) } }
+$('platformLogNext').onclick = () => { platformLogState.auditPage++; loadPlatformLogs().catch(error => toast(error.message)) }
+$('topupLogPrev').onclick = () => { if (platformLogState.topupPage > 0) { platformLogState.topupPage--; loadPlatformLogs().catch(error => toast(error.message)) } }
+$('topupLogNext').onclick = () => { platformLogState.topupPage++; loadPlatformLogs().catch(error => toast(error.message)) }
+$('platformLogFilterApply').onclick = () => {
+  platformLogState.botFilter = $('platformLogBotFilter').value
+  platformLogState.search = $('platformLogSearch').value.trim()
+  platformLogState.auditPage = 0
+  loadPlatformLogs().catch(error => toast(error.message))
+}
+$('platformLogSearch').onkeydown = event => { if (event.key === 'Enter') $('platformLogFilterApply').click() }
+$('platformLogBotFilter').onchange = () => $('platformLogFilterApply').click()
+$('topupLogBotFilter').onchange = () => {
+  platformLogState.topupBotFilter = $('topupLogBotFilter').value
+  platformLogState.topupPage = 0
+  loadPlatformLogs().catch(error => toast(error.message))
+}
 document.querySelectorAll('[data-managed-mode]').forEach(btn => {
   btn.onclick = () => {
     state.managedModeFilter = btn.dataset.managedMode

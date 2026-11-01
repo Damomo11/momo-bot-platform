@@ -390,11 +390,20 @@ async function api (req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/platform-logs') {
     requireAdmin(req)
-    return json(res, 200, { ok: true, rows: db.listAllRelatedLogs() })
+    return json(res, 200, { ok: true, ...db.listAllRelatedLogs({
+      limit: url.searchParams.get('limit'),
+      offset: url.searchParams.get('offset'),
+      botId: url.searchParams.get('botId') || '',
+      search: url.searchParams.get('search') || ''
+    }) })
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/topup-ledger') {
     requireAdmin(req)
-    return json(res, 200, { ok: true, rows: db.listTopUpLedger() })
+    return json(res, 200, { ok: true, ...db.listTopUpLedger({
+      limit: url.searchParams.get('limit'),
+      offset: url.searchParams.get('offset'),
+      botId: url.searchParams.get('botId') || ''
+    }) })
   }
   if (req.method === 'GET' && url.pathname === '/api/smart/permissions') {
     const user = requireUser(req)

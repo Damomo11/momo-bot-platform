@@ -1611,38 +1611,59 @@ class PlatformDb {
     `).all(String(botId || ''), kind, count).map(row => ({ ...row, id: Number(row.id), at: Number(row.at) }))
   }
 
-  // 全平台审计日志：所有 bot 的「与我相关」合并到一起，带 bot 归属，
-  // 供管理页「平台日志」用。每 bot 保留 related 上限 500 条，合并后再截最近 limit 条。
-  listAllRelatedLogs (limit = 500) {
-    const count = Math.min(2000, Math.max(1, Number.parseInt(limit, 10) || 500))
-    return this.db.prepare(`
-      SELECT l.id, l.bot_id AS botId, b.label AS botLabel, l.level, l.message, l.at
-      FROM (
-        SELECT id, bot_id, level, message, at
-        FROM bot_logs
-        WHERE category = 'related'
-        ORDER BY id DESC
-        LIMIT ?
-      ) l
+  // 全平台审计日志：所有 bot 的「与我相关」合并到一起，带 bot 归属（显示名用正版 ID），
+  // 供管理页「平台日志」用。支持按 bot / 玩家关键字过滤，分页用 offset。
+  // 机器人名取 b.minecraft_name（正版 ID），拿不到时才回落 label。
+  listAllRelatedLogs ({ limit = 100, offset = 0, botId = '', search = '' } = {}) {
+    const count = Math.min(500, Math.max(1, Number.parseInt(limit, 10) || 100))
+    const skip = Math.max(0, Number.parseInt(offset, 10) || 0)
+    const params = []
+    const filters = ["l.category = 'related'"]
+    if (botId) { filters.push('l.bot_id = ?'); params.push(String(botId)) }
+    if (search) { filters.push('l.message LIKE ?'); params.push(`%${String(search).replace(/[%_]/g, ' ')}%`) }
+    const total = Number(this.db.prepare(`
+      SELECT COUNT(*) AS count FROM bot_logs l WHERE ${filters.join(' AND ')}
+    `).get(...params).count || 0)
+    const rows = this.db.prepare(`
+      SELECT l.id, l.bot_id AS botId, COALESCE(NULLIF(b.minecraft_name, ''), b.label, l.bot_id) AS botName, l.level, l.message, l.at
+      FROM bot_logs l
       LEFT JOIN bots b ON b.id = l.bot_id
-      ORDER BY l.id ASC
-    `).all(count).map(row => ({ ...row, id: Number(row.id), at: Number(row.at) }))
+      WHERE ${filters.join(' AND ')}
+      ORDER BY l.id DESC
+      LIMIT ? OFFSET ?
+    `).all(...params, count, skip)
+    return { rows: rows.map(row => ({ ...row, id: Number(row.id), at: Number(row.at) })), total }
   }
 
-  // 充值流水：只取确认成功的 tsl_top_up（正数入账），
-  // 每条带 bot 归属与充值后余额，供管理页「充值日志」用。
-  listTopUpLedger (limit = 200) {
-    const count = Math.min(1000, Math.max(1, Number.parseInt(limit, 10) || 200))
-    return this.db.prepare(`
+  // 充值流水：只取确认成功的 tsl_top_up（正数入账），带 bot 归属（显示用正版名），
+  // 支持按 bot 过滤与分页，供管理页「充值日志」用。
+  listTopUpLedger ({ limit = 50, offset = 0, botId = '' } = {}) {
+    const count = Math.min(200, Math.max(1, Number.parseInt(limit, 10) || 50))
+    const skip = Math.max(0, Number.parseInt(offset, 10) || 0)
+    const botFilter = botId ? 'AND m.bot_id = ?' : ''
+    const params = botId ? [String(botId)] : []
+    const total = Number(this.db.prepare(`
+      SELECT COUNT(*) AS count FROM momoc_ledger m WHERE m.kind = 'tsl_top_up' ${botFilter}
+    `).get(...params).count || 0)
+    const rows = this.db.prepare(`
       SELECT m.id, m.user_id AS userId, u.username, m.delta, m.balance_after AS balanceAfter,
-             m.bot_id AS botId, b.label AS botLabel, m.note, m.created_at AS createdAt
+             m.bot_id AS botId, COALESCE(NULLIF(b.minecraft_name, ''), b.label, m.bot_id) AS botName, m.note, m.created_at AS createdAt
       FROM momoc_ledger m
       LEFT JOIN users u ON u.id = m.user_id
       LEFT JOIN bots b ON b.id = m.bot_id
-      WHERE m.kind = 'tsl_top_up'
+      WHERE m.kind = 'tsl_top_up' ${botFilter}
       ORDER BY m.id DESC
-      LIMIT ?
-    `).all(count).map(row => ({ ...row, id: Number(row.id), delta: Number(row.delta), balanceAfter: Number(row.balanceAfter) }))
+      LIMIT ? OFFSET ?
+    `).all(...params, count, skip)
+    return { rows: rows.map(row => ({ ...row, id: Number(row.id), delta: Number(row.delta), balanceAfter: Number(row.balanceAfter) })), total }
+  }
+
+  // 平台日志页的 Bot 筛选下拉：全部在册 Bot（含已停），显示名用正版 ID。
+  listBotsForLogFilter () {
+    return this.db.prepare(`
+      SELECT id, COALESCE(NULLIF(minecraft_name, ''), label, id) AS name
+      FROM bots ORDER BY minecraft_name COLLATE NOCASE
+    `).all()
   }
 
   adminOverview () {

@@ -391,3 +391,9 @@ td strong { color: #fff; }
 
 /* 平台日志：内容与备注列允许换行，时间列不换行 */
 .table-wrap td.wrap { white-space: normal; word-break: break-all; min-width: 240px; }
+
+/* 平台日志：筛选行 + 分页 */
+.pager { display: flex; align-items: center; gap: 10px; justify-content: center; padding: 12px 0 0; }
+.pager button { min-width: 84px; }
+.platform-log-filter { padding: 0 0 10px; gap: 8px; }
+.platform-log-filter input { flex: 1; min-width: 160px; }

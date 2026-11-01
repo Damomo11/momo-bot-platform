@@ -192,12 +192,22 @@
       <section id="platformLogsView" class="view hidden">
         <div class="toolbar"><div><h1>平台日志</h1><p id="platformLogSummary">全部 Bot 的调用与充值记录</p></div><button id="refreshPlatformLogs">刷新</button></div>
         <section class="overview-section">
-          <div class="section-head"><h2>调用审计</h2><p class="muted">玩家在游戏内对 Bot 的每一次指令调用与充值确认，来自所有 Bot 的「与我相关」日志。</p></div>
+          <div class="section-head"><h2>调用审计</h2></div>
+          <div class="toolbar platform-log-filter">
+            <select id="platformLogBotFilter"><option value="">全部 Bot</option></select>
+            <input id="platformLogSearch" placeholder="筛选：玩家名或指令关键字">
+            <button id="platformLogFilterApply" class="primary">筛选</button>
+          </div>
           <div id="platformLogTable" class="panel table-wrap"></div>
+          <div class="pager"><button id="platformLogPrev">上一页</button><span id="platformLogPage" class="muted"></span><button id="platformLogNext">下一页</button></div>
         </section>
         <section class="overview-section">
           <div class="section-head"><h2>充值日志</h2><p class="muted">充值成功（到账确认）的记录：谁、什么时候、充了多少、入到哪台 Bot。</p></div>
+          <div class="toolbar platform-log-filter">
+            <select id="topupLogBotFilter"><option value="">全部 Bot</option></select>
+          </div>
           <div id="topupLogTable" class="panel table-wrap"></div>
+          <div class="pager"><button id="topupLogPrev">上一页</button><span id="topupLogPage" class="muted"></span><button id="topupLogNext">下一页</button></div>
         </section>
       </section>
 
