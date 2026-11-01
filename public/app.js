@@ -276,6 +276,7 @@ async function loadPlatformSettings () {
     $('newUserInitialMomoc').value = data.newUserInitialMomoc
     $('topUpRecipient').value = data.recipient
     $('topUpCommandTemplate').value = data.commandTemplate
+    $('topUpPaymentRegex').value = data.paymentRegex || ''
     $('maxRunningBots').value = data.maxRunningBots
     $('botCreationEnabled').checked = Boolean(data.botCreationEnabled)
     $('registrationEnabled').checked = Boolean(data.registrationEnabled)
@@ -287,12 +288,25 @@ async function loadPlatformSettings () {
 }
 
 async function saveBasePrice () {
-  const data = await post('/api/admin/settings', { smartHourlyPrice: $('smartHourlyPrice').value, signinOncePrice: $('signinOncePrice').value, newUserInitialMomoc: $('newUserInitialMomoc').value, recipient: $('topUpRecipient').value, commandTemplate: $('topUpCommandTemplate').value, maxRunningBots: $('maxRunningBots').value, botCreationEnabled: $('botCreationEnabled').checked, registrationEnabled: $('registrationEnabled').checked })
+  const data = await post('/api/admin/settings', { smartHourlyPrice: $('smartHourlyPrice').value, signinOncePrice: $('signinOncePrice').value, newUserInitialMomoc: $('newUserInitialMomoc').value, recipient: $('topUpRecipient').value, commandTemplate: $('topUpCommandTemplate').value, paymentRegex: $('topUpPaymentRegex').value, maxRunningBots: $('maxRunningBots').value, botCreationEnabled: $('botCreationEnabled').checked, registrationEnabled: $('registrationEnabled').checked })
   state.modePrices = data
   state.registrationEnabled = Boolean(data.registrationEnabled)
   state.botCreationEnabled = Boolean(data.botCreationEnabled)
   updateModeFields()
   toast('平台设置已保存')
+}
+
+async function testTopUpRegex () {
+  const sample = $('topUpRegexSample').value
+  if (!String(sample).trim()) { $('topUpRegexResult').textContent = ''; return }
+  try {
+    const result = await post('/api/admin/topup/regex/test', { sample, recipient: $('topUpRecipient').value, paymentRegex: $('topUpPaymentRegex').value })
+    $('topUpRegexResult').textContent = result.matched
+      ? `识别为${result.kind === 'insufficient' ? '余额不足' : '充值成功'}：${result.amount}${result.player ? '，付款人 ' + result.player : ''}`
+      : '未识别（该消息不会触发充值入账）'
+  } catch (error) {
+    $('topUpRegexResult').textContent = error.message || String(error)
+  }
 }
 
 function updateModeFields () {
@@ -1825,6 +1839,7 @@ $('newModule').onclick = clearModule
 $('saveModule').onclick = () => saveModule().catch(error => toast(error.message))
 $('deleteModule').onclick = () => deleteModule().catch(error => toast(error.message))
 $('saveModePrices').onclick = () => saveBasePrice().catch(error => toast(error.message))
+$('topUpRegexTest').onclick = () => testTopUpRegex()
 $('refreshPlatformFiles').onclick = () => loadPlatformFiles().catch(error => toast(error.message))
 $('savePlatformFile').onclick = () => savePlatformFile().catch(error => toast(error.message))
 $('newTemplate').onclick = clearTemplate

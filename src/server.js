@@ -12,6 +12,7 @@ const { normalizeDefinitions, readDefinitions, validateValues } = require('./tem
 const { verifyCloudStoreToken } = require('./cloudStoreSso')
 const { LoginAttemptLimiter, clientIp } = require('./security')
 const { readRuntimeUpdates } = require('./runtimeUpdates')
+const { recognizePaymentMessage } = require('./paymentRecognizer')
 
 const config = loadConfig()
 const db = new PlatformDb(config)
@@ -543,6 +544,17 @@ async function api (req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/admin/users') {
     requireAdmin(req)
     return json(res, 200, { ok: true, rows: db.listUsers() })
+  }
+  if (req.method === 'POST' && url.pathname === '/api/admin/topup/regex/test') {
+    requireAdmin(req)
+    const input = await body(req)
+    const settings = db.getSmartTopUpSettings()
+    const result = recognizePaymentMessage(String(input.sample || ''), {
+      recipient: String(input.recipient || settings.recipient),
+      paymentRegexSource: String(input.paymentRegex ?? settings.paymentRegex),
+      insufficientBalancePattern: /^\[TSLLLLL\]\s*你的余额少于\s+(50\.00)\s+C\s*$/
+    })
+    return json(res, 200, { ok: true, ...result, matched: Boolean(result) })
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/roles') {
     requireAdmin(req)

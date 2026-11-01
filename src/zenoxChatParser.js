@@ -1,3 +1,5 @@
+const { recognizePaymentMessage } = require('./paymentRecognizer')
+
 function componentToText (component) {
   if (!component) return ''
   if (typeof component === 'string') {
@@ -28,12 +30,20 @@ function installZenoxChatParser (bot) {
   const paymentSeen = new Map()
   const teleportRequestPattern = /^\[TSL\]\s*([A-Za-z0-9_]{3,16})\s*\u8bf7\u6c42(?:(\u4f60\u4f20\u9001\u5230\u4ed6\u7684\u4f4d\u7f6e)|(\u4f20\u9001\u5230\u4f60\u7684\u4f4d\u7f6e))\u3002?\s*\(60\s*\u79d2\u5185\u6709\u6548\)\s*\[\u63a5\u53d7\]\s*\[\u62d2\u7edd\]\s*$/
   const peekRequestPattern = /^✨\s*([A-Za-z0-9_]{3,16})\s+想要和你贴贴，输入\s*\/peek accept\s*接受，或\s*\/peek deny\s*拒绝\s*$/
-  const insufficientBalancePattern = /^\[TSLLLLL\]\s*你的余额少于\s+(50\.00)\s+C\s*$/
   let paymentRecipient = 'Damomo1'
+  let paymentRegexSource = ''
+  // 余额不足提示保持原措辞：它触发 top_up_cancel 而不是入账。
+  const insufficientBalancePattern = /^\[TSLLLLL\]\s*你的余额少于\s+(50\.00)\s+C\s*$/
   const settingsListener = message => {
-    if (message?.type === 'smart_top_up_settings') paymentRecipient = String(message.settings?.recipient || 'Damomo1')
+    if (message?.type === 'smart_top_up_settings') {
+      paymentRecipient = String(message.settings?.recipient || 'Damomo1')
+      paymentRegexSource = String(message.settings?.paymentRegex || '')
+    }
   }
-  const topUpSettingsListener = settings => { paymentRecipient = String(settings?.recipient || 'Damomo1') }
+  const topUpSettingsListener = settings => {
+    paymentRecipient = String(settings?.recipient || 'Damomo1')
+    paymentRegexSource = String(settings?.paymentRegex || '')
+  }
   process.on('message', settingsListener)
   bot.on('botPlatformTopUpSettings', topUpSettingsListener)
   bot.once('end', () => {
@@ -125,12 +135,16 @@ function installZenoxChatParser (bot) {
   }
   const emitPaymentMessage = (message, source) => {
     const text = String(message || '').trim()
-    const escapedRecipient = paymentRecipient.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const success = text.match(new RegExp(`^\\[TSLLLLL\\]\\s*你已支付\\s+${escapedRecipient}\\s+(\\d+\\.\\d{2})\\s+C\\s*$`))
-    const insufficient = text.match(insufficientBalancePattern)
-    if (!success && !insufficient) return false
-    const kind = success ? 'success' : 'insufficient'
-    const amount = success?.[1] || insufficient[1]
+    // 三层识别（多行正则 → 内置格式 → 启发式）在 paymentRecognizer 里；
+    // 这里只传当前收款人和自定义正则，识别不到就当普通消息继续走。
+    const payment = recognizePaymentMessage(text, {
+      recipient: paymentRecipient,
+      paymentRegexSource,
+      insufficientBalancePattern
+    })
+    if (!payment) return false
+    const kind = payment.kind
+    const amount = payment.amount
     const key = `${kind}|${amount}`
     const now = Date.now()
     if (now - (paymentSeen.get(key) || 0) < 1500) return true

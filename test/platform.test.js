@@ -1244,6 +1244,56 @@ test('zenox chat parser emits deduplicated TSL teleport requests', () => {
   ])
 })
 
+test('payment recognizer handles legacy and new success formats, and rejects outgoing receipts', () => {
+  const { DEFAULT_PAYMENT_REGEX, LEGACY_PAYMENT_REGEX, recognizePaymentMessage, validatePaymentRegex } = require('../src/paymentRecognizer')
+  const recipient = 'Damomo1'
+  const legacy = recognizePaymentMessage('[TSLLLLL] 你已支付 Damomo1 25.00 C', { recipient })
+  assert.equal(legacy.kind, 'success')
+  assert.equal(legacy.amountCents, 2500)
+
+  // 新格式：bot 收款方向的「已支付/收到」，余额后缀不参与金额抽取。
+  const fresh = recognizePaymentMessage('✔ 已支付「Damomo1」25.00 TSLC，当前余额 4.00', { recipient })
+  assert.equal(fresh.kind, 'success')
+  assert.equal(fresh.amountCents, 2500)
+
+  // bot 转出成功的回执不是充值（上次 cloud-store 出过的误账场景）。
+  assert.equal(recognizePaymentMessage('✔ 已向「NanKinz2」转账 25.00 TSLC，剩余 5.00', { recipient }), null)
+  assert.equal(recognizePaymentMessage('已向 Damomo1 转入 25.00 TSLC', { recipient }), null)
+
+  // 余额不足提示保持原语义：触发取消而不是入账。
+  const insufficient = recognizePaymentMessage('[TSLLLLL] 你的余额少于 50.00 C', { recipient })
+  assert.equal(insufficient.kind, 'insufficient')
+  assert.equal(insufficient.amount, '50.00')
+
+  // 三位小数、无关玩家、闲聊都不会入账。
+  assert.equal(recognizePaymentMessage('✔ 收到「Damomo1」转来的 5.555 TSLC', { recipient }), null)
+  assert.equal(recognizePaymentMessage('✔ 收到「SomeoneElse」转来的 5.00 TSLC，当前余额 9.00', { recipient }), null)
+  assert.equal(recognizePaymentMessage('Steve: 我收到过 5 个苹果', { recipient }), null)
+
+  // 管理页多行正则：逐行校验，坏行报行号；默认值本身通过校验。
+  assert.equal(validatePaymentRegex(DEFAULT_PAYMENT_REGEX), DEFAULT_PAYMENT_REGEX)
+  assert.throws(() => validatePaymentRegex(LEGACY_PAYMENT_REGEX + '\n(?<broken)'), /第 2 行/)
+})
+
+test('zenox chat parser recognizes payment messages through the three-layer pipeline', () => {
+  const bot = new EventEmitter()
+  bot.username = 'PlatformBot'
+  bot.players = { PlatformBot: { uuid: 'bot-uuid' } }
+  bot._client = new EventEmitter()
+  installZenoxChatParser(bot)
+  bot.emit('botPlatformTopUpSettings', { recipient: 'Damomo1' })
+  const rows = []
+  bot.on('botPlatformPaymentMessage', row => rows.push(row))
+
+  bot.emit('messagestr', '[TSLLLLL] 你已支付 Damomo1 25.00 C', 'system', null, null)
+  bot._client.emit('system_chat', { content: '✔ 已支付「Damomo1」12.50 TSLC，当前余额 4.00', isActionBar: false })
+  bot._client.emit('system_chat', { content: '✔ 已向「NanKinz2」转账 25.00 TSLC，剩余 5.00', isActionBar: false })
+  bot._client.emit('system_chat', { content: '[TSLLLLL] 你的余额少于 50.00 C', isActionBar: false })
+
+  assert.deepEqual(rows.map(row => row.kind), ['success', 'success', 'insufficient'])
+  assert.deepEqual(rows.map(row => row.amount), ['25.00', '12.50', '50.00'])
+})
+
 test('smart runtime reports command callers and tpahere senders to related logs', async () => {
   const bot = new EventEmitter()
   bot.username = 'PlatformBot'

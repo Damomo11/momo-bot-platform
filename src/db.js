@@ -294,6 +294,7 @@ class PlatformDb {
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('new_user_initial_momoc', '10')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_top_up_recipient', 'Damomo1')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_top_up_command', '/pay {recipient} {amount}')").run()
+    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_top_up_payment_regex', ?)").run(JSON.stringify(require('./paymentRecognizer').DEFAULT_PAYMENT_REGEX))
     this.db.prepare('UPDATE users SET momoc_units = CAST(ROUND(momoc * 60) AS INTEGER) WHERE momoc_units IS NULL').run()
     this.db.prepare('UPDATE momoc_ledger SET delta_units = CAST(ROUND(delta * 60) AS INTEGER) WHERE delta_units IS NULL').run()
     this.db.prepare('UPDATE momoc_ledger SET balance_after_units = CAST(ROUND(balance_after * 60) AS INTEGER) WHERE balance_after_units IS NULL').run()
@@ -786,7 +787,8 @@ class PlatformDb {
     const value = key => this.db.prepare('SELECT value FROM platform_settings WHERE key = ?').get(key)?.value
     return {
       recipient: String(value('smart_top_up_recipient') || 'Damomo1'),
-      commandTemplate: String(value('smart_top_up_command') || '/pay {recipient} {amount}')
+      commandTemplate: String(value('smart_top_up_command') || '/pay {recipient} {amount}'),
+      paymentRegex: String(value('smart_top_up_payment_regex') || '')
     }
   }
 
@@ -794,12 +796,17 @@ class PlatformDb {
     const current = this.getSmartTopUpSettings()
     const recipient = String(input.recipient ?? current.recipient).trim()
     const commandTemplate = String(input.commandTemplate ?? current.commandTemplate).trim()
+    const { validatePaymentRegex, DEFAULT_PAYMENT_REGEX } = require('./paymentRecognizer')
+    let paymentRegex = String(input.paymentRegex ?? current.paymentRegex).trim()
+    if (!paymentRegex) paymentRegex = DEFAULT_PAYMENT_REGEX
+    paymentRegex = validatePaymentRegex(paymentRegex)
     if (!/^[A-Za-z0-9_]{3,16}$/.test(recipient)) throw new Error('充值收款玩家名格式无效。')
     if (!commandTemplate || commandTemplate.length > 256 || /[\r\n]/.test(commandTemplate)) throw new Error('充值转账命令模板无效。')
     if (!commandTemplate.includes('{recipient}') || !commandTemplate.includes('{amount}')) throw new Error('充值转账命令模板必须包含 {recipient} 和 {amount}。')
     const save = this.db.prepare('INSERT INTO platform_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
     save.run('smart_top_up_recipient', recipient)
     save.run('smart_top_up_command', commandTemplate)
+    save.run('smart_top_up_payment_regex', paymentRegex)
     return this.getSmartTopUpSettings()
   }
 
