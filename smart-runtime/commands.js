@@ -1398,7 +1398,9 @@ function createSmartCommandHandler (bot, options = {}) {
     if (!parsed) return
 
     const username = String(event.username).replace(/^#/, '')
-    platform.relatedLog?.(`玩家 ${username} 调用 Bot 指令：${[parsed.command, ...parsed.args].join(' ').slice(0, 400)}`)
+    // 每个玩家对 Bot 的成功调用都留审计日志（管理-日志「与我相关」里查看）：
+    // 谁、什么渠道、输入了什么、调用的 Bot 是谁。来源消息与去重见 botManager 侧。
+    platform.relatedLog?.(`玩家 ${username} 调用 Bot 指令：${[parsed.command, ...parsed.args].join(' ').slice(0, 400)}（Bot=${bot.username}，渠道=${event.channel === 'private' ? '私聊' : '公屏'}）`)
     const replyText = (message, key, variables = {}) => {
       const overrides = options.getMessageOverrides?.() || {}
       const template = Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : message

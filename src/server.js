@@ -223,7 +223,7 @@ function logPlatformAudit (req, url, err = null) {
   if (!action || req.platformAuditLogged) return
   req.platformAuditLogged = true
   const reason = err ? ` 原因=${String(err.message || err).replace(/[\r\n\t]+/g, ' ').slice(0, 240)}` : ''
-  console.log(`[平台] 玩家=${auditActor(req)} 操作=${action} 目标=${auditTarget(req, url)} 结果=${err ? '失败' : '成功'}${reason}`)
+  console.log(`[${new Date().toLocaleString('sv-SE', { hour12: false })}] [平台] 玩家=${auditActor(req)} 操作=${action} 目标=${auditTarget(req, url)} 结果=${err ? '失败' : '成功'}${reason}`)
   if (err && (Number(err.status || 400) >= 500 || err instanceof TypeError || err instanceof ReferenceError || err instanceof RangeError)) console.error(err)
 }
 

@@ -561,6 +561,69 @@ test('core bot hourly price is deducted precisely once per minute', () => {
   } finally { f.close() }
 })
 
+test('billing waits out the three-minute grace period before charging', () => {
+  const f = fixture()
+  try {
+    const manager = new BotManager(f.db, {})
+    const user = f.db.createUser('player_grace', 'password-123')
+    f.db.adjustMomoc(user.id, 0.03, 'admin_adjust')
+    const bot = f.db.createBot(user.id, { templateId: 'idle-login', label: 'Grace', microsoftEmail: 'bot@example.com', serverHost: 'localhost' })
+    const state = {
+      billingMode: 'hourly', priceMomoc: 0.03, billingTimer: null, stopping: false,
+      child: { kill: () => {} }
+    }
+    manager.processes.set(bot.id, state)
+    const charged = []
+    const originalCharge = f.db.chargeHourlyMinute.bind(f.db)
+    f.db.chargeHourlyMinute = (botId, rate) => { charged.push(Date.now()); return originalCharge(botId, rate) }
+
+    manager.startBilling(bot.id)
+    assert.ok(state.billingTimer, 'grace timer armed')
+    // 宽限期内不产生任何扣费。
+    assert.deepEqual(charged, [])
+    // 直接推进到宽限期结束：先补一个 tick 之外的“下一分钟”刻度，确认进入按分钟计费后每 60s 一次。
+    state.billingTimer = null
+    manager.beginMinuteBilling(bot.id, state)
+    assert.ok(state.billingTimer, 'minute interval armed after grace')
+    state.billingTimer.emit?.()
+    assert.equal(charged.length, 0, 'setInterval not fired synchronously')
+
+    // 清理手动注入的 interval，避免悬挂句柄。
+    clearInterval(state.billingTimer)
+    state.billingTimer = null
+  } finally { f.close() }
+})
+
+test('zero-balance smart bot can still start and runs through the grace period', async () => {
+  // 启动流程较重（要模板目录），这里用轻量 db mock 只验证门槛与计费接线。
+  const bots = {}
+  const db = {
+    getBot: id => bots[id],
+    getUser: () => ({ availableMomoc: 0 }),
+    getModePrices: () => ({ smartHourlyPrice: 0.03, signinOncePrice: 0.01 }),
+    updateBotRuntime: () => {}
+  }
+  const manager = new BotManager(db, {})
+  manager.launchAttempt = () => {}
+  bots.grace = { id: 'grace', userId: 'user', accountId: 'account', accountAuthState: 'authorized', billingMode: 'hourly', priceMomoc: 0.03 }
+
+  // 余额 0：原来会因 availableMomoc < price/60 拒绝，现在允许启动（3 分钟宽限期）。
+  await assert.doesNotReject(manager.start('grace'))
+
+  // 启动只调了 launchAttempt mock，processes 里没有 state：手动建 state 再触发 online。
+  const state = {
+    billingMode: 'hourly', priceMomoc: 0.03, billingTimer: null, stopping: false,
+    retryPending: false, fallbackPending: false, restartPending: false, disconnectPending: false,
+    profileAuthRecoveryPending: false, reachedOnline: false, connectTimer: null, authTimer: null,
+    child: { kill: () => {} }
+  }
+  manager.processes.set('grace', state)
+  manager.handleMessage('grace', { type: 'state', state: 'online' })
+  assert.ok(state.billingTimer, 'grace period timer armed for zero balance bot')
+  manager.clearStateTimers(state)
+  manager.processes.delete('grace')
+})
+
 test('bots no longer store or depend on a template id', () => {
   const f = fixture()
   try {
@@ -1324,9 +1387,29 @@ test('smart runtime reports command callers and tpahere senders to related logs'
     bot.emit('botPlatformTeleportRequest', { username: 'TpaOne', kind: 'to_bot' })
     await new Promise(resolve => setTimeout(resolve, 10))
     assert.equal(related.some(message => message.includes('玩家 GuestOne 调用 Bot 指令：移动 北 5')), true)
+    // 调用审计要带 Bot 名与渠道，管理页「与我相关」能直接看出是谁在哪台 Bot 上操作。
+    assert.equal(related.some(message => message.includes('调用 Bot 指令：移动 北 5') && message.includes('Bot=PlatformBot') && message.includes('公屏')), true)
     assert.equal(related.some(message => message.includes('玩家 HereOne 向 Bot 发送了 /tpahere')), true)
     assert.equal(related.some(message => message.includes('TpaOne') && message.includes('/tpahere')), false)
   } finally { remove() }
+})
+
+test('top-up confirm writes an audit log with player, amount and balance', async () => {
+  const f = fixture()
+  try {
+    const manager = new BotManager(f.db, {})
+    const user = f.db.createUser('topup_log_owner', 'password-123')
+    const bot = f.db.createBot(user.id, { mode: 'smart', label: 'TopUpLog', microsoftEmail: 'topup-log@example.com', serverHost: 'localhost' })
+    manager.pendingTopUps.set(bot.id, { cents: 2500, amount: '25.00', sender: 'PayerOne', createdAt: Date.now() })
+
+    const result = manager.executeSmartRequest(bot.id, 'top_up_confirm', { amount: '25.00' })
+    assert.equal(result.confirmed, true)
+    const related = manager.listRelatedLogs(bot.id)
+    const audit = related.find(entry => entry.message.includes('充值成功'))
+    assert.ok(audit, '充值成功的审计日志已写入 related 日志')
+    assert.match(audit.message, /玩家 PayerOne 充值成功 25\.00 TSL/)
+    assert.match(audit.message, /余额 25 momoc/)
+  } finally { f.close() }
 })
 
 test('scheduled task fires once per due cycle even while the task list cache is stale', async () => {
@@ -1703,7 +1786,7 @@ test('version command reports the running version before the latest release deta
     platform: {
       request: async action => {
         if (action === 'access') return { blacklisted: false, whitelisted: true, admin: false, lock: { locked: false, adminLocked: false } }
-        if (action === 'runtime_version') return { version: '1.0.30', release: { summary: '下一版更新说明' } }
+        if (action === 'runtime_version') return { version: '1.0.31', release: { summary: '下一版更新说明' } }
         throw new Error(`unexpected action ${action}`)
       }
     }
@@ -1712,8 +1795,8 @@ test('version command reports the running version before the latest release deta
   await handler({ username: 'White', message: 'PlatformBot版本' })
 
   assert.deepEqual(chats, [
-    '智能 Bot 当前运行版本：v1.0.29',
-    '智能 Bot 最新版本：v1.0.30；更新内容：下一版更新说明'
+    '智能 Bot 当前运行版本：v1.0.30',
+    '智能 Bot 最新版本：v1.0.31；更新内容：下一版更新说明'
   ])
 })
 
@@ -2776,7 +2859,7 @@ test('smart command handler enforces prefixes, access, locks, forwarding, and ma
   await handler({ username: 'Guest', message: 'PlatformBot版本' })
   assert.deepEqual(chats, [])
   await handler({ username: 'White', message: 'PlatformBot版本' })
-  assert.equal(chats.pop(), `智能 Bot 当前运行版本：v1.0.29`)
+  assert.equal(chats.pop(), `智能 Bot 当前运行版本：v1.0.30`)
   await handler({ username: 'Banned', message: 'PlatformBot查白 White' })
   assert.deepEqual(chats, [])
   await handler({ username: 'Guest', message: 'custom-prefix-查白 White' })

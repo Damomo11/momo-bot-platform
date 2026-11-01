@@ -8,6 +8,14 @@ const { readRuntimeUpdates } = require('./runtimeUpdates')
 
 const accountReconnectDelaysMs = [60_000, 120_000, 300_000, 600_000, 1_200_000, 1_800_000]
 const serverCircuitDelaysMs = [120_000, 300_000, 600_000, 1_200_000, 1_800_000]
+// Bot 上线后的免费宽限期：连接、加载资源包等启动开销这段时间不收费，
+// 让余额不够充值一小时的玩家也能先把 Bot 跑起来。
+const BILLING_GRACE_MS = 3 * 60 * 1000
+
+function timestamped (tag, message) {
+  const time = new Date().toLocaleString('sv-SE', { hour12: false })
+  return `[${time}] [${tag}] ${message}`
+}
 
 function isReleaseNewer (candidate, current) {
   const parse = value => {
@@ -63,6 +71,9 @@ class BotManager {
     for (const line of this.sanitizedLogLines(message)) {
       if (kind === 'general' && String(level) === 'stdout' && /^\[message:(?:public|private)\]/i.test(line)) continue
       const entry = { at: Date.now(), level: String(level || 'info'), message: line }
+      // related 是玩家行为审计（命令调用、充值），同步打到终端方便实时盯；
+      // general 主要是运行日志，走原有 console.log 的 bot: 前缀通道。
+      if (kind === 'related') console.log(timestamped(`audit:${botId}`, line))
       if (typeof this.db.appendBotLog === 'function') {
         try {
           this.db.appendBotLog(botId, kind, entry.level, entry.message, entry.at)
@@ -466,7 +477,9 @@ class BotManager {
     const prices = this.db.getModePrices()
     const price = bot.mode === 'signin' ? prices.signinOncePrice : prices.smartHourlyPrice
     const momocExempt = bot.mode === 'smart' && typeof this.db.isSmartBotMomocExempt === 'function' && this.db.isSmartBotMomocExempt(bot.id)
-    if (bot.mode === 'smart' && !momocExempt && user.availableMomoc < price / 60) throw new Error('momoc 余额不足，无法启动机器人。')
+    // 智能 Bot 余额门槛只拦“负数/欠费”：启动后有 3 分钟免费宽限期，
+    // 余额不够付一分钟的也允许先跑起来，宽限期结束后再由计费逻辑按余额停机。
+    if (bot.mode === 'smart' && !momocExempt && user.availableMomoc < 0) throw new Error('momoc 余额不足，无法启动机器人。')
     if (bot.mode === 'signin') {
       const reservation = this.db.reserveOnce(id, price)
       if (!reservation.ok) throw new Error(`momoc 余额不足：${reservation.reason}`)
@@ -872,6 +885,8 @@ class BotManager {
       this.pendingTopUps.delete(botId)
       const recipient = this.db.getSmartTopUpSettings().recipient
       const balance = this.db.adjustMomoc(bot.userId, pending.cents / 100, 'tsl_top_up', `TSL 支付给 ${recipient} ${pending.amount} C`, botId)
+      // 充值成功是资金变动，必须在 Bot 的「与我相关」日志里留下谁在什么时候充了多少。
+      this.appendRelatedLog(botId, 'audit', `玩家 ${pending.sender || '未知'} 充值成功 ${pending.amount} TSL（支付给 ${recipient}），余额 ${balance} momoc。`)
       return { confirmed: true, amount: pending.amount, balance, sender: pending.sender, silent: Boolean(pending.silent) }
     }
     if (action === 'runtime_version') {
@@ -1106,6 +1121,17 @@ class BotManager {
   startBilling (id) {
     const state = this.processes.get(id)
     if (!state || state.billingTimer || state.billingMode !== 'hourly') return
+    state.billingTimer = setTimeout(() => {
+      state.billingTimer = null
+      this.beginMinuteBilling(id, state)
+    }, BILLING_GRACE_MS)
+    state.billingTimer.unref?.()
+    this.appendLog(id, 'info', `Billing starts in ${BILLING_GRACE_MS / 60000} minutes (grace period).`)
+  }
+
+  // 宽限期结束后才进入按分钟计费；余额不足时把 Bot 停下来并保留原因。
+  beginMinuteBilling (id, state) {
+    if (this.processes.get(id) !== state || state.stopping) return
     state.billingTimer = setInterval(() => {
       const result = this.db.chargeHourlyMinute(id, state.priceMomoc)
       if (!result.ok) {
@@ -1191,7 +1217,7 @@ class BotManager {
 
   clearStateTimers (state) {
     this.clearConnectionTimers(state)
-    if (state.billingTimer) clearInterval(state.billingTimer)
+    if (state.billingTimer) { clearTimeout(state.billingTimer); clearInterval(state.billingTimer) }
     if (state.killTimer) clearTimeout(state.killTimer)
     if (state.accountStableTimer) clearTimeout(state.accountStableTimer)
     if (state.circuitStableTimer) clearTimeout(state.circuitStableTimer)
