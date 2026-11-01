@@ -388,3 +388,6 @@ td strong { color: #fff; }
 .runtime-version { display: grid; gap: 4px; min-width: 112px; }
 .runtime-version small { color: var(--muted); overflow-wrap: anywhere; line-height: 1.35; }
 .version-update { color: var(--orange); font-size: 12px; font-weight: 700; }
+
+/* 平台日志：内容与备注列允许换行，时间列不换行 */
+.table-wrap td.wrap { white-space: normal; word-break: break-all; min-width: 240px; }

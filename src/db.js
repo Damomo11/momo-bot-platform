@@ -1611,6 +1611,40 @@ class PlatformDb {
     `).all(String(botId || ''), kind, count).map(row => ({ ...row, id: Number(row.id), at: Number(row.at) }))
   }
 
+  // 全平台审计日志：所有 bot 的「与我相关」合并到一起，带 bot 归属，
+  // 供管理页「平台日志」用。每 bot 保留 related 上限 500 条，合并后再截最近 limit 条。
+  listAllRelatedLogs (limit = 500) {
+    const count = Math.min(2000, Math.max(1, Number.parseInt(limit, 10) || 500))
+    return this.db.prepare(`
+      SELECT l.id, l.bot_id AS botId, b.label AS botLabel, l.level, l.message, l.at
+      FROM (
+        SELECT id, bot_id, level, message, at
+        FROM bot_logs
+        WHERE category = 'related'
+        ORDER BY id DESC
+        LIMIT ?
+      ) l
+      LEFT JOIN bots b ON b.id = l.bot_id
+      ORDER BY l.id ASC
+    `).all(count).map(row => ({ ...row, id: Number(row.id), at: Number(row.at) }))
+  }
+
+  // 充值流水：只取确认成功的 tsl_top_up（正数入账），
+  // 每条带 bot 归属与充值后余额，供管理页「充值日志」用。
+  listTopUpLedger (limit = 200) {
+    const count = Math.min(1000, Math.max(1, Number.parseInt(limit, 10) || 200))
+    return this.db.prepare(`
+      SELECT m.id, m.user_id AS userId, u.username, m.delta, m.balance_after AS balanceAfter,
+             m.bot_id AS botId, b.label AS botLabel, m.note, m.created_at AS createdAt
+      FROM momoc_ledger m
+      LEFT JOIN users u ON u.id = m.user_id
+      LEFT JOIN bots b ON b.id = m.bot_id
+      WHERE m.kind = 'tsl_top_up'
+      ORDER BY m.id DESC
+      LIMIT ?
+    `).all(count).map(row => ({ ...row, id: Number(row.id), delta: Number(row.delta), balanceAfter: Number(row.balanceAfter) }))
+  }
+
   adminOverview () {
     const accounts = this.db.prepare(`
       SELECT a.id, a.user_id AS userId, u.username, a.email,

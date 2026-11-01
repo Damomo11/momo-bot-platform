@@ -44,6 +44,7 @@
       <div id="managementNav" class="management-nav hidden admin-only">
         <button data-management-tab="overview" class="active">运营总览</button>
         <button data-management-tab="managedBots">机器人管理</button>
+        <button data-management-tab="platformLogs">平台日志</button>
         <button data-management-tab="users">用户管理</button>
         <button data-management-tab="admins">平台管理员</button>
         <button data-management-tab="code">平台设置与代码</button>
@@ -186,6 +187,18 @@
       <section id="usersView" class="view hidden">
         <div class="toolbar"><div><h1>用户管理</h1><p id="userSummary">0 个用户</p></div><button id="refreshUsers">刷新</button></div>
         <div id="usersTable" class="panel table-wrap"></div>
+      </section>
+
+      <section id="platformLogsView" class="view hidden">
+        <div class="toolbar"><div><h1>平台日志</h1><p id="platformLogSummary">全部 Bot 的调用与充值记录</p></div><button id="refreshPlatformLogs">刷新</button></div>
+        <section class="overview-section">
+          <div class="section-head"><h2>调用审计</h2><p class="muted">玩家在游戏内对 Bot 的每一次指令调用与充值确认，来自所有 Bot 的「与我相关」日志。</p></div>
+          <div id="platformLogTable" class="panel table-wrap"></div>
+        </section>
+        <section class="overview-section">
+          <div class="section-head"><h2>充值日志</h2><p class="muted">充值成功（到账确认）的记录：谁、什么时候、充了多少、入到哪台 Bot。</p></div>
+          <div id="topupLogTable" class="panel table-wrap"></div>
+        </section>
       </section>
 
       <section id="adminsView" class="view hidden">

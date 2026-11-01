@@ -1765,10 +1765,34 @@ async function loadView () {
   if (targetView === 'ledger') await loadLedger()
   if (targetView === 'overview') await loadOverview()
   if (targetView === 'managedBots') await loadManagedBots()
+  if (targetView === 'platformLogs') await loadPlatformLogs()
   if (targetView === 'users') await loadUsers()
   if (targetView === 'admins') await loadPlatformAdmins()
   if (targetView === 'modules') await loadModuleAdmin()
   if (targetView === 'code') await loadPlatformFiles()
+}
+
+// 管理区「平台日志」页：把所有 Bot 的「与我相关」审计合并展示，
+// 另加一栏只看充值成功的流水。两个数据源都是管理员接口。
+async function loadPlatformLogs () {
+  const [audit, topUps] = await Promise.all([
+    request('/api/admin/platform-logs'),
+    request('/api/admin/topup-ledger')
+  ])
+  const auditRows = (audit.rows || []).slice().reverse()
+  const timeText = at => new Date(Number(at) || 0).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
+  $('platformLogTable').innerHTML = auditRows.length
+    ? '<table><thead><tr><th>时间</th><th>Bot</th><th>级别</th><th>内容</th></tr></thead><tbody>' +
+      auditRows.map(row => `<tr><td>${esc(timeText(row.at))}</td><td><strong>${esc(row.botLabel || row.botId || '-')}</strong></td><td>${esc(row.level || 'info')}</td><td class="wrap">${esc(row.message)}</td></tr>`).join('') +
+      '</tbody></table>'
+    : '<div class="empty">还没有审计记录：玩家调用 Bot 指令或充值成功后会出现在这里。</div>'
+  const topUpRows = topUps.rows || []
+  $('topupLogTable').innerHTML = topUpRows.length
+    ? '<table><thead><tr><th>时间</th><th>充值人</th><th>Bot</th><th>金额（momoc）</th><th>充值后余额</th><th>备注</th></tr></thead><tbody>' +
+      topUpRows.map(row => `<tr><td>${esc(fmt(row.createdAt))}</td><td><strong>${esc(row.username || row.userId || '-')}</strong></td><td>${esc(row.botLabel || row.botId || '-')}</td><td>${esc(formatMomoc(row.delta))}</td><td>${esc(formatMomoc(row.balanceAfter))}</td><td class="wrap">${esc(row.note || '')}</td></tr>`).join('') +
+      '</tbody></table>'
+    : '<div class="empty">还没有充值成功的记录。</div>'
+  $('platformLogSummary').textContent = `调用审计 ${auditRows.length} 条 · 充值成功 ${topUpRows.length} 笔`
 }
 
 document.querySelectorAll('[data-auth]').forEach(btn => {
@@ -1807,6 +1831,7 @@ $('refreshAccounts').onclick = loadAccounts
 $('botTemplate').onchange = renderCreateVariables
 $('refreshBots').onclick = () => loadBots(true).catch(error => toast(error.message))
 $('refreshManagedBots').onclick = () => loadManagedBots().catch(error => toast(error.message))
+$('refreshPlatformLogs').onclick = () => loadPlatformLogs().catch(error => toast(error.message))
 document.querySelectorAll('[data-managed-mode]').forEach(btn => {
   btn.onclick = () => {
     state.managedModeFilter = btn.dataset.managedMode

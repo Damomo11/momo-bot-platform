@@ -388,6 +388,14 @@ async function api (req, res, url) {
     if (!['general', 'related'].includes(kind)) throw new Error('日志类型无效。')
     return json(res, 200, { ok: true, bot: { id: bot.id, label: bot.label }, kind, rows: db.listBotLogs(bot.id, kind) })
   }
+  if (req.method === 'GET' && url.pathname === '/api/admin/platform-logs') {
+    requireAdmin(req)
+    return json(res, 200, { ok: true, rows: db.listAllRelatedLogs() })
+  }
+  if (req.method === 'GET' && url.pathname === '/api/admin/topup-ledger') {
+    requireAdmin(req)
+    return json(res, 200, { ok: true, rows: db.listTopUpLedger() })
+  }
   if (req.method === 'GET' && url.pathname === '/api/smart/permissions') {
     const user = requireUser(req)
     const bot = botForUser(url.searchParams.get('botId'), user)
