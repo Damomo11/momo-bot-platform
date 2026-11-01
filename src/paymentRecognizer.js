@@ -74,13 +74,20 @@ function compilePaymentRegexList (source) {
       }
       result.push(regex)
     } catch (error) {
-      // 单行坏掉只跳过该行，不打断运行时识别。
-      console.error(`[payment] 充值正则第 ${index + 1} 行无效，已忽略：${error.message}`)
+      // 单行坏掉只跳过该行，不打断运行时识别。同一份坏配置只告警一次：
+      // 每条聊天消息都会走到这里，不收敛会把日志刷爆。
+      const sourceKey = String(source)
+      if (!badRegexWarned.has(sourceKey)) {
+        badRegexWarned.add(sourceKey)
+        console.error(`[payment] 充值正则第 ${index + 1} 行无效，已忽略：${error.message}`)
+      }
     }
   }
   if (!result.length) throw new Error('充值正则没有可用的行。')
   return result
 }
+
+const badRegexWarned = new Set()
 
 function matchPaymentPatterns (text, patterns) {
   for (const regex of patterns) {

@@ -294,7 +294,12 @@ class PlatformDb {
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('new_user_initial_momoc', '10')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_top_up_recipient', 'Damomo1')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_top_up_command', '/pay {recipient} {amount}')").run()
-    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_top_up_payment_regex', ?)").run(JSON.stringify(require('./paymentRecognizer').DEFAULT_PAYMENT_REGEX))
+    // platform_settings 的 value 列存原始字符串：默认正则直接写多行文本，
+    // 不能 JSON.stringify（会把换行转义成 \n 字面量，读回后两行挤成一行、
+    // 两组 (?<player>) 相互冲突报 Duplicate capture group name）。
+    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_top_up_payment_regex', ?)").run(require('./paymentRecognizer').DEFAULT_PAYMENT_REGEX)
+    // 旧版本写进去的 JSON 转义坏值（以 \" 开头或含 \\n 字面量）在启动时归位为新默认。
+    this.db.prepare("UPDATE platform_settings SET value = ? WHERE key = 'smart_top_up_payment_regex' AND (value LIKE '\"%' OR value LIKE '%\\\\n%')").run(require('./paymentRecognizer').DEFAULT_PAYMENT_REGEX)
     this.db.prepare('UPDATE users SET momoc_units = CAST(ROUND(momoc * 60) AS INTEGER) WHERE momoc_units IS NULL').run()
     this.db.prepare('UPDATE momoc_ledger SET delta_units = CAST(ROUND(delta * 60) AS INTEGER) WHERE delta_units IS NULL').run()
     this.db.prepare('UPDATE momoc_ledger SET balance_after_units = CAST(ROUND(balance_after * 60) AS INTEGER) WHERE balance_after_units IS NULL').run()
@@ -798,7 +803,9 @@ class PlatformDb {
     const commandTemplate = String(input.commandTemplate ?? current.commandTemplate).trim()
     const { validatePaymentRegex, DEFAULT_PAYMENT_REGEX } = require('./paymentRecognizer')
     let paymentRegex = String(input.paymentRegex ?? current.paymentRegex).trim()
-    if (!paymentRegex) paymentRegex = DEFAULT_PAYMENT_REGEX
+    // 旧版本把默认值 JSON.stringify 后存库，读回来是带 \" 和 \n 字面量的单行坏正则
+    //（Duplicate capture group name 的根源）：识别为旧坏值直接重置为新默认。
+    if (!paymentRegex || paymentRegex.startsWith('"') || paymentRegex.includes('\\n')) paymentRegex = DEFAULT_PAYMENT_REGEX
     paymentRegex = validatePaymentRegex(paymentRegex)
     if (!/^[A-Za-z0-9_]{3,16}$/.test(recipient)) throw new Error('充值收款玩家名格式无效。')
     if (!commandTemplate || commandTemplate.length > 256 || /[\r\n]/.test(commandTemplate)) throw new Error('充值转账命令模板无效。')
