@@ -8,6 +8,12 @@ const { SupervisorHotReloader } = require('../src/supervisorHotReload')
 const SUPERVISOR_API_VERSION = 3
 
 const config = loadConfig()
+// 守护进程自身的 console 落盘（logs/runtime-日期.log），与平台管理服务、
+// bot 进程（platformPreload 挂载，logs/bot-日期.log）分文件，互不混流。
+if (process.env.BOT_PLATFORM_FILE_LOG !== 'off') {
+  const path = require('node:path')
+  require('../src/logger').installConsoleFileLogger({ logDir: path.join(config.root, 'logs'), prefix: 'runtime' })
+}
 const token = String(process.env.BOT_PLATFORM_SUPERVISOR_TOKEN || (() => {
   try { return fs.readFileSync(config.supervisorSecretFile, 'utf8').trim() } catch { return '' }
 })())
