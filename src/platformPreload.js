@@ -1,7 +1,17 @@
 const Module = require('node:module')
+const path = require('node:path')
 const { installZenoxChatParser } = require('./zenoxChatParser')
 const { isAllowedPlayer, commandTextFor } = require('./botAccess')
 const { installClientTickEndPatch } = require('./tickEndPatch')
+// bot 进程的 console 落盘（logs/bot-日期.log）：bot 崩溃/重启后终端回看不
+// 到现场，落盘后可按天回查。stdout 原样输出；写失败不影响业务。
+if (process.env.BOT_PLATFORM_FILE_LOG !== 'off') {
+  try {
+    const { loadConfig } = require('./config')
+    const { installConsoleFileLogger } = require('./logger')
+    installConsoleFileLogger({ logDir: path.join(loadConfig().root, 'logs'), prefix: 'bot' })
+  } catch {}
+}
 const originalLoad = Module._load
 let patched = false
 

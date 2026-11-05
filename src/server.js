@@ -15,6 +15,11 @@ const { readRuntimeUpdates } = require('./runtimeUpdates')
 const { recognizePaymentMessage } = require('./paymentRecognizer')
 
 const config = loadConfig()
+// 管理服务的 console 落盘（logs/platform-日期.log）：终端缓冲滚走/重启后
+// 仍可按天回查；stdout 输出不变。环境变量 BOT_PLATFORM_FILE_LOG=off 可关。
+if (process.env.BOT_PLATFORM_FILE_LOG !== 'off') {
+  require('./logger').installConsoleFileLogger({ logDir: path.join(config.root, 'logs'), prefix: 'platform' })
+}
 const db = new PlatformDb(config)
 const bots = new BotSupervisorClient(db, config)
 const accounts = new AccountManager(db, config)
