@@ -14,6 +14,18 @@ if (process.env.BOT_PLATFORM_FILE_LOG !== 'off') {
   const path = require('node:path')
   require('../src/logger').installConsoleFileLogger({ logDir: path.join(config.root, 'logs'), prefix: 'runtime' })
 }
+
+// 兜底：2026-11-05 事故复盘（INC-2026-1105-01）——守护进程是全部 Bot 生命周期的
+// 单点，此前任何漏出的异步异常（botManager 对刚退出子进程 send 触发的 EPIPE、
+// IPC 通道关闭的 error 事件等）都会让整个进程退出，16 个 bot 全部陪葬。
+// 落盘后不退出：记录现场，继续值守。真正的致命错误（内存耗尽等）由系统层处理。
+process.on('uncaughtException', error => {
+  console.error('[bot-supervisor] uncaught exception (process stays alive):', error?.stack || error?.message || error)
+})
+process.on('unhandledRejection', reason => {
+  console.error('[bot-supervisor] unhandled rejection (process stays alive):', reason?.stack || reason?.message || reason)
+})
+
 const token = String(process.env.BOT_PLATFORM_SUPERVISOR_TOKEN || (() => {
   try { return fs.readFileSync(config.supervisorSecretFile, 'utf8').trim() } catch { return '' }
 })())
@@ -73,8 +85,13 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.on('error', error => {
-  console.error('[bot-supervisor]', error)
-  process.exit(1)
+  // 事故复盘 P3：此前直接 process.exit(1)，端口被占/socket 异常时自杀且无现场。
+  // 现在先把详情落盘（console 已被包装为同步写 logs/runtime-日期.log）再退出。
+  console.error('[bot-supervisor] HTTP server fatal error, exiting:', error?.stack || error?.message || error)
+  try { shutdown() } catch (shutdownError) {
+    console.error('[bot-supervisor] shutdown failed during server error:', shutdownError)
+    process.exit(1)
+  }
 })
 
 server.listen(config.supervisorPort, '127.0.0.1', () => {

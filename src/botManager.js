@@ -108,6 +108,22 @@ class BotManager {
 
   listRelatedLogs (id) { return this.listStoredLogs(id, 'related') }
 
+  // 事故复盘 P1（INC-2026-1105-01）：给 bot 子进程发 IPC 消息的唯一安全入口。
+  // 子进程刚被 kill、IPC 管道半关闭的毫秒级窗口内，send() 会把 EPIPE/
+  // ERR_IPC_CHANNEL_CLOSED 漏成异步 error 事件；管道全关后 send() 返回 false。
+  // 调用方一律改走这里：已退出就丢弃该条消息（bot 都没了，消息不必送达），
+  // 半关闭竞态由 child.on('error') 监听兜住，只记警告不再有权力杀进程。
+  sendToBot (state, message) {
+    if (!state?.child) return false
+    if (state.exited || state.child.killed) return false
+    try {
+      return Boolean(state.child.send(message))
+    } catch (error) {
+      console.warn(`[bot] IPC send skipped (child exiting): ${error?.code || ''} ${error?.message || error}`)
+      return false
+    }
+  }
+
   startDesiredBots () {
     for (const bot of this.db.listBots()) {
       if (bot.desiredState === 'running') this.start(bot.id).catch(error => this.setError(bot.id, error))
@@ -169,7 +185,7 @@ class BotManager {
       if (!bot || bot.mode !== 'smart') continue
       if (!this.db.claimSmartBotDailyAction(botId, 'signin', clock.date)) continue
       try {
-        state.child.send?.({ type: 'smart_daily_action', action: 'signin', command: '/signin click' })
+        this.sendToBot(state, { type: 'smart_daily_action', action: 'signin', command: '/signin click' })
         this.appendRelatedLog(botId, 'schedule', `已执行 ${clock.date} 每日签到。`)
       } catch (error) {
         console.error(`[daily-signin:${botId}]`, error)
@@ -198,7 +214,7 @@ class BotManager {
         .replace(/\{amount\}/g, amount)
       this.pendingTopUps.set(botId, { cents: 100, amount, sender: '', createdAt: Date.now(), silent: true })
       try {
-        state.child.send?.({ type: 'smart_daily_action', action: 'auto_renew', command })
+        this.sendToBot(state, { type: 'smart_daily_action', action: 'auto_renew', command })
         this.appendRelatedLog(botId, 'schedule', `已执行 ${clock.date} 自动续费 1 C。`)
       } catch (error) {
         this.pendingTopUps.delete(botId)
@@ -556,6 +572,7 @@ class BotManager {
       authTimer: null,
       killTimer: null,
       stopping: false,
+      exited: false,
       retryPending: false,
       profileAuthRecoveryPending: false,
       disconnectPending: false,
@@ -567,6 +584,14 @@ class BotManager {
     }
     this.processes.set(bot.id, state)
     console.log(`[bot:${bot.id}] connecting with Minecraft ${activeVersion || 'auto'}`)
+    // 事故复盘 P1（INC-2026-1105-01）：子进程退出窗口内给 IPC 发消息会触发
+    // EPIPE / ERR_IPC_CHANNEL_CLOSED 的 error 事件，没有监听就是 uncaughtException，
+    // 上一版等于一条消息失败杀死整棵进程树。监听后降级为一条警告日志。
+    child.on('error', error => {
+      if (this.processes.get(bot.id) !== state) return
+      if (state.exited) return
+      console.warn(`[bot:${bot.id}] IPC channel error (child exiting or closed): ${error?.code || ''} ${error?.message || error}`)
+    })
     child.stdout?.on('data', data => {
       const message = String(data).trim()
       if (!message) return
@@ -612,7 +637,7 @@ class BotManager {
     const modules = this.db.listBotModules(id)
     state.modules = modules
     const manifest = this.prepareModules(state.instancePath, modules)
-    state.child.send?.({ type: 'reload_modules', modules: manifest })
+    this.sendToBot(state, { type: 'reload_modules', modules: manifest })
     return true
   }
 
@@ -622,7 +647,7 @@ class BotManager {
       const bot = this.db.getBot(id)
       if (bot?.userId !== userId) continue
       state.access = access
-      state.child.send?.({ type: 'reload_access', access })
+      this.sendToBot(state, { type: 'reload_access', access })
     }
   }
 
@@ -631,7 +656,7 @@ class BotManager {
     const settings = this.db.getSmartBotSettings(botId)
     const state = this.processes.get(botId)
     if (state) {
-      try { state.child.send?.({ type: 'smart_settings', settings }) } catch (error) { console.warn(`[bot:${botId}] smart settings hot update failed: ${error.message || error}`) }
+      this.sendToBot(state, { type: 'smart_settings', settings })
     }
     return settings
   }
@@ -641,7 +666,7 @@ class BotManager {
     const schedules = this.db.getSmartBotScheduleStatus(botId)
     const state = this.processes.get(botId)
     if (state) {
-      try { state.child.send?.({ type: 'smart_automation', automation: schedules.automation }) } catch (error) { console.warn(`[bot:${botId}] smart automation hot update failed: ${error.message || error}`) }
+      this.sendToBot(state, { type: 'smart_automation', automation: schedules.automation })
     }
     return schedules
   }
@@ -761,7 +786,7 @@ class BotManager {
     for (const [botId, state] of this.processes) {
       const bot = this.db.getBot(botId)
       if (bot?.mode !== 'smart') continue
-      try { state.child.send?.({ type: 'smart_top_up_settings', settings }) } catch (error) { console.warn(`[bot:${botId}] smart top-up settings hot update failed: ${error.message || error}`) }
+      this.sendToBot(state, { type: 'smart_top_up_settings', settings })
     }
     return settings
   }
@@ -772,14 +797,14 @@ class BotManager {
     try {
       const result = this.executeSmartRequest(id, String(message.action || ''), message.payload || {})
       if (result && typeof result.then === 'function') {
-        result.then(value => state.child.send?.({ type: 'smart_response', requestId, ok: true, result: value })).catch(error => {
-          state.child.send?.({ type: 'smart_response', requestId, ok: false, error: error.message || String(error) })
+        result.then(value => this.sendToBot(state, { type: 'smart_response', requestId, ok: true, result: value })).catch(error => {
+          this.sendToBot(state, { type: 'smart_response', requestId, ok: false, error: error.message || String(error) })
         })
       } else {
-        state.child.send?.({ type: 'smart_response', requestId, ok: true, result })
+        this.sendToBot(state, { type: 'smart_response', requestId, ok: true, result })
       }
     } catch (error) {
-      state.child.send?.({ type: 'smart_response', requestId, ok: false, error: error.message || String(error) })
+      this.sendToBot(state, { type: 'smart_response', requestId, ok: false, error: error.message || String(error) })
     }
   }
 
@@ -1243,6 +1268,7 @@ class BotManager {
     )
     const plannedRestart = Boolean(exitedState.restartPending || legacyCleanRestart)
     this.appendLog(id, exitedState.stopping || plannedRestart ? 'info' : 'error', `Process exited: code=${code} signal=${signal || '-'}.`)
+    exitedState.exited = true
     this.clearStateTimers(exitedState)
     this.processes.delete(id)
     this.pendingTopUps.delete(id)

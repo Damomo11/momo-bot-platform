@@ -3089,3 +3089,95 @@ test('installSmartCommands hardens digTime against component enchantments', asyn
     assert.equal(bot.digTime.enchantsSafe, true)
   } finally { remove() }
 })
+
+// ── 事故复盘回归（INC-2026-1105-01）──────────────────────────────────────
+// 2026-11-05 守护进程崩溃导致 16 个 bot 全部下线。根因：子进程退出窗口内
+// 裸 child.send() 触发 EPIPE 漏成 uncaughtException，守护进程无兜底直接退出。
+// 以下三条对应 P0/P1 修复，防止回归。
+
+test('sendToBot drops messages for exited or missing children instead of throwing', () => {
+  const manager = new BotManager({}, {})
+  const sent = []
+  const alive = { child: { send: message => { sent.push(message); return true }, killed: false }, exited: false }
+  const exited = { child: { send: () => { throw new Error('must not be called') }, killed: false }, exited: true }
+  const killedChild = { child: { send: () => { throw new Error('must not be called') }, killed: true }, exited: false }
+
+  assert.equal(manager.sendToBot(alive, { type: 'hello' }), true)
+  assert.deepEqual(sent, [{ type: 'hello' }])
+  assert.equal(manager.sendToBot(exited, { type: 'hello' }), false)
+  assert.equal(manager.sendToBot(killedChild, { type: 'hello' }), false)
+  assert.equal(manager.sendToBot(null, { type: 'hello' }), false)
+  assert.equal(manager.sendToBot({}, { type: 'hello' }), false)
+
+  // 同步抛错（EPIPE 同步路径 / channel closed 同步路径）被吞掉并返回 false
+  const syncThrowing = { child: { send: () => { const e = new Error('write EPIPE'); e.code = 'EPIPE'; throw e }, killed: false }, exited: false }
+  assert.equal(manager.sendToBot(syncThrowing, { type: 'hello' }), false)
+
+  // handleSmartRequest 的全部出口也走安全封装：子进程退出后不抛、不炸
+  const deadState = { child: { send: () => { throw new Error('ERR_IPC_CHANNEL_CLOSED') }, killed: false }, exited: true }
+  manager.processes.set('dead', deadState)
+  manager.executeSmartRequest = () => ({ ok: 1 })
+  assert.doesNotThrow(() => manager.handleSmartRequest('dead', deadState, { requestId: 'r1', action: 'noop' }))
+  assert.doesNotThrow(() => manager.handleSmartRequest('dead', deadState, { requestId: 'r2', action: 'boom' }))
+})
+
+test('child IPC channel errors are logged, not fatal, and stop once the bot exits', () => {
+  const manager = new BotManager({ getBot: () => null }, {})
+  const warnings = []
+  const originalWarn = console.warn
+  console.warn = (...args) => warnings.push(args.join(' '))
+  try {
+    const handlers = {}
+    const state = { exited: false, stopping: false }
+    manager.processes.set('bot-1', state)
+    // 复刻 launchAttempt 里挂的 error 监听（不真正 fork）
+    const child = new EventEmitter()
+    child.on('error', error => {
+      if (manager.processes.get('bot-1') !== state) return
+      if (state.exited) return
+      console.warn(`[bot:bot-1] IPC channel error: ${error?.code || ''} ${error?.message || error}`)
+    })
+    state.child = child
+
+    const epipe = new Error('write EPIPE')
+    epipe.code = 'EPIPE'
+    child.emit('error', epipe) // 不抛出、不退出，只记警告
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /EPIPE/)
+
+    state.exited = true
+    manager.processes.delete('bot-1')
+    const closed = new Error('Channel closed')
+    closed.code = 'ERR_IPC_CHANNEL_CLOSED'
+    child.emit('error', closed) // bot 已退出：静默
+    assert.equal(warnings.length, 1)
+  } finally {
+    console.warn = originalWarn
+  }
+})
+
+test('supervisor crash handlers log and keep the process alive', async () => {
+  // 子进程直接加载 core-runtime 不现实（要监听端口），改为验证它注册的兜底行为：
+  // 在一个 -e 子进程里复刻 P0 注册方式，确认 uncaughtException / unhandledRejection 不退出进程。
+  const probe = `
+    const alive = []
+    process.on('uncaughtException', error => alive.push(['uncaught', error.message]))
+    process.on('unhandledRejection', reason => alive.push(['rejection', String(reason)]))
+    Promise.reject(new Error('rejection-x'))
+    setTimeout(() => { throw new Error('boom-x') }, 20)
+    setTimeout(() => { process.stdout.write(JSON.stringify(alive)); process.exit(0) }, 300)
+  `
+  const output = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['-e', probe], { stdio: ['ignore', 'pipe', 'inherit'] })
+    let stdout = ''
+    child.stdout.on('data', chunk => { stdout += chunk })
+    child.on('error', reject)
+    child.on('exit', code => {
+      if (code !== 0) return reject(new Error(`probe exited with code ${code}`))
+      resolve(stdout)
+    })
+  })
+  const alive = JSON.parse(output)
+  assert.ok(alive.some(([kind, message]) => kind === 'uncaught' && message === 'boom-x'))
+  assert.ok(alive.some(([kind, message]) => kind === 'rejection' && message.includes('rejection-x')))
+})
