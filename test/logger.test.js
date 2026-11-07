@@ -93,3 +93,32 @@ test('重复安装幂等，一次卸载即恢复原始 console', async t => {
   const after = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
   assert.equal(after, before, '卸载后 console 不应再写入日志文件')
 })
+
+test('shouldIgnore 在入口整条丢弃协议噪音，不落盘', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-logger-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const noise = /partial packet|Chunk size is \d+ but only \d+ was read/
+  const uninstall = installConsoleFileLogger({ logDir: dir, prefix: 'test', passthrough: false, shouldIgnore: text => noise.test(text) })
+  try {
+    console.log('Chunk size is 65 but only 31 was read ; partial packet : {"name":"entity_teleport"}')
+    console.warn('bot 真实业务警告')
+  } finally {
+    uninstall()
+  }
+  const content = fs.readFileSync(path.join(dir, todayFileName('test')), 'utf8')
+  assert.equal(content.includes('partial packet'), false, '协议噪音不应落盘')
+  assert.match(content, /真实业务警告/)
+})
+
+test('单文件达到大小上限后停止落盘并提醒一次', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-logger-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const file = path.join(dir, todayFileName('test'))
+  fs.writeFileSync(file, 'x'.repeat(64 * 1024))
+  const uninstall = installConsoleFileLogger({ logDir: dir, prefix: 'test', passthrough: false, maxFileBytes: 64 * 1024 })
+  t.after(() => uninstall())
+  console.log('这条不该落盘（已超上限）')
+  const content = fs.readFileSync(file, 'utf8')
+  assert.equal(content.includes('这条不该落盘'), false, '超上限后应停止写入')
+  assert.equal(content.length, 64 * 1024, '原文件内容应原样保留')
+})
