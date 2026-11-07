@@ -10,9 +10,12 @@ const SUPERVISOR_API_VERSION = 3
 const config = loadConfig()
 // 守护进程自身的 console 落盘（logs/runtime-日期.log），与平台管理服务、
 // bot 进程（platformPreload 挂载，logs/bot-日期.log）分文件，互不混流。
+// shouldIgnore 与 platformPreload 同源：bot 进程已在其源头丢弃协议噪音，
+// 这里同条滤掉是双保险（8789 转发的 bot stdout 以外仍可能有同类残留）。
 if (process.env.BOT_PLATFORM_FILE_LOG !== 'off') {
   const path = require('node:path')
-  require('../src/logger').installConsoleFileLogger({ logDir: path.join(config.root, 'logs'), prefix: 'runtime' })
+  const PROTOCOL_NOISE = /partial packet|Chunk size is \d+ but only \d+ was read/
+  require('../src/logger').installConsoleFileLogger({ logDir: path.join(config.root, 'logs'), prefix: 'runtime', shouldIgnore: text => PROTOCOL_NOISE.test(text) })
 }
 
 // 兜底：2026-11-05 事故复盘（INC-2026-1105-01）——守护进程是全部 Bot 生命周期的

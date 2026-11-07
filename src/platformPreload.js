@@ -5,11 +5,16 @@ const { isAllowedPlayer, commandTextFor } = require('./botAccess')
 const { installClientTickEndPatch } = require('./tickEndPatch')
 // bot 进程的 console 落盘（logs/bot-日期.log）：bot 崩溃/重启后终端回看不
 // 到现场，落盘后可按天回查。stdout 原样输出；写失败不影响业务。
+// shouldIgnore 丢弃 mineflayer/protodef 的协议调试残留：TCP 分段的正常
+// 现象会被底层库用 "Chunk size ... partial packet" 每秒刷几百条，
+// 实体密集区一天 40 万条（2026-11-06 实测烧盘 7GB），信息量为零，
+// bot 会自行拼包继续。在 bot 进程入口整条丢弃，守护进程的转发日志同步干净。
+const PROTOCOL_NOISE = /partial packet|Chunk size is \d+ but only \d+ was read/
 if (process.env.BOT_PLATFORM_FILE_LOG !== 'off') {
   try {
     const { loadConfig } = require('./config')
     const { installConsoleFileLogger } = require('./logger')
-    installConsoleFileLogger({ logDir: path.join(loadConfig().root, 'logs'), prefix: 'bot' })
+    installConsoleFileLogger({ logDir: path.join(loadConfig().root, 'logs'), prefix: 'bot', shouldIgnore: text => PROTOCOL_NOISE.test(text) })
   } catch {}
 }
 const originalLoad = Module._load
