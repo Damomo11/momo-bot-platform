@@ -1,8 +1,8 @@
 'use strict'
 
-// 智能 bot 版本号与变更记录。
-const SMART_BOT_VERSION = '1.0.0'
-const SMART_BOT_CHANGELOG = '1.0.0 新增自动欢迎：bot 检测到系统消息按钮事件（RUN_COMMAND / SUGGEST_COMMAND）中的 "/tsl bindwelcome <玩家名>" 命令时，自动代发该命令完成欢迎绑定（参考 minecraft-auto-reply 的按钮事件模式：只对点击事件携带的原始命令做正则匹配）。'
+// 自动欢迎（按钮事件模式）：参考 minecraft-auto-reply，只对系统消息按钮事件
+// （RUN_COMMAND / SUGGEST_COMMAND）携带的原始命令做正则匹配。
+// 版本号与版本说明走 smart-runtime/package.json + releases.json（项目统一规范）。
 
 // 仅对命令做正则匹配（按钮事件模式）：任意玩家名，如 /tsl bindwelcome Damomo1。
 const WELCOME_COMMAND_PATTERN = /^\/?tsl\s+bindwelcome\b/i
@@ -44,7 +44,6 @@ function installAutoWelcome (bot, options = {}) {
         seen.add(full)
         const timer = setTimeout(() => seen.delete(full), 60000)
         timer.unref?.()
-        console.log(`[smart-bot] ${SMART_BOT_VERSION} 自动欢迎：系统消息按钮事件检测到 "${full}"，已代发执行。`)
         if (typeof options.onTrigger === 'function') {
           try { options.onTrigger(full) } catch {}
         }
@@ -56,4 +55,4 @@ function installAutoWelcome (bot, options = {}) {
   return () => bot._client.removeListener('system_chat', handler)
 }
 
-module.exports = { SMART_BOT_VERSION, SMART_BOT_CHANGELOG, WELCOME_COMMAND_PATTERN, collectClickCommands, installAutoWelcome }
+module.exports = { WELCOME_COMMAND_PATTERN, collectClickCommands, installAutoWelcome }

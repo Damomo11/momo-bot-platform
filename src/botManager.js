@@ -753,9 +753,6 @@ class BotManager {
       if (message.state === 'stopped' && message.reason && !state.lastConnectionError) state.lastConnectionError = String(message.reason)
       const fields = { runtimeState: message.state, oauthJson: '' }
       if (message.minecraftName) fields.minecraftName = message.minecraftName
-      // 智能 bot 平台版本号（platformPreload 注入层上报）：随状态落库，
-      // 供管理页/接口展示当前 bot 的智能功能版本。
-      if (message.smartBotVersion) fields.smartBotVersion = String(message.smartBotVersion)
       if (message.state === 'online') {
         state.reachedOnline = true
         this.clearConnectionTimers(state)

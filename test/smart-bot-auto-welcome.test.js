@@ -3,7 +3,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
-const { SMART_BOT_VERSION, WELCOME_COMMAND_PATTERN, collectClickCommands, installAutoWelcome } = require('../src/smartBotAutoWelcome')
+const { WELCOME_COMMAND_PATTERN, collectClickCommands, installAutoWelcome } = require('../src/smartBotAutoWelcome')
 
 function fakeBot () {
   const sent = []
@@ -13,11 +13,6 @@ function fakeBot () {
     chat: text => sent.push(text)
   }
 }
-
-test('版本号：v1.0.0，版本说明为新增自动欢迎', () => {
-  assert.equal(SMART_BOT_VERSION, '1.0.0')
-  assert.match(require('../src/smartBotAutoWelcome').SMART_BOT_CHANGELOG, /自动欢迎/)
-})
 
 test('收集按钮命令：老格式 clickEvent + 新格式 click_event + extra 嵌套', () => {
   const old = collectClickCommands({ text: '绑定欢迎', clickEvent: { action: 'run_command', value: '/tsl bindwelcome Damomo1' } })
