@@ -247,7 +247,10 @@ Module._load = function (request, parent, isMain) {
     installClientTickEndPatch(bot)
     installResourcePackHandling(bot)
     installZenoxChatParser(bot)
-    installAutoWelcome(bot)
+    installAutoWelcome(bot, {
+      // 触发即记入该 bot 的"相关日志"（管理页 bot 详情可见，botManager 落库）。
+      onTrigger: full => send('related_log', { level: 'audit', message: `自动欢迎触发：系统消息按钮事件检测到 "${full}"，已代发执行。` })
+    })
     bot.on('messagestr', message => {
       const text = String(message || '').trim()
       if (text) send('server_message', { message: text.slice(0, 2000) })

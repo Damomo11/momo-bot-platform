@@ -28,7 +28,8 @@ function collectClickCommands (component, out = []) {
 
 // 挂到 bot 上：监听系统消息原始包，检测到欢迎绑定按钮命令即代发。
 // mineflayer 的 chat 事件只给纯文本、点击事件已被丢弃，按钮事件模式必须读原始包。
-function installAutoWelcome (bot) {
+// options.onTrigger：每次触发代发时回调（供调用方记"与 bot 相关"的日志）。
+function installAutoWelcome (bot, options = {}) {
   if (!bot?._client) return () => {}
   const seen = new Set()
   const handler = packet => {
@@ -44,6 +45,9 @@ function installAutoWelcome (bot) {
         const timer = setTimeout(() => seen.delete(full), 60000)
         timer.unref?.()
         console.log(`[smart-bot] ${SMART_BOT_VERSION} 自动欢迎：系统消息按钮事件检测到 "${full}"，已代发执行。`)
+        if (typeof options.onTrigger === 'function') {
+          try { options.onTrigger(full) } catch {}
+        }
         bot.chat(full)
       }
     } catch {}

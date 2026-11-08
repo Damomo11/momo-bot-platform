@@ -59,6 +59,35 @@ test('自动欢迎：检测到系统消息里的 bindwelcome 按钮即代发，�
   }
 })
 
+test('触发即回调 onTrigger（供记入与 bot 相关的日志），未触发不调', () => {
+  const bot = fakeBot()
+  const triggered = []
+  const unload = installAutoWelcome(bot, { onTrigger: full => triggered.push(full) })
+  try {
+    // 未命中：不回调。
+    bot._client.emit('system_chat', {
+      contents: { text: 'x', clickEvent: { action: 'run_command', value: '/tsl other' } }
+    })
+    assert.deepEqual(triggered, [])
+    // 命中：回调带补全后的命令。
+    bot._client.emit('system_chat', {
+      contents: { text: 'y', click_event: { action: 'run_command', command: 'tsl bindwelcome Damomo1' } }
+    })
+    assert.deepEqual(triggered, ['/tsl bindwelcome Damomo1'])
+    assert.deepEqual(bot.sent, ['/tsl bindwelcome Damomo1'])
+    // onTrigger 抛错不影响代发。
+    const bot2 = fakeBot()
+    const unload2 = installAutoWelcome(bot2, { onTrigger: () => { throw new Error('log channel down') } })
+    bot2._client.emit('system_chat', {
+      contents: { clickEvent: { action: 'run_command', value: '/tsl bindwelcome Damomo1' } }
+    })
+    assert.deepEqual(bot2.sent, ['/tsl bindwelcome Damomo1'])
+    unload2()
+  } finally {
+    unload()
+  }
+})
+
 test('重复推送去重：同一命令短窗内只代发一次', () => {
   const bot = fakeBot()
   const unload = installAutoWelcome(bot)
