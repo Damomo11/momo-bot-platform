@@ -3,6 +3,8 @@ const path = require('node:path')
 const { installZenoxChatParser } = require('./zenoxChatParser')
 const { isAllowedPlayer, commandTextFor } = require('./botAccess')
 const { installClientTickEndPatch } = require('./tickEndPatch')
+// 智能 bot 自动欢迎功能（版本号走 smart-runtime/package.json + releases.json 项目规范）。
+const { installAutoWelcome } = require('./smartBotAutoWelcome')
 // bot 进程的 console 落盘（logs/bot-日期.log）：bot 崩溃/重启后终端回看不
 // 到现场，落盘后可按天回查。stdout 原样输出；写失败不影响业务。
 // shouldIgnore 丢弃 mineflayer/protodef 的协议调试残留：TCP 分段的正常
@@ -245,6 +247,10 @@ Module._load = function (request, parent, isMain) {
     installClientTickEndPatch(bot)
     installResourcePackHandling(bot)
     installZenoxChatParser(bot)
+    installAutoWelcome(bot, {
+      // 触发即记入该 bot 的"相关日志"（管理页 bot 详情可见，botManager 落库）。
+      onTrigger: full => send('related_log', { level: 'audit', message: `自动欢迎触发：系统消息按钮事件检测到 "${full}"，已代发执行。` })
+    })
     bot.on('messagestr', message => {
       const text = String(message || '').trim()
       if (text) send('server_message', { message: text.slice(0, 2000) })
