@@ -3,6 +3,8 @@ const path = require('node:path')
 const { installZenoxChatParser } = require('./zenoxChatParser')
 const { isAllowedPlayer, commandTextFor } = require('./botAccess')
 const { installClientTickEndPatch } = require('./tickEndPatch')
+// 智能 bot 版本号与自动欢迎功能（见 smartBotAutoWelcome.js 的版本说明）。
+const { SMART_BOT_VERSION, SMART_BOT_CHANGELOG, installAutoWelcome } = require('./smartBotAutoWelcome')
 // bot 进程的 console 落盘（logs/bot-日期.log）：bot 崩溃/重启后终端回看不
 // 到现场，落盘后可按天回查。stdout 原样输出；写失败不影响业务。
 // shouldIgnore 丢弃 mineflayer/protodef 的协议调试残留：TCP 分段的正常
@@ -245,6 +247,7 @@ Module._load = function (request, parent, isMain) {
     installClientTickEndPatch(bot)
     installResourcePackHandling(bot)
     installZenoxChatParser(bot)
+    installAutoWelcome(bot)
     bot.on('messagestr', message => {
       const text = String(message || '').trim()
       if (text) send('server_message', { message: text.slice(0, 2000) })
@@ -262,7 +265,7 @@ Module._load = function (request, parent, isMain) {
     bot.once('login', () => send('state', { state: 'logging_in', minecraftName: bot.username }))
     bot.once('spawn', () => {
       spawned = true
-      send('state', { state: 'online', minecraftName: bot.username })
+      send('state', { state: 'online', minecraftName: bot.username, smartBotVersion: SMART_BOT_VERSION })
     })
     bot.on('kicked', reason => {
       const detail = describe(reason)

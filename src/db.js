@@ -81,6 +81,7 @@ class PlatformDb {
         desired_state TEXT NOT NULL DEFAULT 'stopped',
         runtime_state TEXT NOT NULL DEFAULT 'stopped',
         minecraft_name TEXT NOT NULL DEFAULT '',
+        smart_bot_version TEXT NOT NULL DEFAULT '',
         template_vars_json TEXT NOT NULL DEFAULT '{}',
         last_error TEXT NOT NULL DEFAULT '',
         oauth_json TEXT NOT NULL DEFAULT '',
@@ -248,6 +249,7 @@ class PlatformDb {
     this.ensureColumn('bots', 'mode', "TEXT NOT NULL DEFAULT 'smart'")
     this.ensureColumn('bots', 'mode_vars_json', "TEXT NOT NULL DEFAULT '{}'")
     this.ensureColumn('bots', 'template_vars_json', "TEXT NOT NULL DEFAULT '{}'")
+    this.ensureColumn('bots', 'smart_bot_version', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('users', 'momoc_units', 'INTEGER')
     this.ensureColumn('users', 'reserved_momoc_units', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('users', 'momoc_micros', 'INTEGER')
@@ -1529,7 +1531,7 @@ class PlatformDb {
   }
 
   getBot (id) {
-    const row = this.db.prepare(`SELECT b.id, b.user_id AS userId, u.username AS ownerUsername, b.account_id AS accountId, a.email AS microsoftEmail, a.minecraft_name AS accountMinecraftName, a.auth_state AS accountAuthState, b.mode, b.mode_vars_json AS modeVariablesJson, b.label, b.server_host AS serverHost, b.server_port AS serverPort, b.minecraft_version AS minecraftVersion, b.desired_state AS desiredState, b.runtime_state AS runtimeState, b.minecraft_name AS minecraftName, b.last_error AS lastError, b.oauth_json AS oauthJson, b.started_at AS startedAt, b.billed_minutes AS billedMinutes, b.billing_remainder_micros AS billingRemainderMicros, b.schedule_enabled AS scheduleEnabled, b.schedule_cron AS scheduleCron, b.created_at AS createdAt FROM bots b JOIN users u ON u.id=b.user_id JOIN microsoft_accounts a ON a.id=b.account_id WHERE b.id=?`).get(id) || null
+    const row = this.db.prepare(`SELECT b.id, b.user_id AS userId, u.username AS ownerUsername, b.account_id AS accountId, a.email AS microsoftEmail, a.minecraft_name AS accountMinecraftName, a.auth_state AS accountAuthState, b.mode, b.mode_vars_json AS modeVariablesJson, b.label, b.server_host AS serverHost, b.server_port AS serverPort, b.minecraft_version AS minecraftVersion, b.desired_state AS desiredState, b.runtime_state AS runtimeState, b.minecraft_name AS minecraftName, b.smart_bot_version AS smartBotVersion, b.last_error AS lastError, b.oauth_json AS oauthJson, b.started_at AS startedAt, b.billed_minutes AS billedMinutes, b.billing_remainder_micros AS billingRemainderMicros, b.schedule_enabled AS scheduleEnabled, b.schedule_cron AS scheduleCron, b.created_at AS createdAt FROM bots b JOIN users u ON u.id=b.user_id JOIN microsoft_accounts a ON a.id=b.account_id WHERE b.id=?`).get(id) || null
     if (!row) return null
     try { row.modeVariables = JSON.parse(row.modeVariablesJson || '{}') } catch { row.modeVariables = {} }
     delete row.modeVariablesJson
@@ -1542,7 +1544,7 @@ class PlatformDb {
   }
 
   updateBotRuntime (id, fields) {
-    const allowed = { desiredState: 'desired_state', runtimeState: 'runtime_state', minecraftName: 'minecraft_name', lastError: 'last_error', oauthJson: 'oauth_json', startedAt: 'started_at' }
+    const allowed = { desiredState: 'desired_state', runtimeState: 'runtime_state', minecraftName: 'minecraft_name', lastError: 'last_error', oauthJson: 'oauth_json', startedAt: 'started_at', smartBotVersion: 'smart_bot_version' }
     const pairs = []
     const values = []
     for (const [key, column] of Object.entries(allowed)) {
