@@ -1380,6 +1380,9 @@ function createSmartCommandHandler (bot, options = {}) {
     timer.unref?.()
   })
   const versionNotifiedPlayers = options.versionNotifiedPlayers || new Set()
+  // 探测控制器（admin 独有）：installSmartCommands 创建 handler 时传入，
+  // 这里只做兜底为空对象，避免非 admin 用法下引用报错。
+  const baltopProbe = options.baltopProbe || { isActive: () => false }
 
   if (!platform?.request) throw new Error(COMMAND_TEXT.platformUnavailable)
 
@@ -2166,6 +2169,7 @@ function installSmartCommands (bot, options = {}) {
     platform,
     runBotAction,
     runTaskExclusive,
+    baltopProbe,
     applyOminousSettings: settings => ominousScheduler.applySettings(settings),
     applyPeriodicRightClickSettings: settings => periodicRightClickScheduler.applySettings(settings),
     applyFishingSettings: settings => fishingController.applySettings(settings),
