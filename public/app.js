@@ -280,6 +280,7 @@ async function loadPlatformSettings () {
     $('maxRunningBots').value = data.maxRunningBots
     $('botCreationEnabled').checked = Boolean(data.botCreationEnabled)
     $('registrationEnabled').checked = Boolean(data.registrationEnabled)
+    state.baltop = data.baltop || {}
   } else {
     const data = await request('/api/modes')
     state.modePrices = data.prices
@@ -307,6 +308,68 @@ async function testTopUpRegex () {
   } catch (error) {
     $('topUpRegexResult').textContent = error.message || String(error)
   }
+}
+
+// ============ 排行榜探测（/baltop 金钱榜）管理面板 ============
+
+function renderBaltopReplyBots () {
+  const selected = new Set((state.baltop?.replyBotIds || []).map(String))
+  const bots = (state.bots || []).filter(bot => bot.mode === 'smart')
+  const container = $('baltopReplyBots')
+  if (!container) return
+  container.innerHTML = bots.length
+    ? bots.map(bot => `<label class="variable-check"><input type="checkbox" data-baltop-reply-bot="${esc(bot.id)}"${selected.has(bot.id) ? ' checked' : ''}> ${esc(bot.accountMinecraftName || bot.minecraftName || bot.label)}</label>`).join('')
+    : '<div class="muted">暂无智能 Bot。</div>'
+  container.querySelectorAll('[data-baltop-reply-bot]').forEach(input => {
+    input.onchange = () => {
+      const checked = [...container.querySelectorAll('[data-baltop-reply-bot]:checked')].map(node => node.dataset.baltopReplyBot)
+      if (checked.length > 3) {
+        input.checked = false
+        toast('指定回复 Bot 最多 3 个')
+        return
+      }
+      state.baltop = { ...(state.baltop || {}), replyBotIds: checked }
+    }
+  })
+}
+
+async function loadBaltopStatus () {
+  if (state.user?.role !== 'admin') return
+  const data = await request('/api/admin/baltop')
+  state.baltop = { ...(state.baltop || {}), ...data.settings }
+  const settings = data.settings || {}
+  if (document.contains($('baltopProbeEnabled'))) {
+    $('baltopProbeEnabled').checked = Boolean(settings.enabled)
+    $('baltopProbePages').value = settings.pages
+    $('baltopProbeInterval').value = settings.intervalMinutes
+    $('baltopProbeDelay').value = settings.pageDelayMs
+    renderBaltopReplyBots()
+  }
+  const lastText = settings.lastProbeAt ? new Date(settings.lastProbeAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '从未探测'
+  $('baltopStatusSummary').textContent = `探测：${settings.enabled ? `开 · 每 ${settings.intervalMinutes} 分钟` : '关'} · 上次探测 ${lastText}${data.probing ? ' · 正在探测中…' : ''}`
+  const servers = data.servers || []
+  const rows = servers.flatMap(server => (server.entries || []).map(entry => ({ ...entry, serverKey: server.serverKey })))
+  $('baltopRanking').innerHTML = rows.length
+    ? '<table><thead><tr><th>名次</th><th>玩家</th><th>余额</th><th>服务器</th><th>更新时间</th></tr></thead><tbody>' +
+      rows.slice(0, 200).map(row => `<tr><td>#${row.rank}</td><td><strong>${esc(row.name)}</strong></td><td>${esc(row.balance)}</td><td>${esc(row.serverKey)}</td><td>${esc(new Date(row.updatedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</td></tr>`).join('') +
+      '</tbody></table>'
+    : '<div class="empty">暂无排行榜数据：开启探测并等待在线 Bot 完成第一轮 /baltop 后显示。</div>'
+}
+
+async function saveBaltopSettings () {
+  const replyBots = [...document.querySelectorAll('[data-baltop-reply-bot]:checked')].map(node => node.dataset.baltopReplyBot)
+  const data = await post('/api/admin/settings', {
+    baltop: {
+      enabled: $('baltopProbeEnabled').checked,
+      pages: $('baltopProbePages').value,
+      intervalMinutes: $('baltopProbeInterval').value,
+      pageDelayMs: $('baltopProbeDelay').value,
+      replyBotIds: replyBots
+    }
+  })
+  state.baltop = data.baltop || state.baltop
+  toast('排行榜探测设置已保存')
+  await loadBaltopStatus()
 }
 
 function updateModeFields () {
@@ -1769,7 +1832,10 @@ async function loadView () {
   if (targetView === 'users') await loadUsers()
   if (targetView === 'admins') await loadPlatformAdmins()
   if (targetView === 'modules') await loadModuleAdmin()
-  if (targetView === 'code') await loadPlatformFiles()
+  if (targetView === 'code') {
+    await loadPlatformFiles()
+    await loadBaltopStatus().catch(() => {})
+  }
 }
 
 // 管理区「平台日志」页：全 Bot 审计 + 充值流水，带筛选与分页。
@@ -1910,6 +1976,8 @@ $('saveModule').onclick = () => saveModule().catch(error => toast(error.message)
 $('deleteModule').onclick = () => deleteModule().catch(error => toast(error.message))
 $('saveModePrices').onclick = () => saveBasePrice().catch(error => toast(error.message))
 $('topUpRegexTest').onclick = () => testTopUpRegex()
+$('saveBaltopSettings').onclick = () => saveBaltopSettings().catch(error => toast(error.message))
+$('refreshBaltopStatus').onclick = () => loadBaltopStatus().catch(error => toast(error.message))
 $('refreshPlatformFiles').onclick = () => loadPlatformFiles().catch(error => toast(error.message))
 $('savePlatformFile').onclick = () => savePlatformFile().catch(error => toast(error.message))
 $('newTemplate').onclick = clearTemplate

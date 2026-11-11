@@ -195,6 +195,15 @@ class PlatformDb {
         at INTEGER NOT NULL,
         FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE CASCADE
       );
+      -- 排行榜探测（/baltop）聚合结果：按服务器分区，探测周期内全量替换。
+      CREATE TABLE IF NOT EXISTS baltop_entries (
+        server_key TEXT NOT NULL,
+        name TEXT NOT NULL COLLATE NOCASE,
+        rank INTEGER NOT NULL,
+        balance TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (server_key, name)
+      );
       CREATE TABLE IF NOT EXISTS feature_modules (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
@@ -292,6 +301,12 @@ class PlatformDb {
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_max_running_bots', '0')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('bot_creation_enabled', '1')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('new_user_initial_momoc', '10')").run()
+    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('baltop_probe_enabled', '0')").run()
+    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('baltop_probe_pages', '100')").run()
+    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('baltop_probe_interval_minutes', '60')").run()
+    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('baltop_probe_page_delay_ms', '10000')").run()
+    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('baltop_reply_bot_ids', '')").run()
+    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('baltop_last_probe_at', '0')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_top_up_recipient', 'Damomo1')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_top_up_command', '/pay {recipient} {amount}')").run()
     // platform_settings 的 value 列存原始字符串：默认正则直接写多行文本，
@@ -840,6 +855,96 @@ class PlatformDb {
   setRegistrationEnabled (enabled) {
     this.db.prepare("INSERT INTO platform_settings (key, value) VALUES ('registration_enabled', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(enabled ? '1' : '0')
     return this.getRegistrationEnabled()
+  }
+
+  // 排行榜探测设置：开关/页数(1-100)/轮询间隔分钟/读页间隔毫秒/指定回复 bot(最多 3 个)。
+  getBaltopSettings () {
+    const value = key => this.db.prepare('SELECT value FROM platform_settings WHERE key = ?').get(key)?.value
+    const pages = Number.parseInt(value('baltop_probe_pages') || '100', 10)
+    const intervalMinutes = Number.parseInt(value('baltop_probe_interval_minutes') || '60', 10)
+    const pageDelayMs = Number.parseInt(value('baltop_probe_page_delay_ms') || '10000', 10)
+    let replyBotIds = []
+    try { replyBotIds = JSON.parse(value('baltop_reply_bot_ids') || '[]') } catch {}
+    if (!Array.isArray(replyBotIds)) replyBotIds = []
+    return {
+      enabled: value('baltop_probe_enabled') !== '0' ? value('baltop_probe_enabled') === '1' : false,
+      pages: Number.isInteger(pages) && pages >= 1 && pages <= 100 ? pages : 100,
+      intervalMinutes: Number.isInteger(intervalMinutes) && intervalMinutes >= 1 && intervalMinutes <= 1440 ? intervalMinutes : 60,
+      pageDelayMs: Number.isInteger(pageDelayMs) && pageDelayMs >= 1000 && pageDelayMs <= 600000 ? pageDelayMs : 10000,
+      replyBotIds: replyBotIds.map(String).filter(Boolean).slice(0, 3),
+      lastProbeAt: Number(value('baltop_last_probe_at') || 0) || 0
+    }
+  }
+
+  setBaltopSettings (input = {}) {
+    const current = this.getBaltopSettings()
+    const save = this.db.prepare('INSERT INTO platform_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+    if (Object.prototype.hasOwnProperty.call(input, 'enabled')) save.run('baltop_probe_enabled', input.enabled ? '1' : '0')
+    if (Object.prototype.hasOwnProperty.call(input, 'pages')) {
+      const pages = Number(input.pages)
+      if (!Number.isInteger(pages) || pages < 1 || pages > 100) throw new Error('探测页数必须为 1-100。')
+      save.run('baltop_probe_pages', String(pages))
+    }
+    if (Object.prototype.hasOwnProperty.call(input, 'intervalMinutes')) {
+      const minutes = Number(input.intervalMinutes)
+      if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) throw new Error('探测间隔必须为 1-1440 分钟。')
+      save.run('baltop_probe_interval_minutes', String(minutes))
+    }
+    if (Object.prototype.hasOwnProperty.call(input, 'pageDelayMs')) {
+      const delay = Number(input.pageDelayMs)
+      if (!Number.isInteger(delay) || delay < 1000 || delay > 600000) throw new Error('读页间隔必须为 1000-600000 毫秒。')
+      save.run('baltop_probe_page_delay_ms', String(delay))
+    }
+    if (Object.prototype.hasOwnProperty.call(input, 'replyBotIds')) {
+      const ids = (Array.isArray(input.replyBotIds) ? input.replyBotIds : []).map(String).filter(Boolean)
+      if (ids.length > 3) throw new Error('指定回复 Bot 最多 3 个。')
+      for (const id of ids) {
+        const bot = this.db.prepare('SELECT mode FROM bots WHERE id = ?').get(id)
+        if (!bot || bot.mode !== 'smart') throw new Error('指定回复 Bot 必须是智能 Bot。')
+      }
+      save.run('baltop_reply_bot_ids', JSON.stringify([...new Set(ids)]))
+    }
+    return { ...this.getBaltopSettings(), replyBotIds: this.getBaltopSettings().replyBotIds, previous: current }
+  }
+
+  markBaltopProbe (at = Date.now()) {
+    this.db.prepare("INSERT INTO platform_settings (key, value) VALUES ('baltop_last_probe_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(Math.trunc(Number(at) || 0)))
+    return this.getBaltopSettings().lastProbeAt
+  }
+
+  // 写入一轮探测结果：同一 serverKey 一次性替换。
+  replaceBaltopEntries (serverKey, entries = [], at = Date.now()) {
+    const key = String(serverKey || '')
+    if (!key) throw new Error('服务器标识无效。')
+    const rows = (Array.isArray(entries) ? entries : []).map(entry => ({
+      name: String(entry?.name || '').trim(),
+      rank: Number(entry?.rank),
+      balance: String(entry?.balance ?? '').trim(),
+      at: Math.trunc(Number(at) || Date.now())
+    })).filter(row => row.name && /^[A-Za-z0-9_]{3,16}$/.test(row.name) && Number.isInteger(row.rank) && row.rank >= 1 && row.rank <= 100000 && row.balance && row.balance.length <= 32)
+    const save = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM baltop_entries WHERE server_key = ?').run(key)
+      const insert = this.db.prepare('INSERT OR REPLACE INTO baltop_entries (server_key, name, rank, balance, updated_at) VALUES (?, ?, ?, ?, ?)')
+      for (const row of rows) insert.run(key, row.name, row.rank, row.balance, row.at)
+    })
+    save()
+    return rows.length
+  }
+
+  getBaltopEntry (serverKey, name) {
+    const row = this.db.prepare('SELECT name, rank, balance, updated_at AS updatedAt FROM baltop_entries WHERE server_key = ? AND name = ? COLLATE NOCASE').get(String(serverKey || ''), String(name || ''))
+    return row ? { ...row, rank: Number(row.rank), updatedAt: Number(row.updatedAt) } : null
+  }
+
+  listBaltopEntries (serverKey, { limit = 100, offset = 0 } = {}) {
+    const count = Math.min(500, Math.max(1, Number.parseInt(limit, 10) || 100))
+    const skip = Math.max(0, Number.parseInt(offset, 10) || 0)
+    return this.db.prepare('SELECT name, rank, balance, updated_at AS updatedAt FROM baltop_entries WHERE server_key = ? ORDER BY rank LIMIT ? OFFSET ?').all(String(serverKey || ''), count, skip)
+      .map(row => ({ ...row, rank: Number(row.rank), updatedAt: Number(row.updatedAt) }))
+  }
+
+  countBaltopEntries (serverKey) {
+    return Number(this.db.prepare('SELECT COUNT(*) AS count FROM baltop_entries WHERE server_key = ?').get(String(serverKey || ''))?.count || 0)
   }
 
   getUserBotSettings (userId) {

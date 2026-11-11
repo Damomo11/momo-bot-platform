@@ -393,6 +393,10 @@ async function api (req, res, url) {
     if (!['general', 'related'].includes(kind)) throw new Error('日志类型无效。')
     return json(res, 200, { ok: true, bot: { id: bot.id, label: bot.label }, kind, rows: db.listBotLogs(bot.id, kind) })
   }
+  if (req.method === 'GET' && url.pathname === '/api/admin/baltop') {
+    requireAdmin(req)
+    return json(res, 200, { ok: true, ...await bots.baltopStatus() })
+  }
   if (req.method === 'GET' && url.pathname === '/api/admin/platform-logs') {
     requireAdmin(req)
     return json(res, 200, { ok: true, ...db.listAllRelatedLogs({
@@ -628,10 +632,10 @@ async function api (req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/admin/settings') {
     requireAdmin(req)
-    return json(res, 200, { ok: true, ...db.getModePrices(), ...db.getRuntimeSettings(), ...db.getSmartTopUpSettings(), registrationEnabled: db.getRegistrationEnabled(), newUserInitialMomoc: db.getNewUserInitialMomoc() })
+    return json(res, 200, { ok: true, ...db.getModePrices(), ...db.getRuntimeSettings(), ...db.getSmartTopUpSettings(), registrationEnabled: db.getRegistrationEnabled(), newUserInitialMomoc: db.getNewUserInitialMomoc(), baltop: db.getBaltopSettings() })
   }
   if (req.method === 'POST' && url.pathname === '/api/admin/settings') {
-    requireAdmin(req)
+    const admin = requireAdmin(req)
     const input = await body(req)
     const prices = db.setModePrices(input)
     if (Object.prototype.hasOwnProperty.call(input, 'registrationEnabled')) db.setRegistrationEnabled(Boolean(input.registrationEnabled))
@@ -639,7 +643,8 @@ async function api (req, res, url) {
     const topUp = db.setSmartTopUpSettings({ recipient: input.recipient, commandTemplate: input.commandTemplate })
     await bots.syncSmartTopUpSettings()
     const runtime = db.setRuntimeSettings(input)
-    return json(res, 200, { ok: true, ...prices, ...runtime, ...topUp, registrationEnabled: db.getRegistrationEnabled(), newUserInitialMomoc: db.getNewUserInitialMomoc() })
+    const baltop = db.setBaltopSettings(input.baltop || {})
+    return json(res, 200, { ok: true, ...prices, ...runtime, ...topUp, registrationEnabled: db.getRegistrationEnabled(), newUserInitialMomoc: db.getNewUserInitialMomoc(), baltop })
   }
   if (req.method === 'POST' && url.pathname === '/api/admin/modules/delete') {
     requireAdmin(req)

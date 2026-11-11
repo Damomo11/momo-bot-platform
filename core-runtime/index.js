@@ -67,6 +67,7 @@ async function command (input) {
   if (input.action === 'sync_smart_settings') return bots.syncSmartSettings(String(input.id))
   if (input.action === 'sync_smart_automation') return bots.syncSmartAutomation(String(input.id))
   if (input.action === 'sync_modules') return bots.syncModules(String(input.id))
+  if (input.action === 'baltop_status') return bots.baltopStatus()
   throw new Error('未知的 Bot 守护进程操作。')
 }
 
