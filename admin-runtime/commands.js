@@ -1996,6 +1996,8 @@ function parseBaltopMessage (text) {
 function mergeBaltopEntries (collected, entries) {
   for (const entry of entries || []) {
     if (!entry?.name || !Number.isFinite(Number(entry.rank))) continue
+    // 同名条目「后见覆盖」：entries 按页序传入，越往后的页越新，
+    // 与服务器排行榜一致（同轮探测里以最后一次出现的余额为准）。
     collected.set(String(entry.name).toLowerCase(), {
       rank: Number(entry.rank),
       name: String(entry.name),
@@ -2151,7 +2153,9 @@ function installSmartCommands (bot, options = {}) {
         })
         .catch(error => {
           console.error('[baltop-probe]', error?.stack || error)
-          sendBaltopReport({ entries: [] })
+          // 探测失败回报 entries: null：管理端据此跳过合并，
+          // 不把空结果当「榜上没人」清掉库里已有的数据。
+          sendBaltopReport({ entries: null })
         })
     }
     if (message?.type === 'baltop_reply') handleBaltopReply(message)

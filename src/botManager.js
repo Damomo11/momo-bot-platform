@@ -349,6 +349,9 @@ class BotManager {
   }
 
   // 收尾合并：按 serverKey 各自落库；缺报的 bot 只记日志不影响其他组。
+  // 合并语义：同名条目「后见覆盖」（entries 按页序排列，越后面越新），
+  // 与服务器排行榜一致；落库为 upsert 而非清空——bot 重启后库里的
+  // 旧数据仍在，bal 查询立即可用，无需等待下一轮探测。
   collectBaltopRound () {
     const round = this.baltopRound
     if (!round) return
@@ -356,12 +359,15 @@ class BotManager {
     this.baltopRound = null
     const merged = new Map()
     for (const report of this.baltopReports.values()) {
+      // entries=null 是 bot 侧探测失败（如中途掉线）：跳过本轮合并，
+      // 绝不能当「榜上没人」把库里的数据清掉。
       if (!Array.isArray(report?.entries) || !report?.serverKey) continue
       if (!merged.has(report.serverKey)) merged.set(report.serverKey, [])
       merged.get(report.serverKey).push(...report.entries)
     }
     this.baltopReports.clear()
     for (const [serverKey, entries] of merged) {
+      if (!entries.length) continue
       const unique = new Map()
       for (const entry of entries) {
         const name = String(entry?.name || '').trim()
@@ -369,12 +375,12 @@ class BotManager {
         unique.set(name.toLowerCase(), { ...entry, name })
       }
       const rows = [...unique.values()].sort((a, b) => Number(a.rank) - Number(b.rank))
-      if (typeof this.db.replaceBaltopEntries !== 'function') continue
-      this.db.replaceBaltopEntries(serverKey, rows, round.startedAt)
-      console.log(`[baltop-probe] server ${serverKey}: ${rows.length} entries saved`)
+      if (typeof this.db.upsertBaltopEntries !== 'function') continue
+      this.db.upsertBaltopEntries(serverKey, rows, round.startedAt)
+      console.log(`[baltop-probe] server ${serverKey}: ${rows.length} entries merged`)
       // 探测结果属平台数据，记到本轮参与的第一个管理 bot 的相关日志，管理页可见。
       const witness = this.onlineAdminBots(serverKey)[0]
-      if (witness) this.appendRelatedLog(witness.botId, 'schedule', `排行榜探测完成：${serverKey} 共入库 ${rows.length} 名玩家（第 1-${round.pages} 页）。`)
+      if (witness) this.appendRelatedLog(witness.botId, 'schedule', `排行榜探测完成：${serverKey} 本轮合并 ${rows.length} 名玩家（第 1-${round.pages} 页），历史数据保留。`)
     }
   }
 

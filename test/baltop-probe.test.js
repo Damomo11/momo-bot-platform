@@ -110,6 +110,27 @@ test('bot 侧探测器：逐页发送 /baltop 并收集榜行，页间隔可注�
   assert.equal(byName.get('Mac_ft').rank, 21)
 })
 
+test('bot 侧同名覆盖：同一玩家在后面的页再出现时，余额刷新为后见值', async () => {
+  const bot = fakeBot({ username: 'ProbeBot2' })
+  const controller = createBaltopProbeController(bot, { pageDelayMs: 1, runBotAction: task => task() })
+  const probePromise = controller.probe({ startPage: 1, endPage: 2, pageDelayMs: 1 })
+  // A 在第 1 页余额 100、第 2 页（更靠后的榜位）余额 0：后见的 0 覆盖 100，
+  // 与服务器真实排行一致（越靠后的页数据越新/越准确）。
+  const queue = [
+    () => bot.emit('messagestr', '#1 A_player - 100.00'),
+    () => bot.emit('messagestr', '#20 A_player - 0.00')
+  ]
+  for (const emit of queue) {
+    await new Promise(resolve => setTimeout(resolve, 1))
+    emit()
+  }
+  const result = await probePromise
+  assert.equal(result.entries.length, 1)
+  assert.equal(result.entries[0].name, 'A_player')
+  assert.equal(result.entries[0].balance, '0.00')
+  assert.equal(result.entries[0].rank, 20)
+})
+
 test('管理端页面分配：100 页 3 台管理 Bot 均分为连续段', () => {
   const f = fixture()
   try {
@@ -151,7 +172,7 @@ test('智能 Bot 不参与探测：普通 bot 收不到 baltop_probe', () => {
   }
 })
 
-test('页面分配与合并落库：多管理 bot 上报 → 同服务器去重排序入库', () => {
+test('页面分配与合并落库：多管理 bot 上报 → 同服务器去重合并入库（历史保留）', () => {
   const f = fixture()
   try {
     const user = f.db.createUser('baltop_owner', 'password-123')
@@ -163,12 +184,18 @@ test('页面分配与合并落库：多管理 bot 上报 → 同服务器去重�
     manager.processes.set(botA.id, { reachedOnline: true, child: { send: message => sentA.push(message) } })
     manager.processes.set(botB.id, { reachedOnline: true, child: { send: message => sentB.push(message) } })
 
+    // 预置历史数据（模拟上一轮探测/重启前的库）：本轮不清掉。
+    f.db.upsertBaltopEntries('mc.example.com:25565', [
+      { rank: 999, name: 'OldPlayer_', balance: '7.77' }
+    ])
+
     // 100 页 2 bot → [1-50],[51-100]。
     manager.startBaltopRound({ pages: 100, pageDelayMs: 2000 })
     assert.deepEqual(sentA.map(m => ({ start: m.startPage, end: m.endPage })), [{ start: 1, end: 50 }])
     assert.deepEqual(sentB.map(m => ({ start: m.startPage, end: m.endPage })), [{ start: 51, end: 100 }])
 
-    // 两 bot 各自回报（含同 rank 重叠区，验证去重）。
+    // 两 bot 各自回报：A 报 MoMortis1917 旧值 2014.01（第 1-50 页段内先看到），
+    // B 报 MoMortis1917 更新的 1999.99（后页覆盖）——同名后报覆盖前报。
     manager.handleBaltopReport(botA.id, null, {
       serverKey: 'mc.example.com:25565',
       entries: [
@@ -179,16 +206,46 @@ test('页面分配与合并落库：多管理 bot 上报 → 同服务器去重�
     manager.handleBaltopReport(botB.id, null, {
       serverKey: 'mc.example.com:25565',
       entries: [
-        { rank: 2, name: 'MoMortis1917', balance: '2014.01' },
+        { rank: 2, name: 'MoMortis1917', balance: '1999.99' },
         { rank: 3, name: 'natsuai_', balance: '1883.33' }
       ]
     })
     // 全部回报后自动收尾：baltopRound 清空。
     assert.equal(manager.baltopRound, null)
-    assert.equal(f.db.countBaltopEntries('mc.example.com:25565'), 3)
+    // 本轮 3 人 + 历史 1 人 = 4：upsert 合并，历史保留。
+    assert.equal(f.db.countBaltopEntries('mc.example.com:25565'), 4)
+    const momo = f.db.getBaltopEntry('mc.example.com:25565', 'MoMortis1917')
+    assert.equal(momo.balance, '1999.99')
+    assert.equal(f.db.getBaltopEntry('mc.example.com:25565', 'OldPlayer_').balance, '7.77')
     const rows = f.db.listBaltopEntries('mc.example.com:25565')
-    assert.deepEqual(rows.map(row => row.name), ['Zvbj_', 'MoMortis1917', 'natsuai_'])
-    assert.deepEqual(rows.map(row => row.rank), [1, 2, 3])
+    assert.deepEqual(rows.map(row => row.rank), [1, 2, 3, 999])
+  } finally {
+    f.close()
+  }
+})
+
+test('探测失败回报 entries:null 不清库：中途掉线/异常时历史数据原样保留', () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('baltop_fail', 'password-123')
+    const botA = f.db.createBot(user.id, { mode: 'admin', label: 'A', microsoftEmail: 'a@example.com', serverHost: 'mc.example.com' })
+    const manager = new BotManager(f.db, { now: () => Date.now(), timeSyncEnabled: false })
+    manager.processes.set(botA.id, { reachedOnline: true, child: { send: () => {} } })
+
+    f.db.upsertBaltopEntries('mc.example.com:25565', [
+      { rank: 1, name: 'Zvbj_', balance: '5299.00' }
+    ])
+
+    manager.startBaltopRound({ pages: 100, pageDelayMs: 1000 })
+    // bot 中途掉线 → 探测失败回报 entries:null（bot 侧 catch 分支）。
+    manager.handleBaltopReport(botA.id, null, {
+      serverKey: 'mc.example.com:25565',
+      entries: null
+    })
+    assert.equal(manager.baltopRound, null)
+    // 历史数据原样保留：绝不能当「榜上没人」清掉。
+    assert.equal(f.db.countBaltopEntries('mc.example.com:25565'), 1)
+    assert.equal(f.db.getBaltopEntry('mc.example.com:25565', 'Zvbj_').balance, '5299.00')
   } finally {
     f.close()
   }
@@ -201,7 +258,7 @@ test('bal 查询：管理 Bot 查到即回复，查不到如实回未找到；�
     const adminBot = f.db.createBot(user.id, { mode: 'admin', label: 'A', microsoftEmail: 'a@example.com', serverHost: 'mc.example.com' })
     const smartBot = f.db.createBot(user.id, { mode: 'smart', label: 'S', microsoftEmail: 's@example.com', serverHost: 'mc.example.com' })
     f.db.setBaltopSettings({ enabled: true, pages: 10 })
-    f.db.replaceBaltopEntries('mc.example.com:25565', [
+    f.db.upsertBaltopEntries('mc.example.com:25565', [
       { rank: 1, name: 'Zvbj_', balance: '5299.00' }
     ])
     const manager = new BotManager(f.db, { now: () => Date.now(), timeSyncEnabled: false })
@@ -374,21 +431,27 @@ test('db 层：探测设置读写与校验、条目替换为全量快照', () =>
     assert.throws(() => f.db.setBaltopSettings({ hours: [24] }), /0-23/)
     assert.throws(() => f.db.setBaltopSettings({ pageDelayMs: 500 }), /1000/)
 
-    // 全量替换：旧数据不残留。（玩家名按 Minecraft 规则 3-16 位，短名不入库。）
-    f.db.replaceBaltopEntries('s1', [{ rank: 1, name: 'ab', balance: '1.00' }, { rank: 2, name: 'cd', balance: '2.00' }])
+    // upsert 语义：同名覆盖、异名保留（重启后历史不清空）。
+    // （玩家名按 Minecraft 规则 3-16 位，短名不入库。）
+    f.db.upsertBaltopEntries('s1', [{ rank: 1, name: 'ab', balance: '1.00' }, { rank: 2, name: 'cd', balance: '2.00' }])
     assert.equal(f.db.countBaltopEntries('s1'), 0)
-    f.db.replaceBaltopEntries('s1', [{ rank: 1, name: 'Alice_', balance: '1.00' }, { rank: 2, name: 'Bob_', balance: '2.00' }])
+    f.db.upsertBaltopEntries('s1', [{ rank: 1, name: 'Alice_', balance: '1.00' }, { rank: 2, name: 'Bob_', balance: '2.00' }])
     assert.equal(f.db.countBaltopEntries('s1'), 2)
-    f.db.replaceBaltopEntries('s1', [{ rank: 1, name: 'Cara_', balance: '3.00' }])
-    assert.equal(f.db.countBaltopEntries('s1'), 1)
+    // 本轮只来一个新玩家：Alice_ 的旧记录保留，不会被清掉。
+    f.db.upsertBaltopEntries('s1', [{ rank: 1, name: 'Cara_', balance: '3.00' }])
+    assert.equal(f.db.countBaltopEntries('s1'), 3)
     assert.equal(f.db.getBaltopEntry('s1', 'cara_').name, 'Cara_')
-    assert.equal(f.db.getBaltopEntry('s1', 'Alice_'), null)
+    assert.equal(f.db.getBaltopEntry('s1', 'Alice_').name, 'Alice_')
+    // 同名后到覆盖：余额刷新为最新。
+    f.db.upsertBaltopEntries('s1', [{ rank: 5, name: 'Alice_', balance: '0.00' }])
+    assert.equal(f.db.getBaltopEntry('s1', 'Alice_').balance, '0.00')
+    assert.equal(f.db.getBaltopEntry('s1', 'Alice_').rank, 5)
     // 服务器分区隔离。
-    f.db.replaceBaltopEntries('s2', [{ rank: 1, name: 'Dave_', balance: '4.00' }])
-    assert.equal(f.db.countBaltopEntries('s1'), 1)
+    f.db.upsertBaltopEntries('s2', [{ rank: 1, name: 'Dave_', balance: '4.00' }])
+    assert.equal(f.db.countBaltopEntries('s1'), 3)
     assert.equal(f.db.countBaltopEntries('s2'), 1)
     // 非法玩家名不入库。
-    f.db.replaceBaltopEntries('s3', [{ rank: 1, name: 'bad name!', balance: '1' }])
+    f.db.upsertBaltopEntries('s3', [{ rank: 1, name: 'bad name!', balance: '1' }])
     assert.equal(f.db.countBaltopEntries('s3'), 0)
 
     const marked = f.db.markBaltopProbe(1700000000000)

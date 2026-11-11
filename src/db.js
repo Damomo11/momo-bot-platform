@@ -902,8 +902,11 @@ class PlatformDb {
     return this.getBaltopSettings().lastProbeAt
   }
 
-  // 写入一轮探测结果：同一 serverKey 一次性替换。
-  replaceBaltopEntries (serverKey, entries = [], at = Date.now()) {
+  // 写入一轮探测结果：同名覆盖、异名保留（upsert），不清空历史。
+  // bot 重启/掉线导致本轮数据不完整时，库里的旧数据依然可查（bal 无需等待探测）；
+  // 探测成功但玩家已消费掉到 100 页外时，本轮无该玩家条目，保留的旧值
+  // 比清空更接近真实（排名仅作展示，余额以最近一次上榜为准）。
+  upsertBaltopEntries (serverKey, entries = [], at = Date.now()) {
     const key = String(serverKey || '')
     if (!key) throw new Error('服务器标识无效。')
     const rows = (Array.isArray(entries) ? entries : []).map(entry => ({
@@ -912,13 +915,15 @@ class PlatformDb {
       balance: String(entry?.balance ?? '').trim(),
       at: Math.trunc(Number(at) || Date.now())
     })).filter(row => row.name && /^[A-Za-z0-9_]{3,16}$/.test(row.name) && Number.isInteger(row.rank) && row.rank >= 1 && row.rank <= 100000 && row.balance && row.balance.length <= 32)
+    // 同名条目本轮内也可能重复（跨 bot 分页重叠）：后面的覆盖前面的。
+    const unique = new Map()
+    for (const row of rows) unique.set(row.name.toLowerCase(), row)
     const save = this.db.transaction(() => {
-      this.db.prepare('DELETE FROM baltop_entries WHERE server_key = ?').run(key)
-      const insert = this.db.prepare('INSERT OR REPLACE INTO baltop_entries (server_key, name, rank, balance, updated_at) VALUES (?, ?, ?, ?, ?)')
-      for (const row of rows) insert.run(key, row.name, row.rank, row.balance, row.at)
+      const insert = this.db.prepare('INSERT INTO baltop_entries (server_key, name, rank, balance, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(server_key, name) DO UPDATE SET rank = excluded.rank, balance = excluded.balance, updated_at = excluded.updated_at')
+      for (const row of unique.values()) insert.run(key, row.name, row.rank, row.balance, row.at)
     })
     save()
-    return rows.length
+    return unique.size
   }
 
   getBaltopEntry (serverKey, name) {
