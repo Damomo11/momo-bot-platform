@@ -264,7 +264,13 @@ class BotManager {
 
   startBaltopProbeScheduler () {
     if (this.baltopTimer || typeof this.db.getBaltopSettings !== 'function') return
-    const run = () => this.runBaltopProbeScheduler().catch(error => console.error('[baltop-probe]', error))
+    const run = () => {
+      try {
+        this.runBaltopProbeScheduler()
+      } catch (error) {
+        console.error('[baltop-probe]', error)
+      }
+    }
     this.baltopTimer = setInterval(run, BALTOP_PROBE_TICK_MS)
     this.baltopTimer.unref?.()
     run()
