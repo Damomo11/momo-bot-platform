@@ -628,12 +628,12 @@ async function loadBots (forceUpdates = false) {
           : `<button class="primary" data-start="${esc(bot.id)}">启动</button>`
         const variables = bot.variableDefinitions?.length ? `<button data-bot-variables="${esc(bot.id)}">变量</button>` : ''
         const schedule = bot.billingMode === 'once' && bot.allowScheduling ? `<button data-bot-schedule="${esc(bot.id)}">计划</button>` : ''
-        const permissions = bot.mode === 'smart' ? `<button data-smart-permissions="${esc(bot.id)}">权限</button>` : ''
+        const permissions = bot.mode !== 'signin' ? `<button data-smart-permissions="${esc(bot.id)}">权限</button>` : ''
         const logs = `<button data-bot-logs="${esc(bot.id)}">日志</button>`
         const update = bot.updateAvailable && bot.runtimeState === 'online' ? `<button class="primary" data-update-bot="${esc(bot.id)}">更新</button>` : ''
         const modeLabel = modeName(bot.mode)
         const modeDetail = bot.mode === 'signin' ? `命令：${bot.modeVariables?.command || '-'}` : '持续在线 · 消息解析'
-        return `<tr><td><strong>${esc(bot.label)}</strong><div class="muted">${esc(bot.microsoftEmail)}</div><div class="muted">${esc(bot.accountMinecraftName || bot.minecraftName || '')}</div></td><td>${esc(bot.serverHost)}:${esc(bot.serverPort)}<div class="muted">${esc(bot.minecraftVersion || '自动识别')}</div></td><td><strong>${esc(modeName)}</strong><div class="price-hint">${esc(templatePrice(bot))}</div><div class="muted">${esc(modeDetail)}</div>${bot.scheduleEnabled ? '<div class="positive">计划已启用</div>' : ''}</td><td>${botRuntimeVersionHtml(bot)}</td><td>${smartScheduleHtml(bot)}</td><td><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span><div class="muted">${esc(bot.lastError || '')}</div></td><td>${oauth}</td><td>${bot.billingMode === 'once' ? '按次成功' : `${esc(bot.billedMinutes)} 分钟`}</td><td><div class="actions">${update}${action}${permissions}${schedule}${logs}<button class="danger" data-delete="${esc(bot.id)}">删除</button></div></td></tr>`
+        return `<tr><td><strong>${esc(bot.label)}</strong><div class="muted">${esc(bot.microsoftEmail)}</div><div class="muted">${esc(bot.accountMinecraftName || bot.minecraftName || '')}</div></td><td>${esc(bot.serverHost)}:${esc(bot.serverPort)}<div class="muted">${esc(bot.minecraftVersion || '自动识别')}</div></td><td><strong>${esc(modeLabel)}</strong><div class="price-hint">${esc(templatePrice(bot))}</div><div class="muted">${esc(modeDetail)}</div>${bot.scheduleEnabled ? '<div class="positive">计划已启用</div>' : ''}</td><td>${botRuntimeVersionHtml(bot)}</td><td>${smartScheduleHtml(bot)}</td><td><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span><div class="muted">${esc(bot.lastError || '')}</div></td><td>${oauth}</td><td>${bot.billingMode === 'once' ? '按次成功' : `${esc(bot.billedMinutes)} 分钟`}</td><td><div class="actions">${update}${action}${permissions}${schedule}${logs}<button class="danger" data-delete="${esc(bot.id)}">删除</button></div></td></tr>`
       }).join('') + '</tbody></table>'
     : '<div class="empty">还没有机器人。</div>'
   bindBotActions()
@@ -666,7 +666,7 @@ function managedBotRows (rows) {
     const action = bot.desiredState === 'running'
       ? `<button data-stop="${esc(bot.id)}">停止</button><button data-restart-bot="${esc(bot.id)}">重启</button>`
       : `<button class="primary" data-start="${esc(bot.id)}">启动</button>`
-    const permissions = bot.mode === 'smart' ? `<button data-smart-permissions="${esc(bot.id)}">权限</button>` : ''
+    const permissions = bot.mode !== 'signin' ? `<button data-smart-permissions="${esc(bot.id)}">权限</button>` : ''
     const update = bot.updateAvailable && bot.runtimeState === 'online' ? `<button class="primary" data-update-bot="${esc(bot.id)}">更新</button>` : ''
     const error = bot.lastError ? `<div class="muted managed-error" title="${esc(bot.lastError)}">${esc(bot.lastError)}</div>` : ''
     const minecraftName = bot.accountMinecraftName || bot.minecraftName || ''
