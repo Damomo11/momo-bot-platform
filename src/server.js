@@ -321,7 +321,7 @@ async function api (req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/runtime-updates') {
     requireUser(req)
-    return json(res, 200, { ok: true, smart: readRuntimeUpdates(config.root, 'smart') })
+    return json(res, 200, { ok: true, smart: readRuntimeUpdates(config.root, 'smart'), admin: readRuntimeUpdates(config.root, 'admin') })
   }
   if (req.method === 'GET' && url.pathname === '/api/me') {
     const user = currentUser(req)
@@ -383,8 +383,10 @@ async function api (req, res, url) {
   }
   if (req.method === 'GET' && url.pathname === '/api/bots') {
     const user = requireUser(req)
+    // admin 模式（管理专用 Bot）只有平台管理员可见：普通用户 ?all=1 也拿不到。
     const rows = await bots.list(user.role === 'admin' && url.searchParams.get('all') === '1' ? null : user.id)
-    return json(res, 200, { ok: true, rows })
+    const visible = user.role === 'admin' ? rows : rows.filter(row => row.mode !== 'admin')
+    return json(res, 200, { ok: true, rows: visible })
   }
   if (req.method === 'GET' && url.pathname === '/api/bots/logs') {
     const user = requireUser(req)
@@ -536,6 +538,12 @@ async function api (req, res, url) {
     const input = await body(req)
     if (typeof db.getRuntimeSettings === 'function' && !db.getRuntimeSettings().botCreationEnabled) {
       const err = new Error('平台暂时停止创建新 Bot。')
+      err.status = 403
+      throw err
+    }
+    // admin 模式（管理专用 Bot）只有平台管理员可以创建，普通用户无此入口。
+    if (input.mode === 'admin' && user.role !== 'admin') {
+      const err = new Error('管理专用 Bot 只有平台管理员可以创建。')
       err.status = 403
       throw err
     }

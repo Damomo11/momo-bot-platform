@@ -21,8 +21,13 @@ function normalizeRelease (entry) {
   return { version, title, summary, date, highlights }
 }
 
+function runtimeDirFor (root, mode) {
+  // admin 模式（管理专用 Bot）跑 admin-runtime；其余按原有映射。
+  return path.join(root, mode === 'signin' ? 'signin-runtime' : mode === 'admin' ? 'admin-runtime' : 'smart-runtime')
+}
+
 function readRuntimeUpdates (root, mode = 'smart') {
-  const runtimeDir = path.join(root, mode === 'signin' ? 'signin-runtime' : 'smart-runtime')
+  const runtimeDir = runtimeDirFor(root, mode)
   const packageJson = readJsonFile(path.join(runtimeDir, 'package.json')) || {}
   const releaseJson = readJsonFile(path.join(runtimeDir, 'releases.json'))
   const rawReleases = Array.isArray(releaseJson)
@@ -36,4 +41,4 @@ function readRuntimeUpdates (root, mode = 'smart') {
   return { mode, version: currentVersion, latestRelease, releases }
 }
 
-module.exports = { normalizeRelease, readRuntimeUpdates }
+module.exports = { normalizeRelease, readRuntimeUpdates, runtimeDirFor }

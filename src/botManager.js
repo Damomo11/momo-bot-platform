@@ -203,7 +203,7 @@ class BotManager {
     for (const [botId, state] of this.processes) {
       if (!state?.reachedOnline) continue
       const bot = this.db.getBot(botId)
-      if (!bot || bot.mode !== 'smart') continue
+      if (!bot || (bot.mode !== 'smart' && bot.mode !== 'admin')) continue
       if (!this.db.claimSmartBotDailyAction(botId, 'signin', clock.date)) continue
       try {
         this.sendToBot(state, { type: 'smart_daily_action', action: 'signin', command: '/signin click' })
@@ -221,7 +221,7 @@ class BotManager {
     for (const [botId, state] of this.processes) {
       if (!state?.reachedOnline) continue
       const bot = this.db.getBot(botId)
-      if (!bot || bot.mode !== 'smart') continue
+      if (!bot || (bot.mode !== 'smart' && bot.mode !== 'admin')) continue
       const settings = this.db.getSmartBotSettings(botId)
       if (!settings.autoRenewEnabled) continue
       const pending = this.pendingTopUps.get(botId)
@@ -245,16 +245,17 @@ class BotManager {
   }
 
   // ============ 排行榜探测（/baltop 金钱榜） ============
-  // 管理端勾选后：每个探测周期把 1..pages 均分给当前在线的智能 Bot，
+  // 管理端勾选后：每个探测周期把 1..pages 均分给当前在线的管理专用 Bot，
   // bot 按页间隔逐页 /baltop <页码> 并把系统消息解析回传；全部收齐后
   // 按 serverKey 合并成总排行榜落库，供管理界面查看与 bal 公屏查询。
+  // 只有 admin 模式（admin-runtime）的 Bot 参与探测与回复，普通智能 Bot 不动。
 
-  onlineSmartBots (serverKey = null) {
+  onlineAdminBots (serverKey = null) {
     const rows = []
     for (const [botId, state] of this.processes) {
       if (!state?.reachedOnline) continue
       const bot = this.db.getBot(botId)
-      if (!bot || bot.mode !== 'smart') continue
+      if (!bot || bot.mode !== 'admin') continue
       if (serverKey && this.serverKey(bot) !== serverKey) continue
       rows.push({ botId, bot, state })
     }
@@ -269,14 +270,27 @@ class BotManager {
     run()
   }
 
+  // 每日固定小时（默认 4/10/16/20 点，北京时间）各跑一轮：
+  // lastProbeAt 记的是「本小时窗口内已跑过」，同一小时不重复触发。
+  // 探测期间查询不受影响（bal 查询直接读库，不需要等探测结束）。
   runBaltopProbeScheduler () {
     const settings = this.db.getBaltopSettings()
     if (!settings.enabled) return this.cancelBaltopRound()
     if (this.baltopRound) {
+      // 一轮探测超时兜底：页冷却 × 页数 + 60s，正常由 bot 回报提前收尾。
       this.collectBaltopRound()
       return
     }
-    if (Date.now() - settings.lastProbeAt < settings.intervalMinutes * 60_000) return
+    const clock = this.shanghaiClock()
+    const currentHour = Math.floor(clock.minuteOfDay / 60)
+    if (!settings.hours.includes(currentHour)) {
+      // 非探测小时：直接返回；lastProbeAt 只在探测小时窗口内比较，
+      // 跨小时自然失效，下个探测小时会正常触发。
+      return
+    }
+    // 探测小时窗口内：本小时已跑过（lastProbeAt 在本小时之后）则跳过。
+    const hourStart = Math.floor(this.accurateNow() / 3_600_000) * 3_600_000
+    if (settings.lastProbeAt >= hourStart) return
     this.startBaltopRound(settings)
   }
 
@@ -287,15 +301,16 @@ class BotManager {
     this.baltopReports.clear()
   }
 
-  // 派发一轮探测：收集所有在线智能 Bot（按服务器分组），组内均分页码。
+  // 派发一轮探测：收集所有在线管理专用 Bot（按服务器分组），组内均分页码。
+  // 页冷却固定 10 秒（防刷屏被踢），探测期间 bal 查询照常读库不受影响。
   startBaltopRound (settings) {
     const groups = new Map()
-    for (const row of this.onlineSmartBots()) {
+    for (const row of this.onlineAdminBots()) {
       const key = this.serverKey(row.bot)
       if (!groups.has(key)) groups.set(key, [])
       groups.get(key).push(row)
     }
-    if (!groups.size) return
+    if (!groups.size) return false
     const now = this.now()
     const assignments = []
     for (const [key, members] of groups) {
@@ -321,9 +336,10 @@ class BotManager {
         endPage: assignment.end,
         pageDelayMs
       })
-      this.appendRelatedLog(assignment.botId, 'schedule', `排行榜探测开始：第 ${assignment.start}-${assignment.end} 页（共 ${settings.pages} 页，页间隔 ${Math.round(pageDelayMs / 1000)} 秒）。`)
+      this.appendRelatedLog(assignment.botId, 'schedule', `排行榜探测开始：第 ${assignment.start}-${assignment.end} 页（共 ${settings.pages} 页，页冷却 ${Math.round(pageDelayMs / 1000)} 秒）。`)
     }
     console.log(`[baltop-probe] round started: ${expected} bot(s), pages 1-${settings.pages}`)
+    return true
   }
 
   // 收尾合并：按 serverKey 各自落库；缺报的 bot 只记日志不影响其他组。
@@ -350,8 +366,8 @@ class BotManager {
       if (typeof this.db.replaceBaltopEntries !== 'function') continue
       this.db.replaceBaltopEntries(serverKey, rows, round.startedAt)
       console.log(`[baltop-probe] server ${serverKey}: ${rows.length} entries saved`)
-      // 探测结果属平台数据，记到本轮参与的第一个 bot 的相关日志，管理页可见。
-      const witness = this.onlineSmartBots(serverKey)[0]
+      // 探测结果属平台数据，记到本轮参与的第一个管理 bot 的相关日志，管理页可见。
+      const witness = this.onlineAdminBots(serverKey)[0]
       if (witness) this.appendRelatedLog(witness.botId, 'schedule', `排行榜探测完成：${serverKey} 共入库 ${rows.length} 名玩家（第 1-${round.pages} 页）。`)
     }
   }
@@ -370,41 +386,26 @@ class BotManager {
     return true
   }
 
-  // 游戏内 bal 查询：任意玩家公屏输入 bal ID，由指定回复 bot（管理员设置，
-  // 最多 3 个，都不在线则随机挑一个在线智能 bot）回查并公屏回复。
+  // 游戏内 bal 查询：任意玩家公屏输入 bal ID，管理专用 Bot（admin 模式）
+  // 查库后自己公屏回复；探测进行中查询照常读上一轮快照，不等待探测结束。
+  // 榜上没有（含 100 页外、未入榜）：如实回「未找到」，不猜数据。
   handleBaltopQuery (id, state, payload = {}) {
     const name = String(payload?.name || '').trim()
     if (!name) return false
     const bot = this.db.getBot(id)
-    if (!bot) return false
+    if (!bot || bot.mode !== 'admin') return false
+    if (!state?.reachedOnline) return false
     const serverKey = String(payload.serverKey || this.serverKey(bot))
     if (typeof this.db.getBaltopEntry !== 'function') return false
     const entry = this.db.getBaltopEntry(serverKey, name)
-    if (!entry) return false
-    const settings = this.db.getBaltopSettings()
-    const replyBotIds = (settings.replyBotIds || []).filter(Boolean)
-    let targetId = id
-    if (replyBotIds.length) {
-      const preferred = this.onlineSmartBots(serverKey).filter(row => replyBotIds.includes(row.botId))
-      targetId = preferred.length ? preferred[0].botId : null
-      if (!targetId) {
-        const online = this.onlineSmartBots(serverKey)
-        if (!online.length) return false
-        targetId = online[Math.floor(Math.random() * online.length)].botId
-      }
-    } else {
-      if (!this.processes.get(id)?.reachedOnline) return false
-    }
-    const targetState = this.processes.get(targetId)
-    if (!targetState) return false
-    const requester = String(payload?.username || '')
-    this.sendToBot(targetState, {
+    // rank=null 表示「查无此人」：bot 侧按未找到文案回复。
+    this.sendToBot(state, {
       type: 'baltop_reply',
-      name: entry.name,
-      rank: entry.rank,
-      balance: entry.balance,
-      requester,
-      updatedAt: entry.updatedAt
+      name: entry ? entry.name : name,
+      rank: entry ? entry.rank : null,
+      balance: entry ? entry.balance : '',
+      requester: String(payload?.username || ''),
+      updatedAt: entry ? entry.updatedAt : 0
     })
     return true
   }
@@ -427,7 +428,7 @@ class BotManager {
       probing: Boolean(round),
       probeStartedAt: round?.startedAt || 0,
       servers: [...servers.entries()].map(([serverKey, rows]) => {
-        const online = this.onlineSmartBots(serverKey)
+        const online = this.onlineAdminBots(serverKey)
         return {
           serverKey,
           entryCount: rows.length,
@@ -447,12 +448,12 @@ class BotManager {
     try { templateVariables = bot.templateVarsJson ? JSON.parse(bot.templateVarsJson) : {} } catch {}
     const { templateProjectPath, templateVarsJson, oauthJson, billingRemainderMicros, ...safe } = bot
     const prices = this.db.getModePrices()
-    const smartSchedules = bot.mode === 'smart' && typeof this.db.getSmartBotScheduleStatus === 'function' ? this.db.getSmartBotScheduleStatus(bot.id) : null
+    const smartSchedules = (bot.mode === 'smart' || bot.mode === 'admin') && typeof this.db.getSmartBotScheduleStatus === 'function' ? this.db.getSmartBotScheduleStatus(bot.id) : null
     const state = this.processes.get(bot.id)
     const runtimeVersion = state?.runtimeVersion || this.readPackageVersion(state?.instancePath)
-    const latestRuntimeVersion = this.readPackageVersion(path.join(this.config.root || '', bot.mode === 'signin' ? 'signin-runtime' : 'smart-runtime'))
-    const updateAvailable = bot.mode === 'smart' && Boolean(state) && isReleaseNewer(latestRuntimeVersion, runtimeVersion)
-    const momocExempt = bot.mode === 'smart' && typeof this.db.isSmartBotMomocExempt === 'function' ? this.db.isSmartBotMomocExempt(bot.id) : false
+    const latestRuntimeVersion = this.readPackageVersion(path.join(this.config.root || '', bot.mode === 'signin' ? 'signin-runtime' : bot.mode === 'admin' ? 'admin-runtime' : 'smart-runtime'))
+    const updateAvailable = (bot.mode === 'smart' || bot.mode === 'admin') && Boolean(state) && isReleaseNewer(latestRuntimeVersion, runtimeVersion)
+    const momocExempt = (bot.mode === 'smart' || bot.mode === 'admin') && typeof this.db.isSmartBotMomocExempt === 'function' ? this.db.isSmartBotMomocExempt(bot.id) : false
     return { ...safe, minecraftVersion: this.protocolVersions(bot)[0], billingMode: bot.mode === 'signin' ? 'once' : 'hourly', priceMomoc: bot.mode === 'signin' ? prices.signinOncePrice : prices.smartHourlyPrice, momocExempt, allowScheduling: bot.mode === 'signin', scheduleEnabled: Boolean(bot.scheduleEnabled), oauth, smartSchedules, runtimeVersion, latestRuntimeVersion, updateAvailable, logs: [] }
   }
 
@@ -474,7 +475,7 @@ class BotManager {
     let count = 0
     for (const id of this.processes.keys()) {
       const bot = this.db.getBot(id)
-      if (bot?.mode === 'smart') count += 1
+      if (bot?.mode === 'smart' || bot?.mode === 'admin') count += 1
     }
     return count
   }
@@ -700,17 +701,17 @@ class BotManager {
     const accountOwner = this.accountLocks.get(bot.accountId)
     if (accountOwner && accountOwner !== id) throw new Error('这个微软账号已有其他模板正在运行。')
     const runtimeSettings = typeof this.db.getRuntimeSettings === 'function' ? this.db.getRuntimeSettings() : { maxRunningBots: 0 }
-    if (bot.mode === 'smart' && runtimeSettings.maxRunningBots > 0 && this.runningSmartBotCount() >= runtimeSettings.maxRunningBots) {
+    if ((bot.mode === 'smart' || bot.mode === 'admin') && runtimeSettings.maxRunningBots > 0 && this.runningSmartBotCount() >= runtimeSettings.maxRunningBots) {
       throw new Error(`平台智能 Bot 运行数已达到上限 (${runtimeSettings.maxRunningBots})。`)
     }
     const user = this.db.getUser(bot.userId)
     if (!user) throw new Error('用户不存在。')
     const prices = this.db.getModePrices()
     const price = bot.mode === 'signin' ? prices.signinOncePrice : prices.smartHourlyPrice
-    const momocExempt = bot.mode === 'smart' && typeof this.db.isSmartBotMomocExempt === 'function' && this.db.isSmartBotMomocExempt(bot.id)
+    const momocExempt = (bot.mode === 'smart' || bot.mode === 'admin') && typeof this.db.isSmartBotMomocExempt === 'function' && this.db.isSmartBotMomocExempt(bot.id)
     // 智能 Bot 余额门槛只拦“负数/欠费”：启动后有 3 分钟免费宽限期，
     // 余额不够付一分钟的也允许先跑起来，宽限期结束后再由计费逻辑按余额停机。
-    if (bot.mode === 'smart' && !momocExempt && user.availableMomoc < 0) throw new Error('momoc 余额不足，无法启动机器人。')
+    if ((bot.mode === 'smart' || bot.mode === 'admin') && !momocExempt && user.availableMomoc < 0) throw new Error('momoc 余额不足，无法启动机器人。')
     if (bot.mode === 'signin') {
       const reservation = this.db.reserveOnce(id, price)
       if (!reservation.ok) throw new Error(`momoc 余额不足：${reservation.reason}`)
@@ -825,7 +826,7 @@ class BotManager {
   }
 
   prepareProject (bot) {
-    const templatePath = path.resolve(this.config.root, bot.mode === 'signin' ? 'signin-runtime' : 'smart-runtime')
+    const templatePath = path.resolve(this.config.root, bot.mode === 'signin' ? 'signin-runtime' : bot.mode === 'admin' ? 'admin-runtime' : 'smart-runtime')
     const packageFile = path.join(templatePath, 'package.json')
     if (!fs.existsSync(packageFile)) throw new Error('平台核心运行时缺少 package.json。')
     const instancePath = path.join(this.config.root, 'runtime', bot.id)
@@ -1029,10 +1030,14 @@ class BotManager {
 
   executeSmartRequest (botId, action, payload) {
     const bot = this.db.getBot(botId)
-    if (!bot || bot.mode !== 'smart') throw new Error('智能 Bot 不存在。')
+    // admin 模式（管理专用 Bot）走同一套 smart 接口：命令、权限、充值、
+    // 定时任务与探测全在内，普通智能 Bot 的入口不变。
+    if (!bot || (bot.mode !== 'smart' && bot.mode !== 'admin')) throw new Error('智能 Bot 不存在。')
+    const state = this.processes.get(botId)
     if (action === 'runtime_targets') {
       // Prefixes are intentionally exposed to running smart runtimes so an
       // online Bot can act as the in-game receiver for an offline Bot.
+      // admin 模式 Bot 不进该列表：它是管理专用探测机，不参与代收上下线。
       return this.db.listBots().filter(row => row.mode === 'smart').map(row => {
         const settings = this.db.getSmartBotSettings(row.id)
         const prefixes = []
@@ -1054,7 +1059,7 @@ class BotManager {
     if (action === 'runtime_control') {
       const targetId = String(payload.targetBotId || botId)
       const target = this.db.getBot(targetId)
-      if (!target || target.mode !== 'smart') throw new Error('目标智能 Bot 不存在。')
+      if (!target || (target.mode !== 'smart' && target.mode !== 'admin')) throw new Error('目标智能 Bot 不存在。')
       if (String(target.serverHost || '') !== String(bot.serverHost || '') || Number(target.serverPort || 0) !== Number(bot.serverPort || 0)) return { allowed: false, reason: 'different_server', silent: true }
       const username = String(payload.username || '')
       const access = this.db.getSmartAccess(target.userId, username)
@@ -1134,7 +1139,8 @@ class BotManager {
       return { confirmed: true, amount: pending.amount, balance, sender: pending.sender, silent: Boolean(pending.silent) }
     }
     if (action === 'runtime_version') {
-      const runtime = readRuntimeUpdates(this.config.root, 'smart')
+      // admin 模式读 admin-runtime（版本独立演进）；smart 读 smart-runtime。
+      const runtime = readRuntimeUpdates(this.config.root, bot.mode)
       return { version: runtime.version, release: runtime.latestRelease, releases: runtime.releases }
     }
     if (action === 'ominous_schedule_get') return this.db.getSmartBotAutomation(botId)
@@ -1159,13 +1165,25 @@ class BotManager {
       const resolved = this.handleBaltopQuery(botId, state, payload)
       return { handled: Boolean(resolved) }
     }
+    if (action === 'baltop_probe_run') {
+      // 游戏内「探测」命令：手动立即触发一轮探测（管理员可用）。
+      const actor = this.db.getSmartAccess(bot.userId, String(payload.username || ''))
+      if (actor.blacklisted || !actor.admin) return { allowed: false, silent: true }
+      const settings = this.db.getBaltopSettings()
+      if (this.baltopRound) return { allowed: true, status: 'already_running' }
+      this.startBaltopRound(settings)
+      return { allowed: true, status: this.baltopRound ? 'started' : 'no_online_bot' }
+    }
     if (action === 'baltop_status') {
+      // 游戏内「探测」不带参数时查状态：开关/下次探测时间。
       const settings = this.db.getBaltopSettings()
       return {
         enabled: settings.enabled,
         pages: settings.pages,
-        intervalMinutes: settings.intervalMinutes,
-        pageDelayMs: settings.pageDelayMs
+        hours: settings.hours,
+        pageDelayMs: settings.pageDelayMs,
+        lastProbeAt: settings.lastProbeAt,
+        probing: Boolean(this.baltopRound)
       }
     }
     const username = String(payload.username || '')
@@ -1451,7 +1469,7 @@ class BotManager {
     const bot = this.db.getBot(id)
     if (!bot) throw new Error('机器人不存在。')
     if (actorUserId && bot.userId !== actorUserId) throw new Error('无权操作这个机器人。')
-    if (bot.mode !== 'smart') throw new Error('只有智能 Bot 支持版本更新重启。')
+    if (bot.mode !== 'smart' && bot.mode !== 'admin') throw new Error('只有智能 Bot 支持版本更新重启。')
     const state = this.processes.get(id)
     if (!state) {
       // 进程已不在（异常停止后的残留状态）：归一化后走启动流程，避免卡死在 desiredState=running
@@ -1489,7 +1507,7 @@ class BotManager {
     const bot = this.db.getBot(id)
     // Older runtime versions exited cleanly without declaring an in-game restart.
     const legacyCleanRestart = Boolean(
-      bot?.mode === 'smart' &&
+      (bot?.mode === 'smart' || bot?.mode === 'admin') &&
       code === 0 &&
       !signal &&
       !exitedState.stopping &&
