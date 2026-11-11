@@ -1400,6 +1400,16 @@ test('top-up confirm settles from sent receipts and ignores unmatched amounts', 
     assert.equal(manager.executeSmartRequest(bot.id, 'top_up_confirm', { amount: '4.99' }).confirmed, false)
     assert.equal(Number(f.db.getUser(user.id).momoc), 21.01)
     manager.executeSmartRequest(bot.id, 'top_up_cancel', {})
+
+    // 10s 超时语义：挂起单过期后 confirm 拒绝（判充值失败），prepare 允许立即重新发起。
+    manager.pendingTopUps.set(bot.id, { cents: 300, amount: '3.00', sender: 'Payer', createdAt: Date.now() - 11_000 })
+    assert.equal(manager.executeSmartRequest(bot.id, 'top_up_confirm', { amount: '3.00' }).confirmed, false)
+    assert.equal(Number(f.db.getUser(user.id).momoc), 21.01)
+    // 过期挂起单不拦新充值（无需等 60s）。
+    manager.executeSmartRequest(bot.id, 'top_up_prepare', { username: 'Payer', amount: '2.00' })
+    assert.equal(manager.executeSmartRequest(bot.id, 'top_up_confirm', { amount: '2.00' }).confirmed, true)
+    assert.equal(Number(f.db.getUser(user.id).momoc), 23.01)
+    manager.executeSmartRequest(bot.id, 'top_up_cancel', {})
   } finally {
     f.close()
   }
