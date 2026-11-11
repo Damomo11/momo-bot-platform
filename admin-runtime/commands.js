@@ -2245,6 +2245,13 @@ function installSmartCommands (bot, options = {}) {
       }).catch(() => {})
       return
     }
+    // kind='sent'：bot 代付完成（转出给收款人）的回执——
+    // 2026-11 服务器换措辞后，充值命令的确认只能靠它驱动；
+    // 是否真的入账由 top_up_confirm 用挂起单（金额全等 + 60s 窗口）校验。
+    if (event?.kind === 'sent') {
+      platform.request('top_up_confirm', { amount: event?.amount }).catch(error => console.error('[smart-top-up]', error?.message || error))
+      return
+    }
     platform.request('top_up_confirm', { amount: event?.amount }).then(result => {
       if (!result?.confirmed) return
       if (result.silent) return

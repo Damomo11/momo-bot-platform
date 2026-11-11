@@ -1144,6 +1144,8 @@ class BotManager {
       const pending = this.pendingTopUps.get(botId)
       const match = String(payload.amount || '').match(/^(\d+)\.(\d{2})$/)
       const cents = match ? Number(match[1]) * 100 + Number(match[2]) : 0
+      // sent 回执（bot 代付完成）与 success 回执共用这里：
+      // 挂起单金额全等 + 60s 窗口才入账；转给别人的/无挂起的回执都无感。
       if (!pending || Date.now() - pending.createdAt >= 60000 || cents !== pending.cents) return { confirmed: false }
       this.pendingTopUps.delete(botId)
       const recipient = this.db.getSmartTopUpSettings().recipient

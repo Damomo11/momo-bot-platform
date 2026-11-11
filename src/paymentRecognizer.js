@@ -16,7 +16,12 @@ const BUILTIN_PAYMENT_PATTERNS = [
   String.raw`(?:已?支付|收到)\s*[「『"']?\s*(?<player>[A-Za-z0-9_\-]{1,16})\s*[」』"']?\s*(?:转来|转给|转入)?\s*的?\s*(?<![\d.])(?<amount>\d+(?:\.\d{1,2})?)\s*(?:枚|个)?\s*(?:TSLC|C)\b`
 ].map(source => new RegExp(source, 'i'))
 
-// bot 名义下的转出回执（转给玩家 X）不是充值：「已向玩家」是新语法里 bot → 人的方向。
+// bot 名义下的转出回执（转给玩家 X）曾是充值链路的盲区：
+// 「充值」命令的语义就是 bot 代发 /pay <收款人> <amount>，服务器确认后
+// bot 自己收到「已向 X 转账 N TSLC」回执——这正是 top_up_confirm 需要的信号。
+// 2026-11 服务器换措辞后旧回执格式（[TSLLLLL] 你已支付 X N C）不再出现，
+// 靠 sent 回执驱动确认：转给「收款人」且金额匹配挂起单才入账（管理端校验），
+// 转给其他玩家的回执一律忽略。
 const PAYMENT_OUTGOING_PATTERN = new RegExp(String.raw`已?向\s*(?!你(?:的)?\s)(?:[「『"']\s*)?[A-Za-z0-9_\-]{1,16}(?:\s*[」』"'])?\s*(?:转账|转入|转来|支付|付款)|转出`)
 
 // 「当前余额/剩余」后的数字不是到账金额。
@@ -114,9 +119,13 @@ function validatePaymentRegex (source) {
   return lines.join('\n')
 }
 
-// 识别一条 system 消息是否为「充值成功」（bot 收款方向的支付完成）。
-// 返回 { kind: 'success', amount } 或 { kind: 'insufficient', amount } 或 null。
-// insufficient 保持向后兼容：余额不足提示触发 top_up_cancel。
+// 识别一条 system 消息是否与资金相关：
+//   { kind: 'success', amount }    玩家把 TSL 转给 bot（收款方向）→ 入账
+//   { kind: 'sent', amount }       bot 代付完成（转出给收款人）→ 驱动充值 confirm
+//   { kind: 'insufficient', amount } 余额不足 → 取消挂起单
+//   null                           与资金无关
+// sent 只报事实「bot 转出去了」；是否入账由管理端 top_up_confirm 用
+// pendingTopUps（金额全等 + 60s 窗口）校验，转给非收款人/无挂起单都无感。
 function recognizePaymentMessage (message, options = {}) {
   const text = String(message || '').trim()
   if (!text) return null
@@ -125,16 +134,23 @@ function recognizePaymentMessage (message, options = {}) {
   const insufficient = text.match(insufficientPattern)
   if (insufficient) return { kind: 'insufficient', amount: insufficient[1] }
 
-  // 转出方向回执（bot 已向 X 转账/支付）不是充值；「向你转账」是收款方向不拦。
-  if (PAYMENT_OUTGOING_PATTERN.test(text)) return null
+  // 先按「收到方向」识别（历史主路径）；outgoing 句式走 sent 通道，
+  // 充值链路才能在服务器新回执措辞下继续工作。
+  const outgoing = PAYMENT_OUTGOING_PATTERN.test(text)
 
   const customPatterns = options.paymentRegexSource ? (() => {
     try { return compilePaymentRegexList(options.paymentRegexSource) } catch { return null }
   })() : null
   let payment = customPatterns ? matchPaymentPatterns(text, customPatterns) : null
   if (!payment) payment = matchPaymentPatterns(text, BUILTIN_PAYMENT_PATTERNS)
-  if (!payment) payment = parsePaymentHeuristic(text)
+  if (!payment && outgoing) payment = parsePaymentHeuristic(text)
+  if (!payment) payment = outgoing ? null : parsePaymentHeuristic(text)
   if (!payment) return null
+
+  if (outgoing) {
+    // bot 转出回执：报 sent，player 是收款人（管理端会比对）。
+    return { kind: 'sent', amount: payment.amount, amountCents: payment.amountCents, player: payment.player }
+  }
 
   const recipient = String(options.recipient || '')
   const isSelfIncoming = recipient && payment.player.toLowerCase() === recipient.toLowerCase()
@@ -149,5 +165,6 @@ module.exports = {
   validatePaymentRegex,
   compilePaymentRegexList,
   recognizePaymentMessage,
-  parsePaymentHeuristic
+  parsePaymentHeuristic,
+  PAYMENT_OUTGOING_PATTERN
 }
