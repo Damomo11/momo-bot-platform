@@ -154,6 +154,7 @@ class BotSupervisorClient {
   syncSmartTopUpSettings () { return this.command('sync_smart_settings', { id: '__all_top_up_settings__' }) }
   syncSmartAutomation (id) { return this.command('sync_smart_automation', { id }) }
   syncModules (id) { return this.command('sync_modules', { id }) }
+  baltopStatus () { return this.command('baltop_status', {}) }
 }
 
 module.exports = BotSupervisorClient

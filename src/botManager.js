@@ -11,6 +11,22 @@ const serverCircuitDelaysMs = [120_000, 300_000, 600_000, 1_200_000, 1_800_000]
 // Bot 上线后的免费宽限期：连接、加载资源包等启动开销这段时间不收费，
 // 让余额不够充值一小时的玩家也能先把 Bot 跑起来。
 const BILLING_GRACE_MS = 3 * 60 * 1000
+// 排行榜探测：状态轮询的节流下限（每次 runBaltopProbeScheduler 最多派发一轮）。
+const BALTOP_PROBE_TICK_MS = 15_000
+
+// 把 1..totalPages 均匀分配给 workers 份：每份是连续页码段，长度差不超过 1。
+// 例：10 页 3 个 bot → [1-4],[5-7],[8-10]。
+function distributeBaltopPages (totalPages, workers) {
+  const pages = Math.max(1, Math.trunc(Number(totalPages) || 0))
+  const count = Math.max(1, Math.trunc(Number(workers) || 0))
+  const segments = []
+  for (let index = 0; index < count; index++) {
+    const start = Math.floor(index * pages / count) + 1
+    const end = Math.floor((index + 1) * pages / count)
+    if (start <= end) segments.push({ start, end })
+  }
+  return segments.length ? segments : [{ start: 1, end: pages }]
+}
 
 function timestamped (tag, message) {
   const time = new Date().toLocaleString('sv-SE', { hour12: false })
@@ -52,6 +68,10 @@ class BotManager {
     this.dailyAutomationTimer = null
     this.accurateTimeTimer = null
     this.timeSyncPromise = null
+    // 排行榜探测：周期派发（startBaltopRound）与收集（collectBaltopRound）状态。
+    this.baltopTimer = null
+    this.baltopRound = null
+    this.baltopReports = new Map()
   }
 
   sanitizedLogLines (message) {
@@ -130,6 +150,7 @@ class BotManager {
       this.syncSchedule(bot.id)
     }
     this.startDailyAutomationScheduler()
+    this.startBaltopProbeScheduler()
   }
 
   accurateNow () { return this.now() + this.accurateTimeOffsetMs }
@@ -220,6 +241,200 @@ class BotManager {
         this.pendingTopUps.delete(botId)
         console.error(`[daily-auto-renew:${botId}]`, error)
       }
+    }
+  }
+
+  // ============ 排行榜探测（/baltop 金钱榜） ============
+  // 管理端勾选后：每个探测周期把 1..pages 均分给当前在线的智能 Bot，
+  // bot 按页间隔逐页 /baltop <页码> 并把系统消息解析回传；全部收齐后
+  // 按 serverKey 合并成总排行榜落库，供管理界面查看与 bal 公屏查询。
+
+  onlineSmartBots (serverKey = null) {
+    const rows = []
+    for (const [botId, state] of this.processes) {
+      if (!state?.reachedOnline) continue
+      const bot = this.db.getBot(botId)
+      if (!bot || bot.mode !== 'smart') continue
+      if (serverKey && this.serverKey(bot) !== serverKey) continue
+      rows.push({ botId, bot, state })
+    }
+    return rows
+  }
+
+  startBaltopProbeScheduler () {
+    if (this.baltopTimer || typeof this.db.getBaltopSettings !== 'function') return
+    const run = () => this.runBaltopProbeScheduler().catch(error => console.error('[baltop-probe]', error))
+    this.baltopTimer = setInterval(run, BALTOP_PROBE_TICK_MS)
+    this.baltopTimer.unref?.()
+    run()
+  }
+
+  runBaltopProbeScheduler () {
+    const settings = this.db.getBaltopSettings()
+    if (!settings.enabled) return this.cancelBaltopRound()
+    if (this.baltopRound) {
+      this.collectBaltopRound()
+      return
+    }
+    if (Date.now() - settings.lastProbeAt < settings.intervalMinutes * 60_000) return
+    this.startBaltopRound(settings)
+  }
+
+  cancelBaltopRound () {
+    if (!this.baltopRound) return
+    clearTimeout(this.baltopRound.timeoutTimer)
+    this.baltopRound = null
+    this.baltopReports.clear()
+  }
+
+  // 派发一轮探测：收集所有在线智能 Bot（按服务器分组），组内均分页码。
+  startBaltopRound (settings) {
+    const groups = new Map()
+    for (const row of this.onlineSmartBots()) {
+      const key = this.serverKey(row.bot)
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key).push(row)
+    }
+    if (!groups.size) return
+    const now = this.now()
+    const assignments = []
+    for (const [key, members] of groups) {
+      const segments = distributeBaltopPages(settings.pages, members.length)
+      members.forEach((member, index) => {
+        const segment = segments[index] || segments[segments.length - 1]
+        assignments.push({ serverKey: key, ...member, start: segment.start, end: segment.end })
+      })
+    }
+    const pageDelayMs = Math.max(1000, settings.pageDelayMs)
+    const expected = assignments.length
+    const collectDelay = pageDelayMs * settings.pages + 60_000
+    this.baltopRound = { startedAt: now, expected, pageDelayMs, pages: settings.pages, reported: 0 }
+    this.baltopReports.clear()
+    const finish = () => this.collectBaltopRound()
+    this.baltopRound.timeoutTimer = setTimeout(finish, collectDelay)
+    this.baltopRound.timeoutTimer.unref?.()
+    this.db.markBaltopProbe(now)
+    for (const assignment of assignments) {
+      this.sendToBot(assignment.state, {
+        type: 'baltop_probe',
+        startPage: assignment.start,
+        endPage: assignment.end,
+        pageDelayMs
+      })
+      this.appendRelatedLog(assignment.botId, 'schedule', `排行榜探测开始：第 ${assignment.start}-${assignment.end} 页（共 ${settings.pages} 页，页间隔 ${Math.round(pageDelayMs / 1000)} 秒）。`)
+    }
+    console.log(`[baltop-probe] round started: ${expected} bot(s), pages 1-${settings.pages}`)
+  }
+
+  // 收尾合并：按 serverKey 各自落库；缺报的 bot 只记日志不影响其他组。
+  collectBaltopRound () {
+    const round = this.baltopRound
+    if (!round) return
+    clearTimeout(round.timeoutTimer)
+    this.baltopRound = null
+    const merged = new Map()
+    for (const report of this.baltopReports.values()) {
+      if (!Array.isArray(report?.entries) || !report?.serverKey) continue
+      if (!merged.has(report.serverKey)) merged.set(report.serverKey, [])
+      merged.get(report.serverKey).push(...report.entries)
+    }
+    this.baltopReports.clear()
+    for (const [serverKey, entries] of merged) {
+      const unique = new Map()
+      for (const entry of entries) {
+        const name = String(entry?.name || '').trim()
+        if (!name) continue
+        unique.set(name.toLowerCase(), { ...entry, name })
+      }
+      const rows = [...unique.values()].sort((a, b) => Number(a.rank) - Number(b.rank))
+      if (typeof this.db.replaceBaltopEntries !== 'function') continue
+      this.db.replaceBaltopEntries(serverKey, rows, round.startedAt)
+      console.log(`[baltop-probe] server ${serverKey}: ${rows.length} entries saved`)
+      // 探测结果属平台数据，记到本轮参与的第一个 bot 的相关日志，管理页可见。
+      const witness = this.onlineSmartBots(serverKey)[0]
+      if (witness) this.appendRelatedLog(witness.botId, 'schedule', `排行榜探测完成：${serverKey} 共入库 ${rows.length} 名玩家（第 1-${round.pages} 页）。`)
+    }
+  }
+
+  // 供 handleMessage 转发 bot 回报的解析结果。report 缺省 serverKey 时按 bot 当前服务器。
+  handleBaltopReport (id, state, report = {}) {
+    if (!this.baltopRound) return false
+    const bot = this.db.getBot(id)
+    if (!bot) return false
+    const serverKey = String(report.serverKey || this.serverKey(bot))
+    this.baltopReports.set(id, { serverKey, entries: Array.isArray(report.entries) ? report.entries : null })
+    if (this.baltopRound) {
+      this.baltopRound.reported += 1
+      if (this.baltopRound.reported >= this.baltopRound.expected) this.collectBaltopRound()
+    }
+    return true
+  }
+
+  // 游戏内 bal 查询：任意玩家公屏输入 bal ID，由指定回复 bot（管理员设置，
+  // 最多 3 个，都不在线则随机挑一个在线智能 bot）回查并公屏回复。
+  handleBaltopQuery (id, state, payload = {}) {
+    const name = String(payload?.name || '').trim()
+    if (!name) return false
+    const bot = this.db.getBot(id)
+    if (!bot) return false
+    const serverKey = String(payload.serverKey || this.serverKey(bot))
+    if (typeof this.db.getBaltopEntry !== 'function') return false
+    const entry = this.db.getBaltopEntry(serverKey, name)
+    if (!entry) return false
+    const settings = this.db.getBaltopSettings()
+    const replyBotIds = (settings.replyBotIds || []).filter(Boolean)
+    let targetId = id
+    if (replyBotIds.length) {
+      const preferred = this.onlineSmartBots(serverKey).filter(row => replyBotIds.includes(row.botId))
+      targetId = preferred.length ? preferred[0].botId : null
+      if (!targetId) {
+        const online = this.onlineSmartBots(serverKey)
+        if (!online.length) return false
+        targetId = online[Math.floor(Math.random() * online.length)].botId
+      }
+    } else {
+      if (!this.processes.get(id)?.reachedOnline) return false
+    }
+    const targetState = this.processes.get(targetId)
+    if (!targetState) return false
+    const requester = String(payload?.username || '')
+    this.sendToBot(targetState, {
+      type: 'baltop_reply',
+      name: entry.name,
+      rank: entry.rank,
+      balance: entry.balance,
+      requester,
+      updatedAt: entry.updatedAt
+    })
+    return true
+  }
+
+  // 供平台管理界面展示：探测开关、快照统计（按服务器分组）。
+  baltopStatus () {
+    const settings = this.db.getBaltopSettings()
+    const servers = new Map()
+    if (typeof this.db.listBaltopEntries === 'function') {
+      for (const bot of this.db.listBots()) {
+        const key = this.serverKey(bot)
+        if (servers.has(key)) continue
+        const rows = this.db.listBaltopEntries(key, { limit: 500 })
+        servers.set(key, rows)
+      }
+    }
+    const round = this.baltopRound
+    return {
+      settings: { ...settings },
+      probing: Boolean(round),
+      probeStartedAt: round?.startedAt || 0,
+      servers: [...servers.entries()].map(([serverKey, rows]) => {
+        const online = this.onlineSmartBots(serverKey)
+        return {
+          serverKey,
+          entryCount: rows.length,
+          entries: rows,
+          onlineBots: online.map(row => ({ id: row.botId, label: row.bot.label }))
+        }
+      })
     }
   }
 
@@ -688,6 +903,10 @@ class BotManager {
       this.handleSmartRequest(id, state, message)
       return
     }
+    if (message?.type === 'baltop_report') {
+      this.handleBaltopReport(id, state, message.report || {})
+      return
+    }
     if (message?.type === 'related_log') {
       this.appendRelatedLog(id, message.level || 'audit', message.message)
       return
@@ -936,6 +1155,19 @@ class BotManager {
       return result
     }
     if (action === 'task_schedule_complete') return { task: this.db.completeSmartBotTaskSchedule(botId, payload.name) }
+    if (action === 'baltop_query') {
+      const resolved = this.handleBaltopQuery(botId, state, payload)
+      return { handled: Boolean(resolved) }
+    }
+    if (action === 'baltop_status') {
+      const settings = this.db.getBaltopSettings()
+      return {
+        enabled: settings.enabled,
+        pages: settings.pages,
+        intervalMinutes: settings.intervalMinutes,
+        pageDelayMs: settings.pageDelayMs
+      }
+    }
     const username = String(payload.username || '')
     const actor = this.db.getSmartAccess(bot.userId, username)
     const lock = this.db.getSmartBotLock(botId)
@@ -1387,8 +1619,11 @@ class BotManager {
   shutdown () {
     if (this.dailyAutomationTimer) clearInterval(this.dailyAutomationTimer)
     if (this.accurateTimeTimer) clearInterval(this.accurateTimeTimer)
+    if (this.baltopTimer) clearInterval(this.baltopTimer)
     this.dailyAutomationTimer = null
     this.accurateTimeTimer = null
+    this.baltopTimer = null
+    this.cancelBaltopRound()
     for (const { timer } of this.reconnectTimers.values()) clearTimeout(timer)
     this.reconnectTimers.clear()
     for (const task of this.schedules.values()) task.destroy()

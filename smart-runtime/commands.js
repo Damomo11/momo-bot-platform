@@ -9,6 +9,8 @@ const OMINOUS_BOTTLE_RETRY_MS = 60 * 1000
 const FISHING_DEFAULT_INTERVAL_TICKS = 10
 const OFF_HAND_SLOT = 45
 const FISHING_ATTEMPT_TIMEOUT_MS = 90 * 1000
+// 排行榜探测：单页等待上限（超时则放弃该页，继续下一页）。
+const BALTOP_PAGE_TIMEOUT_MS = 20 * 1000
 
 // All in-game reply text lives here so wording can be changed without touching command logic.
 const COMMAND_TEXT = Object.freeze({
@@ -124,7 +126,10 @@ const COMMAND_TEXT = Object.freeze({
   alreadyAdminLocked: '机器人已被超级锁定，请勿重复锁定。',
   adminLockSuccess: '超级锁定成功，禁用一切白名单命令，仅超管可使用“超级解锁”。',
   notAdminLocked: '机器人没有被超级锁定。',
-  adminUnlockSuccess: '机器人已超级解锁，普通锁定也已同时解除。'
+  adminUnlockSuccess: '机器人已超级解锁，普通锁定也已同时解除。',
+  baltopMissing: '暂无排行榜数据，请等待机器人完成探测。',
+  baltopResult: (name, rank, balance) => `玩家 ${name} 当前排行第 ${rank} 名，余额 ${balance}。`,
+  baltopUnknown: name => `未找到玩家 ${name} 的排行数据（可能不在榜上或数据过期）。`
 })
 
 function normalizeCommandPrefixes (prefixes) {
@@ -1920,6 +1925,125 @@ function formatMomoc (value) {
   return Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 6 })
 }
 
+// ============ 排行榜探测（/baltop 金钱榜） ============
+// bot 侧只负责：读系统消息 → 解析榜单行 → 按分配页码逐页发送 /baltop
+// 并收集结果；合并与落库都在平台侧（botManager/collectBaltopRound）。
+
+// 榜单标题：例如「【余额排行】（第 12 页）」。
+const BALTOP_HEADER_PATTERN = /【余额排行】\s*（第\s*(\d+)\s*页）/
+// 榜单行：rank 跟玩家名；玩家名可能被 mod 的头像组件包住，名字在末尾。
+// 例：#1 Zvbj_ - 5299.00 / #2 [MoMortis1917 head]MoMortis1917 - 2014.01
+const BALTOP_ENTRY_PATTERN = /^#(\d+)\s+(?:\[(.+?)\s+head\])?([A-Za-z0-9_]{3,16})\s+-\s+([0-9][0-9.,]*)$/
+
+function parseBaltopMessage (text) {
+  const line = String(text || '').replace(/\u00a7./g, '').trim()
+  if (!line) return null
+  const header = line.match(BALTOP_HEADER_PATTERN)
+  if (header) return { kind: 'header', page: Number(header[1]) }
+  const entry = line.match(BALTOP_ENTRY_PATTERN)
+  if (entry) {
+    return {
+      kind: 'entry',
+      rank: Number(entry[1]),
+      name: entry[3],
+      balance: entry[4]
+    }
+  }
+  return null
+}
+
+// 把收到的 entry 合并进收集器：rank 冲突时后到的覆盖（同轮探测内以最新为准）。
+function mergeBaltopEntries (collected, entries) {
+  for (const entry of entries || []) {
+    if (!entry?.name || !Number.isFinite(Number(entry.rank))) continue
+    collected.set(String(entry.name).toLowerCase(), {
+      rank: Number(entry.rank),
+      name: String(entry.name),
+      balance: String(entry.balance ?? '')
+    })
+  }
+  return collected
+}
+
+function createBaltopProbeController (bot, options = {}) {
+  const platform = options.platform || global.botPlatform
+  const runBotAction = options.runBotAction || (task => task())
+  const parse = options.parseBaltopMessage || parseBaltopMessage
+  const logger = options.logger || console
+  const delayMs = options.pageDelayMs || 10_000
+  let active = null // { startPage, endPage, page, collected, timer, stopped }
+  let listeners = null
+
+  function clearListeners () {
+    if (!listeners) return
+    bot.removeListener('messagestr', listeners.messagestr)
+    if (listeners.systemChat) bot._client?.removeListener('system_chat', listeners.systemChat)
+    listeners = null
+  }
+
+  function cancel () {
+    if (!active) return
+    active.stopped = true
+    if (active.timer) clearTimeout(active.timer)
+    active = null
+    clearListeners()
+  }
+
+  // 平台下发的探测任务：startPage..endPage 逐页 /baltop，页间隔即等待窗口，
+  // 榜行通过 messagestr 流入 collected；完成后把整段结果回报平台。
+  async function probe ({ startPage, endPage, pageDelayMs } = {}) {
+    cancel()
+    const start = Math.max(1, Math.trunc(Number(startPage) || 1))
+    const end = Math.max(start, Math.trunc(Number(endPage) || start))
+    const waitMs = Math.max(1000, Number(pageDelayMs) || delayMs)
+    const collected = new Map()
+    active = { startPage: start, endPage: end, page: start, collected, timer: null, stopped: false }
+    const handleLine = text => {
+      const parsed = parse(text)
+      if (parsed?.kind !== 'entry') return
+      mergeBaltopEntries(active?.collected, [parsed])
+    }
+    listeners = { messagestr: handleLine }
+    bot.on('messagestr', handleLine)
+    try {
+      for (let page = start; page <= end; page++) {
+        if (!active || active.stopped) break
+        active.page = page
+        await runBotAction(() => bot.chat(`/baltop ${page}`))
+        // 页间隔即等待窗口：这页的榜行在下一页发出前都会落进 collected。
+        await delay(waitMs)
+      }
+    } finally {
+      cancel()
+    }
+    return { entries: [...collected.values()] }
+  }
+
+  return { probe, cancel, isActive: () => Boolean(active) }
+}
+
+// bal 公屏查询：任意玩家输入 bal <ID>，平台查聚合榜后由指定 bot 回复。
+function installBaltopQueryListener (bot, options = {}) {
+  const platform = options.platform || global.botPlatform
+  const listener = async event => {
+    const match = String(event?.message || '').trim().match(/^bal\s+([A-Za-z0-9_]{3,16})$/i)
+    if (!match) return
+    if (String(event.username || '').toLowerCase() === String(bot.username || '').toLowerCase()) return
+    const name = match[1]
+    try {
+      const result = await platform.request('baltop_query', { username: event.username, name })
+      // handled=true：平台已把 baltop_reply 下发给负责回复的 bot（可能是别的 bot），
+      // 本机不再发消息避免重复；handled=false：榜上没这个人，本机回未找到。
+      if (!result?.handled) bot.chat(COMMAND_TEXT.baltopUnknown(name).slice(0, 256))
+    } catch (error) {
+      platform.log?.(`bal 查询失败: ${error?.message || error}`)
+      bot.chat(COMMAND_TEXT.baltopMissing)
+    }
+  }
+  bot.on('botPlatformMessage', listener)
+  return () => bot.removeListener('botPlatformMessage', listener)
+}
+
 function installSmartCommands (bot, options = {}) {
   hardenDigTime(bot)
   const platform = options.platform || global.botPlatform
@@ -1942,6 +2066,24 @@ function installSmartCommands (bot, options = {}) {
   let commandPrefix = String(options.commandPrefix ?? '')
   let messageOverrides = {}
   let topUpSettings = { recipient: 'Damomo1', commandTemplate: '/pay {recipient} {amount}' }
+  // 排行榜探测：进程内单例控制器，探测期间挂 messagestr 监听收榜行。
+  const baltopProbe = createBaltopProbeController(bot, { ...options, platform, runBotAction })
+  const sendBaltopReport = report => {
+    if (!process.send) return
+    process.send({ type: 'baltop_report', report: { serverKey: `${String(process.env.BOT_PLATFORM_SERVER_HOST || '')}:${Number(process.env.BOT_PLATFORM_SERVER_PORT || 25565)}`, ...report } })
+  }
+  const handleBaltopReply = message => {
+    const name = String(message.name || '')
+    if (!name) return
+    const rank = Number(message.rank)
+    const balance = String(message.balance || '')
+    const text = Number.isFinite(rank) && balance
+      ? COMMAND_TEXT.baltopResult(name, rank, balance)
+      : COMMAND_TEXT.baltopUnknown(name)
+    bot.chat(String(text).slice(0, 256))
+    platform.relatedLog?.(`排行榜查询回复：${name} → ${text}`)
+  }
+
   const settingsListener = message => {
     if (message?.type === 'smart_settings') {
       commandPrefix = String(message.settings?.commandPrefix || '')
@@ -1961,6 +2103,17 @@ function installSmartCommands (bot, options = {}) {
     if (message?.type === 'smart_daily_action' && ['signin', 'auto_renew'].includes(message.action) && String(message.command || '')) {
       runBotAction(() => bot.chat(String(message.command))).catch(error => console.error('[smart-daily-action]', error?.stack || error))
     }
+    if (message?.type === 'baltop_probe') {
+      baltopProbe.probe({ startPage: message.startPage, endPage: message.endPage, pageDelayMs: message.pageDelayMs })
+        .then(result => {
+          sendBaltopReport({ entries: result.entries })
+        })
+        .catch(error => {
+          console.error('[baltop-probe]', error?.stack || error)
+          sendBaltopReport({ entries: [] })
+        })
+    }
+    if (message?.type === 'baltop_reply') handleBaltopReply(message)
   }
   process.on('message', settingsListener)
   platform?.request?.('settings', {}).then(settings => {
@@ -1996,6 +2149,8 @@ function installSmartCommands (bot, options = {}) {
     })
   }
   bot.on('botPlatformMessage', listener)
+  // bal 公屏查询：任意玩家输入 bal <ID> 时查平台聚合榜并回复。
+  const baltopQueryRemove = installBaltopQueryListener(bot, { platform, runBotAction })
   let runtimeTargets = []
   let runtimeTargetsExpiresAt = 0
   let runtimeTargetsRequest = null
@@ -2098,6 +2253,8 @@ function installSmartCommands (bot, options = {}) {
   return () => {
     bot.removeListener('botPlatformMessage', listener)
     bot.removeListener('botPlatformMessage', remoteRuntimeListener)
+    baltopQueryRemove?.()
+    baltopProbe.cancel()
     bot.removeListener('botPlatformTeleportRequest', teleportListener)
     bot.removeListener('botPlatformPeekRequest', peekListener)
     bot.removeListener('botPlatformPaymentMessage', paymentListener)
@@ -2116,6 +2273,7 @@ module.exports = {
   attackAtCursor,
   clearInventory,
   clearStaleVehicleReference,
+  createBaltopProbeController,
   createBotActionQueue,
   createFishingController,
   createVaultAutoOpenController,
@@ -2133,17 +2291,20 @@ module.exports = {
   findPlayerPosition,
   fishAtCursor,
   hardenDigTime,
+  installBaltopQueryListener,
   installSmartCommands,
   hasValidVehicleAttachment,
   isVersionNewer,
   isOminousBottleItem,
   isFishingRodHeld,
   mapDimensionLabel,
+  mergeBaltopEntries,
   mountNearestMinecart,
   moveHeldItemToOffhand,
   normalizeItemId,
   normalizeCommandPrefixes,
   normalizeItemEnchants,
+  parseBaltopMessage,
   parseSmartCommand,
   parsePeriodicRightClickArgs,
   parseCoordinates,
