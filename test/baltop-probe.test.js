@@ -1,7 +1,8 @@
 'use strict'
 
 // 排行榜探测（/baltop 金钱榜）全链路测试：
-// 解析器 → bot 侧探测器 → 管理端页面分配与合并落库 → bal 查询指定回复 bot。
+// 解析器 → bot 侧探测器 → 管理端页面分配与合并落库 → bal 查询。
+// 探测与查询固定由 admin 模式（admin-runtime 管理专用 Bot）执行。
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
@@ -15,9 +16,10 @@ const {
   COMMAND_TEXT,
   createBaltopProbeController,
   installBaltopQueryListener,
+  installSmartCommands,
   mergeBaltopEntries,
   parseBaltopMessage
-} = require('../smart-runtime/commands')
+} = require('../admin-runtime/commands')
 
 function fixture () {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-platform-baltop-'))
@@ -108,12 +110,12 @@ test('bot 侧探测器：逐页发送 /baltop 并收集榜行，页间隔可注�
   assert.equal(byName.get('Mac_ft').rank, 21)
 })
 
-test('管理端页面分配：100 页 3 bot 均分为连续段', () => {
+test('管理端页面分配：100 页 3 台管理 Bot 均分为连续段', () => {
   const f = fixture()
   try {
     const user = f.db.createUser('baltop_pages', 'password-123')
     const bots = ['a', 'b', 'c'].map((name, index) => f.db.createBot(user.id, {
-      mode: 'smart', label: name, microsoftEmail: `${name}${index}@example.com`, serverHost: 'mc.example.com'
+      mode: 'admin', label: name, microsoftEmail: `${name}${index}@example.com`, serverHost: 'mc.example.com'
     }))
     const manager = new BotManager(f.db, { now: () => Date.now(), timeSyncEnabled: false })
     const sent = bots.map(() => [])
@@ -130,12 +132,31 @@ test('管理端页面分配：100 页 3 bot 均分为连续段', () => {
   }
 })
 
-test('页面分配与合并落库：多 bot 上报 → 同服务器去重排序入库', () => {
+test('智能 Bot 不参与探测：普通 bot 收不到 baltop_probe', () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('baltop_smart', 'password-123')
+    const smartBot = f.db.createBot(user.id, { mode: 'smart', label: 'S', microsoftEmail: 's@example.com', serverHost: 'mc.example.com' })
+    const adminBot = f.db.createBot(user.id, { mode: 'admin', label: 'A', microsoftEmail: 'a@example.com', serverHost: 'mc.example.com' })
+    const manager = new BotManager(f.db, { now: () => Date.now(), timeSyncEnabled: false })
+    const sent = { smart: [], admin: [] }
+    manager.processes.set(smartBot.id, { reachedOnline: true, child: { send: message => sent.smart.push(message) } })
+    manager.processes.set(adminBot.id, { reachedOnline: true, child: { send: message => sent.admin.push(message) } })
+    manager.startBaltopRound({ pages: 100, pageDelayMs: 1000 })
+    assert.equal(sent.smart.length, 0)
+    assert.equal(sent.admin.length, 1)
+    assert.equal(sent.admin[0].type, 'baltop_probe')
+  } finally {
+    f.close()
+  }
+})
+
+test('页面分配与合并落库：多管理 bot 上报 → 同服务器去重排序入库', () => {
   const f = fixture()
   try {
     const user = f.db.createUser('baltop_owner', 'password-123')
-    const botA = f.db.createBot(user.id, { mode: 'smart', label: 'A', microsoftEmail: 'a@example.com', serverHost: 'mc.example.com' })
-    const botB = f.db.createBot(user.id, { mode: 'smart', label: 'B', microsoftEmail: 'b@example.com', serverHost: 'mc.example.com' })
+    const botA = f.db.createBot(user.id, { mode: 'admin', label: 'A', microsoftEmail: 'a@example.com', serverHost: 'mc.example.com' })
+    const botB = f.db.createBot(user.id, { mode: 'admin', label: 'B', microsoftEmail: 'b@example.com', serverHost: 'mc.example.com' })
     const manager = new BotManager(f.db, { now: () => Date.now(), timeSyncEnabled: false })
     const sentA = []
     const sentB = []
@@ -173,50 +194,84 @@ test('页面分配与合并落库：多 bot 上报 → 同服务器去重排序�
   }
 })
 
-test('bal 查询：指定回复 bot 在线时由它回复，离线则随机在线 bot', () => {
+test('bal 查询：管理 Bot 查到即回复，查不到如实回未找到；智能 Bot 不响应', () => {
   const f = fixture()
   try {
     const user = f.db.createUser('baltop_owner', 'password-123')
-    const botA = f.db.createBot(user.id, { mode: 'smart', label: 'A', microsoftEmail: 'a@example.com', serverHost: 'mc.example.com' })
-    const botB = f.db.createBot(user.id, { mode: 'smart', label: 'B', microsoftEmail: 'b@example.com', serverHost: 'mc.example.com' })
-    const botC = f.db.createBot(user.id, { mode: 'smart', label: 'C', microsoftEmail: 'c@example.com', serverHost: 'other.example.com' })
-    f.db.setBaltopSettings({ enabled: true, pages: 10, replyBotIds: [botA.id] })
+    const adminBot = f.db.createBot(user.id, { mode: 'admin', label: 'A', microsoftEmail: 'a@example.com', serverHost: 'mc.example.com' })
+    const smartBot = f.db.createBot(user.id, { mode: 'smart', label: 'S', microsoftEmail: 's@example.com', serverHost: 'mc.example.com' })
+    f.db.setBaltopSettings({ enabled: true, pages: 10 })
     f.db.replaceBaltopEntries('mc.example.com:25565', [
       { rank: 1, name: 'Zvbj_', balance: '5299.00' }
     ])
     const manager = new BotManager(f.db, { now: () => Date.now(), timeSyncEnabled: false })
-    const sent = { A: [], B: [], C: [] }
-    manager.processes.set(botA.id, { reachedOnline: true, child: { send: message => sent.A.push(message) } })
-    manager.processes.set(botB.id, { reachedOnline: true, child: { send: message => sent.B.push(message) } })
-    manager.processes.set(botC.id, { reachedOnline: true, child: { send: message => sent.C.push(message) } })
+    const sent = { admin: [], smart: [] }
+    manager.processes.set(adminBot.id, { reachedOnline: true, child: { send: message => sent.admin.push(message) } })
+    manager.processes.set(smartBot.id, { reachedOnline: true, child: { send: message => sent.smart.push(message) } })
 
-    // botB 听到玩家查询（serverHost 相同），指定 botA 在线 → 由 A 回复。
-    const handled = manager.handleBaltopQuery(botB.id, manager.processes.get(botB.id), {
+    // 管理_bot 查到 → baltop_reply 带名次余额。
+    const handled = manager.handleBaltopQuery(adminBot.id, manager.processes.get(adminBot.id), {
       username: 'Guest', name: 'Zvbj_', serverKey: 'mc.example.com:25565'
     })
     assert.equal(handled, true)
-    assert.equal(sent.A.length, 1)
-    assert.equal(sent.A[0].type, 'baltop_reply')
-    assert.equal(sent.A[0].name, 'Zvbj_')
-    assert.equal(sent.B.length, 0)
-    assert.equal(sent.C.length, 0)
+    assert.equal(sent.admin.length, 1)
+    assert.equal(sent.admin[0].type, 'baltop_reply')
+    assert.equal(sent.admin[0].name, 'Zvbj_')
+    assert.equal(sent.admin[0].rank, 1)
 
-    // 指定 bot 全下线 → 随机在线同服 bot 回复（A/C 都不在，B 在）。
-    manager.processes.delete(botA.id)
-    sent.A.length = 0
-    sent.B.length = 0
-    const handledOffline = manager.handleBaltopQuery(botB.id, manager.processes.get(botB.id), {
-      username: 'Guest', name: 'Zvbj_', serverKey: 'mc.example.com:25565'
-    })
-    assert.equal(handledOffline, true)
-    assert.equal(sent.B.length, 1)
-    assert.equal(sent.B[0].type, 'baltop_reply')
-
-    // 榜上没有的玩家 → handled=false，bot 侧回「未找到」。
-    const handledUnknown = manager.handleBaltopQuery(botB.id, manager.processes.get(botB.id), {
+    // 榜上没有（含 100 页外）→ rank=null，bot 侧如实回未找到。
+    const handledUnknown = manager.handleBaltopQuery(adminBot.id, manager.processes.get(adminBot.id), {
       username: 'Guest', name: 'Nobody_', serverKey: 'mc.example.com:25565'
     })
-    assert.equal(handledUnknown, false)
+    assert.equal(handledUnknown, true)
+    assert.equal(sent.admin.length, 2)
+    assert.equal(sent.admin[1].rank, null)
+    assert.equal(sent.admin[1].balance, '')
+
+    // 智能 Bot 的 bal 查询请求 → 直接拒绝（不查库不回复）。
+    const smartHandled = manager.handleBaltopQuery(smartBot.id, manager.processes.get(smartBot.id), {
+      username: 'Guest', name: 'Zvbj_', serverKey: 'mc.example.com:25565'
+    })
+    assert.equal(smartHandled, false)
+    assert.equal(sent.smart.length, 0)
+  } finally {
+    f.close()
+  }
+})
+
+test('手动探测命令：管理员触发立即开跑，探测中重复触发被拒', () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('baltop_manual', 'password-123')
+    const adminBot = f.db.createBot(user.id, { mode: 'admin', label: 'A', microsoftEmail: 'a@example.com', serverHost: 'mc.example.com' })
+    // 游戏内超管走 smart_permissions（owner 维度）。
+    f.db.setSmartPermission(user.id, user.username, 'admin')
+    f.db.setBaltopSettings({ enabled: true, pages: 10 })
+    const manager = new BotManager(f.db, { now: () => Date.now(), timeSyncEnabled: false })
+    const sent = []
+    manager.processes.set(adminBot.id, { reachedOnline: true, child: { send: message => sent.push(message) } })
+
+    // 游戏内「探测」走 executeSmartRequest('baltop_probe_run')。
+    const started = manager.executeSmartRequest(adminBot.id, 'baltop_probe_run', { username: user.username })
+    assert.equal(started.allowed, true)
+    assert.equal(started.status, 'started')
+    assert.equal(sent.length, 1)
+    assert.equal(sent[0].type, 'baltop_probe')
+
+    // 探测进行中再触发 → already_running。
+    const again = manager.executeSmartRequest(adminBot.id, 'baltop_probe_run', { username: user.username })
+    assert.equal(again.status, 'already_running')
+
+    // 非管理员触发 → 静默拒绝。
+    const denied = manager.executeSmartRequest(adminBot.id, 'baltop_probe_run', { username: 'Guest' })
+    assert.equal(denied.allowed, false)
+
+    // baltop_status 返回探测中状态。
+    const status = manager.executeSmartRequest(adminBot.id, 'baltop_status', {})
+    assert.equal(status.probing, true)
+    assert.equal(status.pages, 10)
+    assert.deepEqual(status.hours, [4, 10, 16, 20])
+    manager.cancelBaltopRound()
   } finally {
     f.close()
   }
@@ -276,9 +331,8 @@ test('baltop_reply 处理：bot 收到回复指令后公屏输出名次余额', 
     request: async () => ({}),
     relatedLog: message => related.push(message)
   }
-  // 直接用 installSmartCommands 的 settingsListener 不可行（需要 process.send），
-  // 这里复现 handleBaltopReply 的关键行为：chat 输出与 relatedLog。
-  const { installSmartCommands } = require('../smart-runtime/commands')
+  // 复现 handleBaltopReply 的关键行为：chat 输出与 relatedLog。
+  // admin-runtime 的 installSmartCommands 里才有 baltop_reply 分支。
   const sent = []
   bot.chat = text => { sent.push(text) }
   const remove = installSmartCommands(bot, {
@@ -291,6 +345,10 @@ test('baltop_reply 处理：bot 收到回复指令后公屏输出名次余额', 
     process.emit('message', { type: 'baltop_reply', name: 'Zvbj_', rank: 1, balance: '5299.00' })
     assert.equal(sent.length, 1)
     assert.equal(sent[0], COMMAND_TEXT.baltopResult('Zvbj_', 1, '5299.00'))
+    // rank=null（榜上查无此人）→ 如实回未找到。
+    process.emit('message', { type: 'baltop_reply', name: 'Nobody_', rank: null, balance: '' })
+    assert.equal(sent.length, 2)
+    assert.equal(sent[1], COMMAND_TEXT.baltopUnknown('Nobody_'))
   } finally {
     remove()
   }
@@ -301,19 +359,19 @@ test('db 层：探测设置读写与校验、条目替换为全量快照', () =>
   try {
     assert.equal(f.db.getBaltopSettings().enabled, false)
     assert.equal(f.db.getBaltopSettings().pages, 100)
-    assert.equal(f.db.getBaltopSettings().intervalMinutes, 60)
+    assert.deepEqual(f.db.getBaltopSettings().hours, [4, 10, 16, 20])
     assert.equal(f.db.getBaltopSettings().pageDelayMs, 10000)
-    assert.deepEqual(f.db.getBaltopSettings().replyBotIds, [])
 
-    f.db.setBaltopSettings({ enabled: true, pages: 50, intervalMinutes: 30, pageDelayMs: 5000 })
+    f.db.setBaltopSettings({ enabled: true, pages: 50, hours: [4, 12], pageDelayMs: 5000 })
     assert.equal(f.db.getBaltopSettings().enabled, true)
     assert.equal(f.db.getBaltopSettings().pages, 50)
-    assert.equal(f.db.getBaltopSettings().intervalMinutes, 30)
+    assert.deepEqual(f.db.getBaltopSettings().hours, [4, 12])
     assert.equal(f.db.getBaltopSettings().pageDelayMs, 5000)
 
     assert.throws(() => f.db.setBaltopSettings({ pages: 0 }), /1-100/)
     assert.throws(() => f.db.setBaltopSettings({ pages: 101 }), /1-100/)
-    assert.throws(() => f.db.setBaltopSettings({ intervalMinutes: 0 }), /1-1440/)
+    assert.throws(() => f.db.setBaltopSettings({ hours: [] }), /探测小时/)
+    assert.throws(() => f.db.setBaltopSettings({ hours: [24] }), /0-23/)
     assert.throws(() => f.db.setBaltopSettings({ pageDelayMs: 500 }), /1000/)
 
     // 全量替换：旧数据不残留。（玩家名按 Minecraft 规则 3-16 位，短名不入库。）
@@ -338,5 +396,57 @@ test('db 层：探测设置读写与校验、条目替换为全量快照', () =>
     assert.equal(f.db.getBaltopSettings().lastProbeAt, 1700000000000)
   } finally {
     f.close()
+  }
+})
+
+test('admin-runtime 与 smart-runtime 同步：探测代码是智能 Bot 的增量', () => {
+  const fs2 = require('node:fs')
+  const path2 = require('node:path')
+  const root = path2.join(__dirname, '..')
+  // admin 的 commands.js 应包含智能 Bot 全量命令（同文件复制 + 探测增量）。
+  const smart = fs2.readFileSync(path2.join(root, 'smart-runtime', 'commands.js'), 'utf8')
+  const admin = fs2.readFileSync(path2.join(root, 'admin-runtime', 'commands.js'), 'utf8')
+  // admin 必须包含全部智能 Bot 命令入口（拿几个代表性函数确认）。
+  for (const marker of ['function createSmartCommandHandler', 'function executeCustomTask', 'function createOminousBottleScheduler', 'function parseSmartCommand']) {
+    assert.ok(admin.includes(marker), `admin-runtime/commands.js 缺少智能 Bot 的 ${marker}`)
+  }
+  // admin 必须包含探测增量（智能 Bot 没有）。
+  for (const marker of ['function createBaltopProbeController', 'function installBaltopQueryListener', 'baltop_probe_run']) {
+    assert.ok(admin.includes(marker), `admin-runtime/commands.js 缺少探测功能 ${marker}`)
+  }
+  // 智能 Bot 不应包含探测功能（增量只在 admin 侧）。
+  for (const marker of ['createBaltopProbeController', 'installBaltopQueryListener', "baltop_query", 'baltop_probe_run']) {
+    assert.ok(!smart.includes(marker), `smart-runtime/commands.js 不应包含 ${marker}`)
+  }
+  // index.js 行为一致（都挂 installSmartCommands + 内存看护）。
+  const smartIndex = fs2.readFileSync(path2.join(root, 'smart-runtime', 'index.js'), 'utf8')
+  const adminIndex = fs2.readFileSync(path2.join(root, 'admin-runtime', 'index.js'), 'utf8')
+  assert.ok(adminIndex.includes('installSmartCommands'))
+  assert.ok(smartIndex.includes('installSmartCommands'))
+})
+
+test('readRuntimeUpdates 支持 admin 模式：读 admin-runtime 的版本与发布说明', () => {
+  const { readRuntimeUpdates } = require('../src/runtimeUpdates')
+  const fs2 = require('node:fs')
+  const os2 = require('node:os')
+  const path2 = require('node:path')
+  const root = fs2.mkdtempSync(path2.join(os2.tmpdir(), 'baltop-runtime-updates-'))
+  try {
+    fs2.mkdirSync(path2.join(root, 'smart-runtime'), { recursive: true })
+    fs2.mkdirSync(path2.join(root, 'admin-runtime'), { recursive: true })
+    fs2.writeFileSync(path2.join(root, 'smart-runtime', 'package.json'), JSON.stringify({ version: '1.0.30' }))
+    fs2.writeFileSync(path2.join(root, 'admin-runtime', 'package.json'), JSON.stringify({ version: '1.0.0' }))
+    fs2.writeFileSync(path2.join(root, 'admin-runtime', 'releases.json'), JSON.stringify({
+      releases: [{ version: '1.0.0', title: '管理专用 Bot 首发', date: '2026-11-11', highlights: ['智能 Bot 全量能力', '排行榜探测独占'] }]
+    }))
+    const smart = readRuntimeUpdates(root, 'smart')
+    const admin = readRuntimeUpdates(root, 'admin')
+    assert.equal(smart.version, '1.0.30')
+    assert.equal(admin.version, '1.0.0')
+    assert.equal(admin.mode, 'admin')
+    assert.equal(admin.latestRelease.title, '管理专用 Bot 首发')
+    assert.equal(smart.latestRelease, null)
+  } finally {
+    fs2.rmSync(root, { recursive: true, force: true })
   }
 })

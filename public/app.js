@@ -311,27 +311,8 @@ async function testTopUpRegex () {
 }
 
 // ============ 排行榜探测（/baltop 金钱榜）管理面板 ============
-
-function renderBaltopReplyBots () {
-  const selected = new Set((state.baltop?.replyBotIds || []).map(String))
-  const bots = (state.bots || []).filter(bot => bot.mode === 'smart')
-  const container = $('baltopReplyBots')
-  if (!container) return
-  container.innerHTML = bots.length
-    ? bots.map(bot => `<label class="variable-check"><input type="checkbox" data-baltop-reply-bot="${esc(bot.id)}"${selected.has(bot.id) ? ' checked' : ''}> ${esc(bot.accountMinecraftName || bot.minecraftName || bot.label)}</label>`).join('')
-    : '<div class="muted">暂无智能 Bot。</div>'
-  container.querySelectorAll('[data-baltop-reply-bot]').forEach(input => {
-    input.onchange = () => {
-      const checked = [...container.querySelectorAll('[data-baltop-reply-bot]:checked')].map(node => node.dataset.baltopReplyBot)
-      if (checked.length > 3) {
-        input.checked = false
-        toast('指定回复 Bot 最多 3 个')
-        return
-      }
-      state.baltop = { ...(state.baltop || {}), replyBotIds: checked }
-    }
-  })
-}
+// 探测与 bal 查询固定由 admin 模式（管理专用 Bot）执行：设置只有开关、
+// 页数、每日探测小时与页冷却；不再有指定回复 bot 列表。
 
 async function loadBaltopStatus () {
   if (state.user?.role !== 'admin') return
@@ -341,30 +322,28 @@ async function loadBaltopStatus () {
   if (document.contains($('baltopProbeEnabled'))) {
     $('baltopProbeEnabled').checked = Boolean(settings.enabled)
     $('baltopProbePages').value = settings.pages
-    $('baltopProbeInterval').value = settings.intervalMinutes
+    $('baltopProbeHours').value = (settings.hours || []).join(',')
     $('baltopProbeDelay').value = settings.pageDelayMs
-    renderBaltopReplyBots()
   }
   const lastText = settings.lastProbeAt ? new Date(settings.lastProbeAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '从未探测'
-  $('baltopStatusSummary').textContent = `探测：${settings.enabled ? `开 · 每 ${settings.intervalMinutes} 分钟` : '关'} · 上次探测 ${lastText}${data.probing ? ' · 正在探测中…' : ''}`
+  $('baltopStatusSummary').textContent = `探测：${settings.enabled ? `开 · 每天 ${(settings.hours || []).join('/')} 点` : '关'} · 上次探测 ${lastText}${data.probing ? ' · 正在探测中…' : ''}`
   const servers = data.servers || []
   const rows = servers.flatMap(server => (server.entries || []).map(entry => ({ ...entry, serverKey: server.serverKey })))
   $('baltopRanking').innerHTML = rows.length
     ? '<table><thead><tr><th>名次</th><th>玩家</th><th>余额</th><th>服务器</th><th>更新时间</th></tr></thead><tbody>' +
       rows.slice(0, 200).map(row => `<tr><td>#${row.rank}</td><td><strong>${esc(row.name)}</strong></td><td>${esc(row.balance)}</td><td>${esc(row.serverKey)}</td><td>${esc(new Date(row.updatedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}</td></tr>`).join('') +
       '</tbody></table>'
-    : '<div class="empty">暂无排行榜数据：开启探测并等待在线 Bot 完成第一轮 /baltop 后显示。</div>'
+    : '<div class="empty">暂无排行榜数据：开启探测并等待管理专用 Bot 完成第一轮 /baltop 后显示。</div>'
 }
 
 async function saveBaltopSettings () {
-  const replyBots = [...document.querySelectorAll('[data-baltop-reply-bot]:checked')].map(node => node.dataset.baltopReplyBot)
+  const hours = $('baltopProbeHours').value.split(/[,，\s]+/).map(value => Number(value.trim())).filter(value => Number.isInteger(value))
   const data = await post('/api/admin/settings', {
     baltop: {
       enabled: $('baltopProbeEnabled').checked,
       pages: $('baltopProbePages').value,
-      intervalMinutes: $('baltopProbeInterval').value,
-      pageDelayMs: $('baltopProbeDelay').value,
-      replyBotIds: replyBots
+      hours,
+      pageDelayMs: $('baltopProbeDelay').value
     }
   })
   state.baltop = data.baltop || state.baltop
@@ -372,8 +351,13 @@ async function saveBaltopSettings () {
   await loadBaltopStatus()
 }
 
+function modeName (mode) {
+  return mode === 'signin' ? '签到 Bot' : mode === 'admin' ? '管理专用 Bot' : '智能 Bot'
+}
+
 function updateModeFields () {
-  const signin = $('botMode').value === 'signin'
+  const mode = $('botMode').value
+  const signin = mode === 'signin'
   $('modePriceHint').textContent = signin ? `${formatMomoc(state.modePrices?.signinOncePrice)} momoc / 次，成功后下线` : `${formatMomoc(state.modePrices?.smartHourlyPrice)} momoc / 1h，持续在线`
   $('botPrefixField').classList.toggle('hidden', signin)
 }
@@ -647,7 +631,7 @@ async function loadBots (forceUpdates = false) {
         const permissions = bot.mode === 'smart' ? `<button data-smart-permissions="${esc(bot.id)}">权限</button>` : ''
         const logs = `<button data-bot-logs="${esc(bot.id)}">日志</button>`
         const update = bot.updateAvailable && bot.runtimeState === 'online' ? `<button class="primary" data-update-bot="${esc(bot.id)}">更新</button>` : ''
-        const modeName = bot.mode === 'signin' ? '签到 Bot' : '智能 Bot'
+        const modeLabel = modeName(bot.mode)
         const modeDetail = bot.mode === 'signin' ? `命令：${bot.modeVariables?.command || '-'}` : '持续在线 · 消息解析'
         return `<tr><td><strong>${esc(bot.label)}</strong><div class="muted">${esc(bot.microsoftEmail)}</div><div class="muted">${esc(bot.accountMinecraftName || bot.minecraftName || '')}</div></td><td>${esc(bot.serverHost)}:${esc(bot.serverPort)}<div class="muted">${esc(bot.minecraftVersion || '自动识别')}</div></td><td><strong>${esc(modeName)}</strong><div class="price-hint">${esc(templatePrice(bot))}</div><div class="muted">${esc(modeDetail)}</div>${bot.scheduleEnabled ? '<div class="positive">计划已启用</div>' : ''}</td><td>${botRuntimeVersionHtml(bot)}</td><td>${smartScheduleHtml(bot)}</td><td><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span><div class="muted">${esc(bot.lastError || '')}</div></td><td>${oauth}</td><td>${bot.billingMode === 'once' ? '按次成功' : `${esc(bot.billedMinutes)} 分钟`}</td><td><div class="actions">${update}${action}${permissions}${schedule}${logs}<button class="danger" data-delete="${esc(bot.id)}">删除</button></div></td></tr>`
       }).join('') + '</tbody></table>'
@@ -691,8 +675,9 @@ function managedBotRows (rows) {
 }
 
 function renderManagedBots () {
-  const modeName = state.managedModeFilter === 'signin' ? '签到 Bot' : '智能 Bot'
-  const rows = state.managedBots.filter(row => state.managedModeFilter === 'signin' ? row.mode === 'signin' : row.mode === 'smart')
+    const modeName = state.managedModeFilter === 'signin' ? '签到 Bot' : '智能 Bot'
+  // 管理区按模式筛选时，管理专用 Bot 跟智能 Bot 一起展示（都是持续在线型）。
+  const rows = state.managedBots.filter(row => state.managedModeFilter === 'signin' ? row.mode === 'signin' : (row.mode === 'smart' || row.mode === 'admin'))
   const running = rows.filter(row => row.desiredState === 'running')
   const stopped = rows.filter(row => row.desiredState !== 'running')
   document.querySelectorAll('[data-managed-mode]').forEach(btn => btn.classList.toggle('active', btn.dataset.managedMode === state.managedModeFilter))
@@ -1299,7 +1284,7 @@ async function loadOverview () {
         const lockText = row.mode !== 'smart' ? '-' : row.lock?.adminLocked ? `超级锁定 · ${row.lock.lockedBy || '-'}` : row.lock?.locked ? `挂机中 · ${row.lock.lockedBy || '-'}` : '未锁定'
         const prefix = row.mode === 'smart' ? (row.commandPrefix || '未设置') : '-'
         const update = row.updateAvailable && row.runtimeState === 'online' ? `<button class="primary" data-update-bot="${esc(row.id)}">更新</button>` : '<span class="muted">-</span>'
-        return `<tr><td><strong>${esc(row.ownerUsername)}</strong></td><td>${esc(row.label)}</td><td>${esc(row.accountMinecraftName || row.microsoftEmail)}</td><td>${row.mode === 'signin' ? '签到 Bot' : '智能 Bot'}</td><td>${botRuntimeVersionHtml(row)}</td><td>${smartScheduleHtml(row)}</td><td><span class="status ${esc(row.runtimeState)}">${esc(statusLabel(row.runtimeState))}</span></td><td>${esc(lockText)}${row.lock?.reason ? `<div class="muted">${esc(row.lock.reason)}</div>` : ''}</td><td><code>${esc(prefix)}</code></td><td>${Number(row.billedMinutes || 0)}</td><td>${update}</td></tr>`
+        return `<tr><td><strong>${esc(row.ownerUsername)}</strong></td><td>${esc(row.label)}</td><td>${esc(row.accountMinecraftName || row.microsoftEmail)}</td><td>${esc(modeName(row.mode))}</td><td>${botRuntimeVersionHtml(row)}</td><td>${smartScheduleHtml(row)}</td><td><span class="status ${esc(row.runtimeState)}">${esc(statusLabel(row.runtimeState))}</span></td><td>${esc(lockText)}${row.lock?.reason ? `<div class="muted">${esc(row.lock.reason)}</div>` : ''}</td><td><code>${esc(prefix)}</code></td><td>${Number(row.billedMinutes || 0)}</td><td>${update}</td></tr>`
       }).join('') + '</tbody></table>'
     : '<div class="empty">暂无 Bot。</div>'
 

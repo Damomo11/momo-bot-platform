@@ -303,9 +303,8 @@ class PlatformDb {
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('new_user_initial_momoc', '10')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('baltop_probe_enabled', '0')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('baltop_probe_pages', '100')").run()
-    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('baltop_probe_interval_minutes', '60')").run()
+    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('baltop_probe_hours', ?)").run(JSON.stringify([4, 10, 16, 20]))
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('baltop_probe_page_delay_ms', '10000')").run()
-    this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('baltop_reply_bot_ids', '')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('baltop_last_probe_at', '0')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_top_up_recipient', 'Damomo1')").run()
     this.db.prepare("INSERT OR IGNORE INTO platform_settings (key, value) VALUES ('smart_top_up_command', '/pay {recipient} {amount}')").run()
@@ -857,21 +856,21 @@ class PlatformDb {
     return this.getRegistrationEnabled()
   }
 
-  // 排行榜探测设置：开关/页数(1-100)/轮询间隔分钟/读页间隔毫秒/指定回复 bot(最多 3 个)。
+  // 排行榜探测设置：开关/页数(1-100)/每日探测小时(北京时间)/页冷却毫秒。
+  // 探测与 bal 查询固定由 admin 模式的管理专用 Bot 执行。
   getBaltopSettings () {
     const value = key => this.db.prepare('SELECT value FROM platform_settings WHERE key = ?').get(key)?.value
     const pages = Number.parseInt(value('baltop_probe_pages') || '100', 10)
-    const intervalMinutes = Number.parseInt(value('baltop_probe_interval_minutes') || '60', 10)
     const pageDelayMs = Number.parseInt(value('baltop_probe_page_delay_ms') || '10000', 10)
-    let replyBotIds = []
-    try { replyBotIds = JSON.parse(value('baltop_reply_bot_ids') || '[]') } catch {}
-    if (!Array.isArray(replyBotIds)) replyBotIds = []
+    let hours = []
+    try { hours = JSON.parse(value('baltop_probe_hours') || 'null') } catch {}
+    if (!Array.isArray(hours) || !hours.length) hours = [4, 10, 16, 20]
+    const normalizedHours = [...new Set(hours.map(Number).filter(hour => Number.isInteger(hour) && hour >= 0 && hour <= 23))].sort((a, b) => a - b)
     return {
-      enabled: value('baltop_probe_enabled') !== '0' ? value('baltop_probe_enabled') === '1' : false,
+      enabled: value('baltop_probe_enabled') === '1',
       pages: Number.isInteger(pages) && pages >= 1 && pages <= 100 ? pages : 100,
-      intervalMinutes: Number.isInteger(intervalMinutes) && intervalMinutes >= 1 && intervalMinutes <= 1440 ? intervalMinutes : 60,
+      hours: normalizedHours.length ? normalizedHours : [4, 10, 16, 20],
       pageDelayMs: Number.isInteger(pageDelayMs) && pageDelayMs >= 1000 && pageDelayMs <= 600000 ? pageDelayMs : 10000,
-      replyBotIds: replyBotIds.map(String).filter(Boolean).slice(0, 3),
       lastProbeAt: Number(value('baltop_last_probe_at') || 0) || 0
     }
   }
@@ -885,26 +884,17 @@ class PlatformDb {
       if (!Number.isInteger(pages) || pages < 1 || pages > 100) throw new Error('探测页数必须为 1-100。')
       save.run('baltop_probe_pages', String(pages))
     }
-    if (Object.prototype.hasOwnProperty.call(input, 'intervalMinutes')) {
-      const minutes = Number(input.intervalMinutes)
-      if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) throw new Error('探测间隔必须为 1-1440 分钟。')
-      save.run('baltop_probe_interval_minutes', String(minutes))
+    if (Object.prototype.hasOwnProperty.call(input, 'hours')) {
+      const hours = [...new Set((Array.isArray(input.hours) ? input.hours : []).map(Number))]
+      if (!hours.length || hours.some(hour => !Number.isInteger(hour) || hour < 0 || hour > 23)) throw new Error('探测小时必须是 0-23 的整数列表。')
+      save.run('baltop_probe_hours', JSON.stringify(hours.sort((a, b) => a - b)))
     }
     if (Object.prototype.hasOwnProperty.call(input, 'pageDelayMs')) {
       const delay = Number(input.pageDelayMs)
-      if (!Number.isInteger(delay) || delay < 1000 || delay > 600000) throw new Error('读页间隔必须为 1000-600000 毫秒。')
+      if (!Number.isInteger(delay) || delay < 1000 || delay > 600000) throw new Error('页冷却必须为 1000-600000 毫秒。')
       save.run('baltop_probe_page_delay_ms', String(delay))
     }
-    if (Object.prototype.hasOwnProperty.call(input, 'replyBotIds')) {
-      const ids = (Array.isArray(input.replyBotIds) ? input.replyBotIds : []).map(String).filter(Boolean)
-      if (ids.length > 3) throw new Error('指定回复 Bot 最多 3 个。')
-      for (const id of ids) {
-        const bot = this.db.prepare('SELECT mode FROM bots WHERE id = ?').get(id)
-        if (!bot || bot.mode !== 'smart') throw new Error('指定回复 Bot 必须是智能 Bot。')
-      }
-      save.run('baltop_reply_bot_ids', JSON.stringify([...new Set(ids)]))
-    }
-    return { ...this.getBaltopSettings(), replyBotIds: this.getBaltopSettings().replyBotIds, previous: current }
+    return { ...this.getBaltopSettings(), previous: current }
   }
 
   markBaltopProbe (at = Date.now()) {
@@ -1175,7 +1165,8 @@ class PlatformDb {
 
   setSmartBotSettings (botId, input = {}) {
     const bot = this.getBot(botId)
-    if (!bot || bot.mode !== 'smart') throw new Error('智能 Bot 不存在。')
+    // admin 模式（管理专用 Bot）与智能 Bot 共用 settings 表（前缀/自动续费等）。
+    if (!bot || (bot.mode !== 'smart' && bot.mode !== 'admin')) throw new Error('智能 Bot 不存在。')
     const current = this.getSmartBotSettings(botId)
     const commandPrefix = String(input.commandPrefix ?? current.commandPrefix ?? '').trim()
     const autoRenewEnabled = input.autoRenewEnabled == null ? Boolean(current.autoRenewEnabled) : Boolean(input.autoRenewEnabled)
@@ -1207,7 +1198,7 @@ class PlatformDb {
       LEFT JOIN microsoft_accounts a ON a.id = b.account_id
       WHERE b.id = ?
     `).get(botId)
-    if (!identity || identity.mode !== 'smart') return { minecraftName: '', enabled: false }
+    if (!identity || (identity.mode !== 'smart' && identity.mode !== 'admin')) return { minecraftName: '', enabled: false }
     const minecraftName = String(identity.minecraftName || '')
     const enabled = Boolean(minecraftName && this.db.prepare('SELECT 1 FROM smart_momoc_exemptions WHERE minecraft_name = ? COLLATE NOCASE').get(minecraftName))
     return { minecraftName, enabled }
@@ -1621,11 +1612,13 @@ class PlatformDb {
     }
     if (!account) throw new Error('请选择微软账号。')
     const port = Number.parseInt(input.serverPort, 10) || 25565
-    const mode = input.mode === 'signin' ? 'signin' : 'smart'
+    // 管理专用 Bot（admin 模式）：走 admin-runtime（智能 Bot 全量能力 +
+    // 排行榜探测/bal 查询独占），仅平台管理员可创建，普通用户不可见。
+    const mode = input.mode === 'signin' ? 'signin' : input.mode === 'admin' ? 'admin' : 'smart'
     const modeVariables = {}
     this.db.prepare(`INSERT INTO bots (id, user_id, account_id, mode, mode_vars_json, label, microsoft_email, server_host, server_port, minecraft_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, userId, account.id, mode, JSON.stringify(modeVariables), String(input.label || 'Minecraft Bot').trim(), account.email, String(input.serverHost || '').trim(), port, String(input.minecraftVersion || '').trim())
     try {
-      if (mode === 'smart') this.setSmartBotSettings(id, { commandPrefix: input.commandPrefix })
+      if (mode !== 'signin') this.setSmartBotSettings(id, { commandPrefix: input.commandPrefix })
     } catch (error) {
       this.db.prepare('DELETE FROM bots WHERE id = ?').run(id)
       throw error
@@ -1813,9 +1806,10 @@ class PlatformDb {
     }))
 
     const bots = this.listBots().map(bot => {
-      const commandPrefix = bot.mode === 'smart' ? this.getSmartBotSettings(bot.id).commandPrefix : ''
-      const lock = bot.mode === 'smart' ? this.getSmartBotLock(bot.id) : { locked: false, adminLocked: false, lockedBy: '', reason: '', updatedAt: null }
-      const smartSchedules = bot.mode === 'smart' ? this.getSmartBotScheduleStatus(bot.id) : null
+      const isSmartLike = bot.mode === 'smart' || bot.mode === 'admin'
+      const commandPrefix = isSmartLike ? this.getSmartBotSettings(bot.id).commandPrefix : ''
+      const lock = isSmartLike ? this.getSmartBotLock(bot.id) : { locked: false, adminLocked: false, lockedBy: '', reason: '', updatedAt: null }
+      const smartSchedules = isSmartLike ? this.getSmartBotScheduleStatus(bot.id) : null
       return { ...bot, commandPrefix, lock, smartSchedules, afkLocked: Boolean(lock.locked || lock.adminLocked) }
     })
     const runtime = this.getRuntimeSettings()
@@ -1826,7 +1820,7 @@ class PlatformDb {
         authorizedAccounts: accounts.filter(row => row.authState === 'authorized').length,
         bots: bots.length,
         runningBots: bots.filter(row => row.runtimeState !== 'stopped').length,
-        runningSmartBots: bots.filter(row => row.mode === 'smart' && row.runtimeState !== 'stopped').length,
+        runningSmartBots: bots.filter(row => (row.mode === 'smart' || row.mode === 'admin') && row.runtimeState !== 'stopped').length,
         maxRunningBots: runtime.maxRunningBots,
         botCreationEnabled: runtime.botCreationEnabled,
         totalSpent: consumption.reduce((sum, row) => sum + row.totalSpent, 0)
