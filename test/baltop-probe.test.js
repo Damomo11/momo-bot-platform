@@ -296,6 +296,53 @@ test('bal 查询：管理 Bot 查到即回复，查不到如实回未找到；�
   }
 })
 
+test('bal 查询过期数据：有记录但早于上轮探测 → 回「未知」而非旧数字', () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('baltop_stale', 'password-123')
+    const adminBot = f.db.createBot(user.id, { mode: 'admin', label: 'A', microsoftEmail: 'a@example.com', serverHost: 'mc.example.com' })
+    const manager = new BotManager(f.db, { now: () => 2000, timeSyncEnabled: false })
+    const sent = []
+    manager.processes.set(adminBot.id, { reachedOnline: true, child: { send: message => sent.push(message) } })
+
+    // 第一轮探测：A_player 上榜余额 100（updated_at=1000）。
+    f.db.upsertBaltopEntries('mc.example.com:25565', [
+      { rank: 1, name: 'A_player', balance: '100.00' },
+      { rank: 2, name: 'B_gamer', balance: '50.00' }
+    ], 1000)
+    f.db.markBaltopProbe(1000)
+
+    // 第二轮探测（updated_at=2000）：A_player 掉出榜外（upsert 只写 B），
+    // 但历史记录还在库里（余额 100 是过期数字，不能当真）。
+    f.db.upsertBaltopEntries('mc.example.com:25565', [
+      { rank: 2, name: 'B_gamer', balance: '45.00' }
+    ], 2000)
+    f.db.markBaltopProbe(2000)
+
+    // B_gamer 在本轮榜上 → 回新值 45。
+    manager.handleBaltopQuery(adminBot.id, manager.processes.get(adminBot.id), {
+      username: 'Guest', name: 'B_gamer', serverKey: 'mc.example.com:25565'
+    })
+    assert.equal(sent.at(-1).rank, 2)
+    assert.equal(sent.at(-1).balance, '45.00')
+
+    // A_player 有历史记录但早于上轮探测 → rank/balance 清空，bot 侧回「未知」。
+    manager.handleBaltopQuery(adminBot.id, manager.processes.get(adminBot.id), {
+      username: 'Guest', name: 'A_player', serverKey: 'mc.example.com:25565'
+    })
+    assert.equal(sent.at(-1).rank, null)
+    assert.equal(sent.at(-1).balance, '')
+
+    // 库里记录本身保留（重启后仍可查到，只是标了 stale）。
+    const entry = f.db.getBaltopEntry('mc.example.com:25565', 'A_player')
+    assert.equal(entry.balance, '100.00')
+    assert.equal(entry.stale, true)
+    assert.equal(f.db.getBaltopEntry('mc.example.com:25565', 'B_gamer').stale, false)
+  } finally {
+    f.close()
+  }
+})
+
 test('手动探测命令：管理员触发立即开跑，探测中重复触发被拒', () => {
   const f = fixture()
   try {

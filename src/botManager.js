@@ -400,7 +400,8 @@ class BotManager {
 
   // 游戏内 bal 查询：任意玩家公屏输入 bal ID，管理专用 Bot（admin 模式）
   // 查库后自己公屏回复；探测进行中查询照常读上一轮快照，不等待探测结束。
-  // 榜上没有（含 100 页外、未入榜）：如实回「未找到」，不猜数据。
+  // 三种回复：在榜（新值）→ 余额；无记录 → 未查询到；
+  // 有记录但早于上轮探测（已掉出榜外，余额是过期数字）→ 未知。
   handleBaltopQuery (id, state, payload = {}) {
     const name = String(payload?.name || '').trim()
     if (!name) return false
@@ -410,12 +411,13 @@ class BotManager {
     const serverKey = String(payload.serverKey || this.serverKey(bot))
     if (typeof this.db.getBaltopEntry !== 'function') return false
     const entry = this.db.getBaltopEntry(serverKey, name)
-    // rank=null 表示「查无此人」：bot 侧按未找到文案回复。
+    // rank=null = 无记录；stale=true = 记录早于上轮探测，余额已不可信。
+    // 两种都走「未查询到/未知」文案，不拿过期数字当真。
     this.sendToBot(state, {
       type: 'baltop_reply',
       name: entry ? entry.name : name,
-      rank: entry ? entry.rank : null,
-      balance: entry ? entry.balance : '',
+      rank: entry && !entry.stale ? entry.rank : null,
+      balance: entry && !entry.stale ? entry.balance : '',
       requester: String(payload?.username || ''),
       updatedAt: entry ? entry.updatedAt : 0
     })

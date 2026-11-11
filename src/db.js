@@ -903,9 +903,10 @@ class PlatformDb {
   }
 
   // 写入一轮探测结果：同名覆盖、异名保留（upsert），不清空历史。
-  // bot 重启/掉线导致本轮数据不完整时，库里的旧数据依然可查（bal 无需等待探测）；
-  // 探测成功但玩家已消费掉到 100 页外时，本轮无该玩家条目，保留的旧值
-  // 比清空更接近真实（排名仅作展示，余额以最近一次上榜为准）。
+  // bot 重启/掉线导致本轮数据不完整时，库里的旧数据依然可查（bal 无需等待探测）。
+  // 「最近一次探测」以 last_probe_at 为准：查询时比对 entry 的 updated_at，
+  // 早于上一轮探测时间说明该玩家已不在本轮榜上（消费掉出 100 页外等），
+  // 不能拿旧余额断言为真——回复「未知」而不是过期数字。
   upsertBaltopEntries (serverKey, entries = [], at = Date.now()) {
     const key = String(serverKey || '')
     if (!key) throw new Error('服务器标识无效。')
@@ -928,7 +929,12 @@ class PlatformDb {
 
   getBaltopEntry (serverKey, name) {
     const row = this.db.prepare('SELECT name, rank, balance, updated_at AS updatedAt FROM baltop_entries WHERE server_key = ? AND name = ? COLLATE NOCASE').get(String(serverKey || ''), String(name || ''))
-    return row ? { ...row, rank: Number(row.rank), updatedAt: Number(row.updatedAt) } : null
+    if (!row) return null
+    const entry = { ...row, rank: Number(row.rank), updatedAt: Number(row.updatedAt) }
+    // 旧记录兜底：updated_at 异常（0/未来时间）时按「在榜」处理，不做未知判定。
+    const lastProbeAt = this.getBaltopSettings().lastProbeAt
+    entry.stale = Boolean(lastProbeAt && entry.updatedAt && entry.updatedAt < lastProbeAt)
+    return entry
   }
 
   listBaltopEntries (serverKey, { limit = 100, offset = 0 } = {}) {

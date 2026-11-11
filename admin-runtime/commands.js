@@ -129,7 +129,7 @@ const COMMAND_TEXT = Object.freeze({
   adminUnlockSuccess: '机器人已超级解锁，普通锁定也已同时解除。',
   baltopMissing: '【椰汁橙】暂无排行榜数据，请等待机器人完成探测。',
   baltopResult: (name, rank, balance) => `【椰汁橙】玩家 ${name} 的余额为 ${balance}。`,
-  baltopUnknown: name => `【椰汁橙】未查询到玩家 ${name} 的数据。`,
+  baltopUnknown: name => `【椰汁橙】未查询到玩家 ${name} 的数据；该玩家当前余额未知。`,
   baltopProbeUsage: '正确格式: 探测（立即执行一轮排行榜探测），或 探测 状态 查看当前安排。',
   baltopProbeStarted: pages => `【椰汁橙】排行榜探测已开始：共 ${pages} 页，页冷却 10 秒，探测期间查询照常回复。`,
   baltopProbeAlready: '【椰汁橙】排行榜探测正在进行中。',
@@ -2119,7 +2119,8 @@ function installSmartCommands (bot, options = {}) {
     if (!name) return
     const rank = Number(message.rank)
     const balance = String(message.balance || '')
-    // rank=null / 余额为空 = 榜上查无此人（含 100 页外与未入榜）：如实回未找到。
+    // 有数字 = 在榜（新值）：回余额；rank=null/空余额 = 无记录或记录已过期
+    // （早于上轮探测，掉出榜外）：统一走「未查询到」文案，不拿旧数字当真。
     const text = Number.isFinite(rank) && balance
       ? COMMAND_TEXT.baltopResult(name, rank, balance)
       : COMMAND_TEXT.baltopUnknown(name)
