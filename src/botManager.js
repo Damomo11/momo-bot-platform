@@ -472,7 +472,9 @@ class BotManager {
     const latestRuntimeVersion = this.readPackageVersion(path.join(this.config.root || '', bot.mode === 'signin' ? 'signin-runtime' : bot.mode === 'admin' ? 'admin-runtime' : 'smart-runtime'))
     const updateAvailable = (bot.mode === 'smart' || bot.mode === 'admin') && Boolean(state) && isReleaseNewer(latestRuntimeVersion, runtimeVersion)
     const momocExempt = (bot.mode === 'smart' || bot.mode === 'admin') && typeof this.db.isSmartBotMomocExempt === 'function' ? this.db.isSmartBotMomocExempt(bot.id) : false
-    return { ...safe, minecraftVersion: this.protocolVersions(bot)[0], billingMode: bot.mode === 'signin' ? 'once' : 'hourly', priceMomoc: bot.mode === 'signin' ? prices.signinOncePrice : prices.smartHourlyPrice, momocExempt, allowScheduling: bot.mode === 'signin', scheduleEnabled: Boolean(bot.scheduleEnabled), oauth, smartSchedules, runtimeVersion, latestRuntimeVersion, updateAvailable, logs: [] }
+    // 挂机锁定状态：智能/管理专用 Bot 都有（游戏内 锁定/超级锁定），随列表带出。
+    const lock = (bot.mode === 'smart' || bot.mode === 'admin') && typeof this.db.getSmartBotLock === 'function' ? this.db.getSmartBotLock(bot.id) : null
+    return { ...safe, minecraftVersion: this.protocolVersions(bot)[0], billingMode: bot.mode === 'signin' ? 'once' : 'hourly', priceMomoc: bot.mode === 'signin' ? prices.signinOncePrice : prices.smartHourlyPrice, momocExempt, allowScheduling: bot.mode === 'signin', scheduleEnabled: Boolean(bot.scheduleEnabled), oauth, lock, smartSchedules, runtimeVersion, latestRuntimeVersion, updateAvailable, logs: [] }
   }
 
   readPackageVersion (directory) {

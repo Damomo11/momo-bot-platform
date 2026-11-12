@@ -660,9 +660,22 @@ function managedVersionHtml (bot) {
   return `<code>v${esc(current)}</code>${bot.updateAvailable ? `<span class="version-update">可更新 v${esc(latest)}</span>` : ''}`
 }
 
+function managedLockHtml (bot) {
+  // 挂机锁定列：状态 + 锁定人 + 备注（原因）。签到 Bot 无此概念，显示 -。
+  if (bot.mode === 'signin') return '<span class="muted">-</span>'
+  const lock = bot.lock || {}
+  if (lock.adminLocked) {
+    return `<span class="status error">超级锁定</span><div class="muted">${esc(lock.lockedBy || '-')}${lock.reason ? ` · ${esc(lock.reason)}` : ''}</div>`
+  }
+  if (lock.locked) {
+    return `<span class="status auth_required">挂机锁定</span><div class="muted">${esc(lock.lockedBy || '-')}</div>${lock.reason ? `<div class="muted">${esc(lock.reason)}</div>` : ''}`
+  }
+  return '<span class="positive">未锁定</span>'
+}
+
 function managedBotRows (rows) {
   if (!rows.length) return '<div class="empty managed-empty">当前没有机器人。</div>'
-  return '<table><thead><tr><th>机器人</th><th>服务器</th><th>状态</th><th>版本</th><th>定时任务</th><th>操作</th></tr></thead><tbody>' + rows.map(bot => {
+  return '<table><thead><tr><th>机器人</th><th>服务器</th><th>状态</th><th>挂机锁定</th><th>版本</th><th>定时任务</th><th>操作</th></tr></thead><tbody>' + rows.map(bot => {
     const action = bot.desiredState === 'running'
       ? `<button data-stop="${esc(bot.id)}">停止</button><button data-restart-bot="${esc(bot.id)}">重启</button>`
       : `<button class="primary" data-start="${esc(bot.id)}">启动</button>`
@@ -670,7 +683,7 @@ function managedBotRows (rows) {
     const update = bot.updateAvailable && bot.runtimeState === 'online' ? `<button class="primary" data-update-bot="${esc(bot.id)}">更新</button>` : ''
     const error = bot.lastError ? `<div class="muted managed-error" title="${esc(bot.lastError)}">${esc(bot.lastError)}</div>` : ''
     const minecraftName = bot.accountMinecraftName || bot.minecraftName || ''
-    return `<tr><td><strong>${esc(minecraftName || bot.label)}</strong><div class="muted">${minecraftName ? `${esc(bot.label)} · ` : ''}${esc(bot.ownerUsername || '-')}${bot.momocExempt ? ' · 免 momoc' : ''}</div></td><td>${esc(bot.serverHost)}:${esc(bot.serverPort)}</td><td><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span>${error}</td><td>${managedVersionHtml(bot)}</td><td>${managedScheduleChips(bot)}</td><td><div class="actions">${update}${action}${permissions}<button data-bot-logs="${esc(bot.id)}">日志</button><button class="danger" data-delete="${esc(bot.id)}">删除</button></div></td></tr>`
+    return `<tr><td><strong>${esc(minecraftName || bot.label)}</strong><div class="muted">${minecraftName ? `${esc(bot.label)} · ` : ''}${esc(bot.ownerUsername || '-')}${bot.momocExempt ? ' · 免 momoc' : ''}</div></td><td>${esc(bot.serverHost)}:${esc(bot.serverPort)}</td><td><span class="status ${esc(bot.runtimeState)}">${esc(statusLabel(bot.runtimeState))}</span>${error}</td><td>${managedLockHtml(bot)}</td><td>${managedVersionHtml(bot)}</td><td>${managedScheduleChips(bot)}</td><td><div class="actions">${update}${action}${permissions}<button data-bot-logs="${esc(bot.id)}">日志</button><button class="danger" data-delete="${esc(bot.id)}">删除</button></div></td></tr>`
   }).join('') + '</tbody></table>'
 }
 
