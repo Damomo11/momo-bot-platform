@@ -14,7 +14,9 @@ const config = loadConfig()
 // 这里同条滤掉是双保险（8789 转发的 bot stdout 以外仍可能有同类残留）。
 if (process.env.BOT_PLATFORM_FILE_LOG !== 'off') {
   const path = require('node:path')
-  const PROTOCOL_NOISE = /partial packet|Chunk size is \d+ but only \d+ was read/
+  // 与 platformPreload 同源：含 PartialReadError（protocol 1.21.11 粒子包
+  // 读越界的刷屏残留，bot 侧已在入口丢弃，这里是转 stdout 的双保险）。
+  const PROTOCOL_NOISE = /partial packet|Chunk size is \d+ but only \d+ was read|PartialReadError: Read error for undefined/
   require('../src/logger').installConsoleFileLogger({ logDir: path.join(config.root, 'logs'), prefix: 'runtime', shouldIgnore: text => PROTOCOL_NOISE.test(text) })
 }
 
