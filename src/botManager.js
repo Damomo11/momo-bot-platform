@@ -13,6 +13,9 @@ const serverCircuitDelaysMs = [120_000, 300_000, 600_000, 1_200_000, 1_800_000]
 const BILLING_GRACE_MS = 3 * 60 * 1000
 // 排行榜探测：状态轮询的节流下限（每次 runBaltopProbeScheduler 最多派发一轮）。
 const BALTOP_PROBE_TICK_MS = 15_000
+// 充值等待窗口：bot 代付 /pay 后等回执确认的最长时间；超时判失败（不播报），
+// 挂起单清除后下一笔充值立即可发起。
+const TOP_UP_PENDING_WINDOW_MS = 10_000
 
 // 把 1..totalPages 均匀分配给 workers 份：每份是连续页码段，长度差不超过 1。
 // 例：10 页 3 个 bot → [1-4],[5-7],[8-10]。
@@ -224,8 +227,9 @@ class BotManager {
       if (!bot || (bot.mode !== 'smart' && bot.mode !== 'admin')) continue
       const settings = this.db.getSmartBotSettings(botId)
       if (!settings.autoRenewEnabled) continue
+      // 过期挂起单直接清除：10s 窗口语义与 top_up_prepare 一致。
       const pending = this.pendingTopUps.get(botId)
-      if (pending && Date.now() - pending.createdAt < 60_000) continue
+      if (pending && Date.now() - pending.createdAt < TOP_UP_PENDING_WINDOW_MS) continue
       if (pending) this.pendingTopUps.delete(botId)
       if (!this.db.claimSmartBotDailyAction(botId, 'auto_renew', clock.date)) continue
       const topUp = this.db.getSmartTopUpSettings()
@@ -1129,8 +1133,10 @@ class BotManager {
       if (!/^\d+(?:\.\d{1,2})?$/.test(amount)) throw new Error('充值金额必须是正数，最多两位小数。')
       const cents = Math.round(Number(amount) * 100)
       if (!Number.isSafeInteger(cents) || cents < 1 || cents > 100000000) throw new Error('充值金额必须在 0.01-1000000.00 之间。')
+      // 旧挂起单：10s 窗口内的判「仍在等待」；过期直接清除，允许重新发起。
       const pending = this.pendingTopUps.get(botId)
-      if (pending && Date.now() - pending.createdAt < 60000) throw new Error('上一笔充值仍在等待服务器确认。')
+      if (pending && Date.now() - pending.createdAt < TOP_UP_PENDING_WINDOW_MS) throw new Error('上一笔充值仍在等待服务器确认。')
+      if (pending) this.pendingTopUps.delete(botId)
       const normalized = (cents / 100).toFixed(2)
       this.pendingTopUps.set(botId, { cents, amount: normalized, sender: String(payload.username || '').replace(/^#/, ''), createdAt: Date.now() })
       return { allowed: true, amount: normalized }
@@ -1144,7 +1150,12 @@ class BotManager {
       const pending = this.pendingTopUps.get(botId)
       const match = String(payload.amount || '').match(/^(\d+)\.(\d{2})$/)
       const cents = match ? Number(match[1]) * 100 + Number(match[2]) : 0
-      if (!pending || Date.now() - pending.createdAt >= 60000 || cents !== pending.cents) return { confirmed: false }
+      // sent 回执（bot 代付完成）与 success 回执共用这里：
+      // 挂起单金额全等 + 10s 窗口才入账；超时（判充值失败）或转给别人的都无感。
+      if (!pending || Date.now() - pending.createdAt >= TOP_UP_PENDING_WINDOW_MS || cents !== pending.cents) {
+        if (pending) this.appendRelatedLog(botId, 'audit', `充值确认失败：金额 ${match ? match[0] : '?'} 与挂起单不符或已超时（挂起 ${pending.amount}），判为失败。`)
+        return { confirmed: false }
+      }
       this.pendingTopUps.delete(botId)
       const recipient = this.db.getSmartTopUpSettings().recipient
       const balance = this.db.adjustMomoc(bot.userId, pending.cents / 100, 'tsl_top_up', `TSL 支付给 ${recipient} ${pending.amount} C`, botId)

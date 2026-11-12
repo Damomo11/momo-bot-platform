@@ -1353,9 +1353,15 @@ test('payment recognizer handles legacy and new success formats, and rejects out
   assert.equal(fresh.kind, 'success')
   assert.equal(fresh.amountCents, 2500)
 
-  // bot 转出成功的回执不是充值（上次 cloud-store 出过的误账场景）。
-  assert.equal(recognizePaymentMessage('✔ 已向「NanKinz2」转账 25.00 TSLC，剩余 5.00', { recipient }), null)
-  assert.equal(recognizePaymentMessage('已向 Damomo1 转入 25.00 TSLC', { recipient }), null)
+  // 2026-11 服务器回执换措辞后：bot 代付完成的「已向 X 转账」走 sent 通道，
+  // 驱动 top_up_confirm（是否入账由管理端用挂起单校验，转给别人的也只报 sent）。
+  const sent = recognizePaymentMessage('✔ 已向「Damomo1」转账 21.01 TSLC，剩余 0.00', { recipient })
+  assert.equal(sent.kind, 'sent')
+  assert.equal(sent.amount, '21.01')
+  assert.equal(sent.player, 'Damomo1')
+  const sentOther = recognizePaymentMessage('✔ 已向「NanKinz2」转账 25.00 TSLC，剩余 5.00', { recipient })
+  assert.equal(sentOther.kind, 'sent')
+  assert.equal(sentOther.player, 'NanKinz2')
 
   // 余额不足提示保持原语义：触发取消而不是入账。
   const insufficient = recognizePaymentMessage('[TSLLLLL] 你的余额少于 50.00 C', { recipient })
@@ -1370,6 +1376,43 @@ test('payment recognizer handles legacy and new success formats, and rejects out
   // 管理页多行正则：逐行校验，坏行报行号；默认值本身通过校验。
   assert.equal(validatePaymentRegex(DEFAULT_PAYMENT_REGEX), DEFAULT_PAYMENT_REGEX)
   assert.throws(() => validatePaymentRegex(LEGACY_PAYMENT_REGEX + '\n(?<broken)'), /第 2 行/)
+})
+
+test('top-up confirm settles from sent receipts and ignores unmatched amounts', () => {
+  const f = fixture()
+  try {
+    const user = f.db.createUser('topup_sent', 'password-123')
+    const bot = f.db.createBot(user.id, { mode: 'smart', label: 'T', microsoftEmail: 't@example.com', serverHost: 'mc.example.com' })
+    f.db.setSmartBotSettings(bot.id, { commandPrefix: '' })
+    // 充值命令只有超管能用，Payer 得在超管名单里。
+    f.db.setSmartPermission(user.id, 'Payer', 'admin')
+    const manager = new BotManager(f.db, {})
+    const messages = []
+    manager.processes.set(bot.id, { child: { send: message => messages.push(message) } })
+
+    // 充值命令挂起 21.01：bot 发 /pay 后收到「已向Damomo1转账 21.01 TSLC」回执。
+    manager.executeSmartRequest(bot.id, 'top_up_prepare', { username: 'Payer', amount: '21.01' })
+    assert.equal(manager.executeSmartRequest(bot.id, 'top_up_confirm', { amount: '21.01' }).confirmed, true)
+    assert.equal(Number(f.db.getUser(user.id).momoc), 21.01)
+
+    // 金额不匹配（转给别人的回执金额对不上挂起单）→ 不入账。
+    manager.executeSmartRequest(bot.id, 'top_up_prepare', { username: 'Payer', amount: '5.00' })
+    assert.equal(manager.executeSmartRequest(bot.id, 'top_up_confirm', { amount: '4.99' }).confirmed, false)
+    assert.equal(Number(f.db.getUser(user.id).momoc), 21.01)
+    manager.executeSmartRequest(bot.id, 'top_up_cancel', {})
+
+    // 10s 超时语义：挂起单过期后 confirm 拒绝（判充值失败），prepare 允许立即重新发起。
+    manager.pendingTopUps.set(bot.id, { cents: 300, amount: '3.00', sender: 'Payer', createdAt: Date.now() - 11_000 })
+    assert.equal(manager.executeSmartRequest(bot.id, 'top_up_confirm', { amount: '3.00' }).confirmed, false)
+    assert.equal(Number(f.db.getUser(user.id).momoc), 21.01)
+    // 过期挂起单不拦新充值（无需等 60s）。
+    manager.executeSmartRequest(bot.id, 'top_up_prepare', { username: 'Payer', amount: '2.00' })
+    assert.equal(manager.executeSmartRequest(bot.id, 'top_up_confirm', { amount: '2.00' }).confirmed, true)
+    assert.equal(Number(f.db.getUser(user.id).momoc), 23.01)
+    manager.executeSmartRequest(bot.id, 'top_up_cancel', {})
+  } finally {
+    f.close()
+  }
 })
 
 test('zenox chat parser recognizes payment messages through the three-layer pipeline', () => {
@@ -1387,8 +1430,9 @@ test('zenox chat parser recognizes payment messages through the three-layer pipe
   bot._client.emit('system_chat', { content: '✔ 已向「NanKinz2」转账 25.00 TSLC，剩余 5.00', isActionBar: false })
   bot._client.emit('system_chat', { content: '[TSLLLLL] 你的余额少于 50.00 C', isActionBar: false })
 
-  assert.deepEqual(rows.map(row => row.kind), ['success', 'success', 'insufficient'])
-  assert.deepEqual(rows.map(row => row.amount), ['25.00', '12.50', '50.00'])
+  // 「已向」句式现在走 sent 通道（bot 代付回执 → 驱动充值确认）。
+  assert.deepEqual(rows.map(row => row.kind), ['success', 'success', 'sent', 'insufficient'])
+  assert.deepEqual(rows.map(row => row.amount), ['25.00', '12.50', '25.00', '50.00'])
 })
 
 test('smart runtime reports command callers and tpahere senders to related logs', async () => {

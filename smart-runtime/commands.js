@@ -74,7 +74,8 @@ const COMMAND_TEXT = Object.freeze({
   fishingDisabled: '自动钓鱼已关闭。',
   balanceResult: balance => `Bot 所有者当前拥有 ${balance} momoc。`,
   topUpUsage: '正确格式: 充值 金额，例如 充值 50。',
-  topUpPending: amount => `正在支付 ${amount} C，等待服务器确认。`,
+  topUpPending: amount => `正在支付 ${amount} C，等待服务器确认（10 秒内有效）。`,
+  topUpTimeout: amount => `充值 ${amount} C 未获服务器确认（已等待 10 秒），判为失败；请确认余额后重试。`,
   topUpBusy: '上一笔充值仍在等待服务器确认。',
   topUpFailure: '充值指令发送失败，请稍后重试。',
   topUpSuccess: (amount, balance) => `充值成功，已增加 ${amount} momoc，当前余额 ${balance} momoc。`,
@@ -1508,6 +1509,11 @@ function createSmartCommandHandler (bot, options = {}) {
       } catch (error) {
         return reply(/等待服务器确认/.test(String(error?.message || '')) ? COMMAND_TEXT.topUpBusy : COMMAND_TEXT.topUpFailure, /等待服务器确认/.test(String(error?.message || '')) ? 'topUpBusy' : 'topUpFailure')
       }
+      // 充值结果哨兵：confirm 由支付回执事件异步驱动（paymentListener），
+      // 这里只等 10 秒——超时没等到确认就判失败，让玩家立刻知道可以重试。
+      let settled = false
+      const onSettle = () => { settled = true }
+      bot.once('botPlatformTopUpSettled', onSettle)
       try {
         const settings = options.getTopUpSettings?.() || {}
         const recipient = String(settings.recipient || 'Damomo1')
@@ -1515,7 +1521,19 @@ function createSmartCommandHandler (bot, options = {}) {
         const command = commandTemplate.replace(/\{recipient\}/g, recipient).replace(/\{amount\}/g, prepared.amount)
         await runBotAction(() => bot.chat(command))
         reply(COMMAND_TEXT.topUpPending(prepared.amount), 'topUpPending', { amount: prepared.amount })
+        const waitMs = Number(options.topUpPendingWindowMs || 10_000)
+        const deadline = Date.now() + waitMs
+        while (!settled && Date.now() < deadline) {
+          await delay(Math.min(200, Math.max(0, deadline - Date.now())))
+        }
+        bot.removeListener('botPlatformTopUpSettled', onSettle)
+        if (!settled) {
+          // 10 秒没等到确认：判失败（挂起单由管理端超时清除），玩家可立即重试。
+          await request('top_up_cancel', {}).catch(() => {})
+          reply(COMMAND_TEXT.topUpTimeout(prepared.amount), 'topUpTimeout', { amount: prepared.amount })
+        }
       } catch {
+        bot.removeListener('botPlatformTopUpSettled', onSettle)
         await request('top_up_cancel', {}).catch(() => {})
         reply(COMMAND_TEXT.topUpFailure, 'topUpFailure')
       }
@@ -2043,7 +2061,19 @@ function installSmartCommands (bot, options = {}) {
       }).catch(() => {})
       return
     }
+    // kind='sent'：bot 代付完成（转出给收款人）的回执——
+    // 2026-11 服务器换措辞后，充值命令的确认只能靠它驱动；
+    // 是否真的入账由 top_up_confirm 用挂起单（金额全等 + 10s 窗口）校验。
+    if (event?.kind === 'sent') {
+      platform.request('top_up_confirm', { amount: event?.amount }).then(result => {
+        // confirmed=true/false 都算「这笔有了结论」：唤醒等待中的充值命令，
+        // 让它立即播报成功或失败，而不是干等满 10 秒。
+        bot.emit('botPlatformTopUpSettled', { confirmed: Boolean(result?.confirmed), amount: event?.amount })
+      }).catch(error => console.error('[smart-top-up]', error?.message || error))
+      return
+    }
     platform.request('top_up_confirm', { amount: event?.amount }).then(result => {
+      bot.emit('botPlatformTopUpSettled', { confirmed: Boolean(result?.confirmed), amount: event?.amount })
       if (!result?.confirmed) return
       if (result.silent) return
       const sender = String(result.sender || '')
