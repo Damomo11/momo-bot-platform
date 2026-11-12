@@ -902,8 +902,12 @@ class PlatformDb {
     return this.getBaltopSettings().lastProbeAt
   }
 
-  // 写入一轮探测结果：同一 serverKey 一次性替换。
-  replaceBaltopEntries (serverKey, entries = [], at = Date.now()) {
+  // 写入一轮探测结果：同名覆盖、异名保留（upsert），不清空历史。
+  // bot 重启/掉线导致本轮数据不完整时，库里的旧数据依然可查（bal 无需等待探测）。
+  // 「最近一次探测」以 last_probe_at 为准：查询时比对 entry 的 updated_at，
+  // 早于上一轮探测时间说明该玩家已不在本轮榜上（消费掉出 100 页外等），
+  // 不能拿旧余额断言为真——回复「未知」而不是过期数字。
+  upsertBaltopEntries (serverKey, entries = [], at = Date.now()) {
     const key = String(serverKey || '')
     if (!key) throw new Error('服务器标识无效。')
     const rows = (Array.isArray(entries) ? entries : []).map(entry => ({
@@ -912,18 +916,25 @@ class PlatformDb {
       balance: String(entry?.balance ?? '').trim(),
       at: Math.trunc(Number(at) || Date.now())
     })).filter(row => row.name && /^[A-Za-z0-9_]{3,16}$/.test(row.name) && Number.isInteger(row.rank) && row.rank >= 1 && row.rank <= 100000 && row.balance && row.balance.length <= 32)
+    // 同名条目本轮内也可能重复（跨 bot 分页重叠）：后面的覆盖前面的。
+    const unique = new Map()
+    for (const row of rows) unique.set(row.name.toLowerCase(), row)
     const save = this.db.transaction(() => {
-      this.db.prepare('DELETE FROM baltop_entries WHERE server_key = ?').run(key)
-      const insert = this.db.prepare('INSERT OR REPLACE INTO baltop_entries (server_key, name, rank, balance, updated_at) VALUES (?, ?, ?, ?, ?)')
-      for (const row of rows) insert.run(key, row.name, row.rank, row.balance, row.at)
+      const insert = this.db.prepare('INSERT INTO baltop_entries (server_key, name, rank, balance, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(server_key, name) DO UPDATE SET rank = excluded.rank, balance = excluded.balance, updated_at = excluded.updated_at')
+      for (const row of unique.values()) insert.run(key, row.name, row.rank, row.balance, row.at)
     })
     save()
-    return rows.length
+    return unique.size
   }
 
   getBaltopEntry (serverKey, name) {
     const row = this.db.prepare('SELECT name, rank, balance, updated_at AS updatedAt FROM baltop_entries WHERE server_key = ? AND name = ? COLLATE NOCASE').get(String(serverKey || ''), String(name || ''))
-    return row ? { ...row, rank: Number(row.rank), updatedAt: Number(row.updatedAt) } : null
+    if (!row) return null
+    const entry = { ...row, rank: Number(row.rank), updatedAt: Number(row.updatedAt) }
+    // 旧记录兜底：updated_at 异常（0/未来时间）时按「在榜」处理，不做未知判定。
+    const lastProbeAt = this.getBaltopSettings().lastProbeAt
+    entry.stale = Boolean(lastProbeAt && entry.updatedAt && entry.updatedAt < lastProbeAt)
+    return entry
   }
 
   listBaltopEntries (serverKey, { limit = 100, offset = 0 } = {}) {
