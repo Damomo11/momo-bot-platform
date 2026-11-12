@@ -40,6 +40,7 @@ test('聊天日志：收/发都落盘，每 bot 独立文件，带方向标记',
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const install = loadInstaller()
   const bot = fakeBot()
+  bot.username = 'ProbeBot_' // 正版名（登录后）
   install(bot)
 
   bot.emit('message', { toString: () => '【余额排行】（第 1 页）' }, 'system')
@@ -49,7 +50,7 @@ test('聊天日志：收/发都落盘，每 bot 独立文件，带方向标记',
 
   const pad = value => String(value).padStart(2, '0')
   const now = new Date()
-  const name = `${globalThis.BOT_ID.slice(0, 8)}-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}.log`
+  const name = `ProbeBot_-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}.log`
   const content = fs.readFileSync(path.join(root, 'logs', 'chat', name), 'utf8')
   assert.match(content, /\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[收\] 【余额排行】（第 1 页）/)
   assert.match(content, /\[收\] Zvbj_: hello world/)
@@ -57,15 +58,47 @@ test('聊天日志：收/发都落盘，每 bot 独立文件，带方向标记',
   assert.match(content, /\[发\] 【椰汁橙】玩家 A 的余额为 1\.00。/)
 })
 
+test('聊天日志：文件名用 Minecraft 正版名（登录前的消息缓冲后并入，不再用 botId）', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-chatlog-'))
+  globalThis.ROOT = root
+  globalThis.BOT_ID = 'ecd04f29-18a3-4329'
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const install = loadInstaller()
+  const bot = fakeBot()
+  bot.username = '' // 登录前还没有正版名
+  install(bot)
+
+  // 登录前的消息：先缓冲，不落盘（不产生 botId 回落文件）。
+  bot.emit('message', { toString: () => 'login banner 1' }, 'system')
+  bot.emit('message', { toString: () => 'login banner 2' }, 'system')
+  assert.equal(bot.username, '')
+  const early = fs.existsSync(path.join(root, 'logs', 'chat')) && fs.readdirSync(path.join(root, 'logs', 'chat'))
+  assert.equal(early ? early.length : 0, 0, '正版名未定前不应写文件')
+
+  // 登录完成：正版名出现，缓冲整批并入正版名文件。
+  bot.username = 'IN_OF_DREAM'
+  bot.emit('message', { toString: () => 'Zvbj_: hello' }, 'chat')
+  bot.chat('/baltop 1')
+
+  const files = fs.readdirSync(path.join(root, 'logs', 'chat'))
+  assert.equal(files.length, 1, '只应有一个文件')
+  assert.equal(files[0].startsWith('IN_OF_DREAM-'), true, '文件名应为正版名而非 botId')
+  const content = fs.readFileSync(path.join(root, 'logs', 'chat', files[0]), 'utf8')
+  assert.match(content, /\[收\] login banner 1/)
+  assert.match(content, /\[收\] login banner 2/)
+  assert.match(content, /\[收\] Zvbj_: hello/)
+  assert.match(content, /\[发\] \/baltop 1/)
+})
+
 test('聊天日志：不同 bot 写入不同文件，互不混流', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-chatlog-'))
   globalThis.ROOT = root
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
-  globalThis.BOT_ID = 'aaaa1111-2222'
   const botA = fakeBot()
+  botA.username = 'BotAlpha_'
   loadInstaller()(botA)
-  globalThis.BOT_ID = 'bbbb3333-4444'
   const botB = fakeBot()
+  botB.username = 'BotBeta_'
   loadInstaller()(botB)
 
   botA.emit('message', { toString: () => 'A 收到' }, 'chat')
@@ -73,8 +106,8 @@ test('聊天日志：不同 bot 写入不同文件，互不混流', async t => {
 
   const files = fs.readdirSync(path.join(root, 'logs', 'chat')).sort()
   assert.equal(files.length, 2)
-  assert.equal(files[0].startsWith('aaaa1111'), true)
-  assert.equal(files[1].startsWith('bbbb3333'), true)
+  assert.equal(files[0].startsWith('BotAlpha_'), true)
+  assert.equal(files[1].startsWith('BotBeta_'), true)
   const a = fs.readFileSync(path.join(root, 'logs', 'chat', files[0]), 'utf8')
   const b = fs.readFileSync(path.join(root, 'logs', 'chat', files[1]), 'utf8')
   assert.match(a, /A 收到/)

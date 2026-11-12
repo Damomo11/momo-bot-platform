@@ -18,17 +18,40 @@ const { installAutoWelcome } = require('./smartBotAutoWelcome')
 const PROTOCOL_NOISE = /partial packet|Chunk size is \d+ but only \d+ was read|PartialReadError: Read error for undefined/
 const CHAT_LOG_MESSAGE_MAX = 2000
 
-// 逐 bot 聊天落盘（logs/chat/<botId前8位>-日期.log）：服务器发来的全部聊天/
+// 逐 bot 聊天落盘（logs/chat/<正版名>-日期.log）：服务器发来的全部聊天/
 // 系统消息与 bot 自己发出的内容都按时间顺序记录，每 bot 独立文件——排查
 // "当时服务器说了什么/bot 说了什么"不再依赖 bot_logs 的截断窗口。
+// 文件名用 Minecraft 正版名（bot.username）：UUID 前缀肉眼分不清是哪台 bot。
 // 直接在 bot 进程内写文件（不经守护进程转发，避免 IPC 流量翻倍）。
 function installChatFileLogger (bot) {
   const CHAT_LOG_MESSAGE_MAX = 2000
   const { loadConfig } = require('./config')
   const fs = require('node:fs')
   const root = loadConfig().root
-  const botId = String(process.env.BOT_PLATFORM_INSTANCE_ID || '').slice(0, 8)
-  if (!botId) return
+  // 文件名身份：Minecraft 正版名（登录后即有）；拿不到时回落 botId 前 8 位。
+  // 正版名出现前的消息先缓冲（登录横幅等），名字一到位就整批写进正版名文件，
+  // 避免同一台 bot 的日志分裂在两个文件里。
+  const fallbackId = String(process.env.BOT_PLATFORM_INSTANCE_ID || '').slice(0, 8)
+  let botName = ''
+  let buffered = []
+  // 正版名是否已激活（拿到过一次有效名字）。
+  const identityActivated = () => Boolean(botName)
+  // 尝试激活：username 出现有效名字时锁定并整批落盘缓冲；返回是否激活成功。
+  const activateIdentity = () => {
+    const name = String(bot.username || '').trim()
+    if (!name || !/^[A-Za-z0-9_]{3,16}$/.test(name)) return false
+    botName = name
+    if (buffered.length) {
+      const pending = buffered
+      buffered = []
+      for (const line of pending) write(line)
+    }
+    return true
+  }
+  const identity = () => {
+    if (!identityActivated()) activateIdentity()
+    return botName || fallbackId
+  }
   const logDir = path.join(root, 'logs', 'chat')
   const maxFileBytes = 256 * 1024 * 1024
   let cappedFile = ''
@@ -41,7 +64,7 @@ function installChatFileLogger (bot) {
   const fileName = () => {
     const now = new Date()
     const pad = value => String(value).padStart(2, '0')
-    return `${botId}-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}.log`
+    return `${identity()}-${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}.log`
   }
   const write = line => {
     try {
@@ -61,7 +84,15 @@ function installChatFileLogger (bot) {
   bot.on('message', (message, position) => {
     const text = String(message?.toString?.() || '').trim()
     if (!text) return
-    write(`[${stamp()}] [收] ${text.slice(0, CHAT_LOG_MESSAGE_MAX)}`)
+    const line = `[${stamp()}] [收] ${text.slice(0, CHAT_LOG_MESSAGE_MAX)}`
+    // 正版名尚未激活时先缓冲（登录横幅/MOTD）；identity() 兼做激活器，
+    // 名字一出现就把缓冲整批落进正版名文件，避免日志分裂到回落文件名。
+    if (!identityActivated() && !activateIdentity()) {
+      buffered.push(line)
+      if (buffered.length > 200) buffered.shift()
+      return
+    }
+    write(line)
   })
   // bot → 服务器：bot.chat 的外发内容（探测 /baltop、充值 /pay、命令回复等）。
   const originalChat = bot.chat.bind(bot)
